@@ -20,7 +20,9 @@ use gpui_kit::{
     TestSupportExt, Window, div, font, point, px,
 };
 
-use crate::config::{self, Blur, Config, Edit, Mode, Shape, ThemeConfig, WindowConfig};
+use crate::config::{
+    self, Blur, Config, Edit, Mode, Shape, ThemeConfig, WindowConfig, WorkingDirectory,
+};
 use crate::grid::hsla;
 use crate::motion;
 use crate::workspace::Workspace;
@@ -526,6 +528,216 @@ fn preview(ws: &Workspace) -> SettingItem {
     })
 }
 
+/// Splits on spaces; "…" or '…' keeps spaces (and the other quote) inside one argument.
+pub(crate) fn split_args(text: &str) -> Result<Vec<String>, &'static str> {
+    let mut args = Vec::new();
+    let mut current: Option<String> = None;
+    let mut quote: Option<char> = None;
+    for c in text.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => current.get_or_insert_default().push(c),
+            None if c == '"' || c == '\'' => {
+                quote = Some(c);
+                current.get_or_insert_default();
+            }
+            None if c.is_whitespace() => args.extend(current.take()),
+            None => current.get_or_insert_default().push(c),
+        }
+    }
+    if quote.is_some() {
+        return Err("Unclosed quote");
+    }
+    args.extend(current);
+    Ok(args)
+}
+
+/// The text field's form of `args`: quoted where an argument is empty or has a space or a quote.
+pub(crate) fn join_args(args: &[String]) -> String {
+    args.iter()
+        .map(|a| {
+            if !a.is_empty() && !a.contains(|c: char| c.is_whitespace() || c == '"' || c == '\'') {
+                a.clone()
+            } else if a.contains('"') {
+                format!("'{a}'")
+            } else {
+                format!("\"{a}\"")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `shell.program`; empty removes the key ($SHELL, or PowerShell on Windows).
+pub(crate) fn set_program(ws: &mut Workspace, text: &str, cx: &mut Context<Workspace>) {
+    if text.is_empty() {
+        ws.edit(
+            Edit::remove("shell", "program"),
+            |c| c.shell.program = None,
+            cx,
+        );
+    } else {
+        ws.edit(
+            Edit::set("shell", "program", text),
+            |c| c.shell.program = Some(text.to_string()),
+            cx,
+        );
+    }
+}
+
+/// `shell.args` from the text field. An unclosed quote waits (the field says so); the typed text
+/// is kept as a draft, so the field shows it rather than the config.
+pub(crate) fn set_args(ws: &mut Workspace, text: &str, cx: &mut Context<Workspace>) {
+    ws.drafts.insert("args", text.to_string());
+    if let Ok(args) = split_args(text) {
+        let value: toml_edit::Array = args.iter().map(String::as_str).collect();
+        ws.edit(
+            Edit::set("shell", "args", value),
+            |c| c.shell.args = args,
+            cx,
+        );
+    }
+    cx.notify();
+}
+
+/// What the arguments field shows: the draft while it is what's in effect (or can't be yet),
+/// else the config's.
+pub(crate) fn args_text(ws: &Workspace) -> String {
+    match ws.drafts.get("args") {
+        Some(d) if split_args(d).map_or(true, |a| a == ws.config.shell.args) => d.clone(),
+        _ => join_args(&ws.config.shell.args),
+    }
+}
+
+pub(crate) fn args_error(ws: &Workspace) -> Option<&'static str> {
+    ws.drafts.get("args").and_then(|d| split_args(d).err())
+}
+
+/// The start folder dropdown: "inherit", "home" or "folder" (the home folder's path, to edit).
+pub(crate) fn set_folder_kind(ws: &mut Workspace, kind: &str, cx: &mut Context<Workspace>) {
+    let (value, wd) = match kind {
+        "home" => ("~".to_string(), WorkingDirectory::Home),
+        "folder" => {
+            if matches!(ws.config.shell.working_directory, WorkingDirectory::Path(_)) {
+                return;
+            }
+            let Some(home) = std::env::home_dir() else {
+                return;
+            };
+            (home.display().to_string(), WorkingDirectory::Path(home))
+        }
+        _ => ("inherit".to_string(), WorkingDirectory::Inherit),
+    };
+    ws.edit(
+        Edit::set("shell", "working_directory", value),
+        |c| c.shell.working_directory = wd,
+        cx,
+    );
+}
+
+/// The folder field. "~" and "inherit" alone would switch the dropdown to Home or Inherit and
+/// hide the field mid-typing: they wait for the rest of the path.
+pub(crate) fn set_folder(ws: &mut Workspace, text: &str, cx: &mut Context<Workspace>) {
+    ws.drafts.insert("folder", text.to_string());
+    if matches!(text, "" | "~" | "inherit") {
+        cx.notify();
+        return;
+    }
+    let wd = WorkingDirectory::from(text.to_string());
+    ws.edit(
+        Edit::set("shell", "working_directory", text),
+        |c| c.shell.working_directory = wd,
+        cx,
+    );
+}
+
+pub(crate) fn folder_text(ws: &Workspace) -> String {
+    let current = &ws.config.shell.working_directory;
+    match ws.drafts.get("folder") {
+        Some(d)
+            if matches!(d.as_str(), "" | "~" | "inherit")
+                || WorkingDirectory::from(d.clone()) == *current =>
+        {
+            d.clone()
+        }
+        _ => match current {
+            WorkingDirectory::Path(p) => p.display().to_string(),
+            _ => String::new(),
+        },
+    }
+}
+
+/// A text field whose shown value and setter come from the workspace.
+fn text(
+    ws: &Entity<Workspace>,
+    get: fn(&Workspace) -> String,
+    set: fn(&mut Workspace, &str, &mut Context<Workspace>),
+) -> SettingField<SharedString> {
+    let read = ws.clone();
+    let write = ws.clone();
+    SettingField::input(
+        move |cx| get(read.read(cx)).into(),
+        move |value: SharedString, cx| write.update(cx, |ws, cx| set(ws, &value, cx)),
+    )
+}
+
+fn folder_kind(ws: &Entity<Workspace>) -> SettingField<SharedString> {
+    let read = ws.clone();
+    let write = ws.clone();
+    let field = SettingField::dropdown(
+        vec![
+            ("inherit".into(), "Inherit from the focused terminal".into()),
+            ("home".into(), "Home".into()),
+            ("folder".into(), "A folder…".into()),
+        ],
+        move |cx| {
+            match read.read(cx).config.shell.working_directory {
+                WorkingDirectory::Inherit => "inherit",
+                WorkingDirectory::Home => "home",
+                WorkingDirectory::Path(_) => "folder",
+            }
+            .into()
+        },
+        move |kind: SharedString, cx| write.update(cx, |ws, cx| set_folder_kind(ws, &kind, cx)),
+    );
+    reset(
+        field,
+        ws,
+        "shell",
+        "working_directory",
+        |c| c.shell.working_directory == WorkingDirectory::Inherit,
+        |c| c.shell.working_directory = WorkingDirectory::Inherit,
+    )
+}
+
+fn program(ws: &Entity<Workspace>) -> SettingField<SharedString> {
+    let field = text(
+        ws,
+        |ws| ws.config.shell.program.clone().unwrap_or_default(),
+        set_program,
+    );
+    reset(
+        field,
+        ws,
+        "shell",
+        "program",
+        |c| c.shell.program.is_none(),
+        |c| c.shell.program = None,
+    )
+}
+
+fn args(ws: &Entity<Workspace>) -> SettingField<SharedString> {
+    let field = text(ws, args_text, set_args);
+    reset(
+        field,
+        ws,
+        "shell",
+        "args",
+        |c| c.shell.args.is_empty(),
+        |c| c.shell.args.clear(),
+    )
+}
+
 /// `theme.light` or `theme.dark`: the built-in themes and the user's themes folder.
 fn theme(
     ws: &Entity<Workspace>,
@@ -699,6 +911,32 @@ pub(crate) fn pages(ws: &Workspace, entity: &Entity<Workspace>) -> Vec<SettingPa
                     .keywords(["history", "lines"]),
             ]),
         ),
+        SettingPage::new("Shell")
+            .description("Applies to new terminals")
+            .group(
+                SettingGroup::new().items(
+                    [
+                        SettingItem::new("Program", program(entity)).description(
+                            "Empty: the default shell ($SHELL, or PowerShell on Windows)",
+                        ),
+                        SettingItem::new("Arguments", args(entity)).description(
+                            args_error(ws).unwrap_or(
+                                "Separated by spaces; \"…\" or '…' keeps spaces inside one",
+                            ),
+                        ),
+                        SettingItem::new("Start folder", folder_kind(entity))
+                            .keywords(["directory", "cwd"]),
+                    ]
+                    .into_iter()
+                    .chain(
+                        matches!(ws.config.shell.working_directory, WorkingDirectory::Path(_))
+                            .then(|| {
+                                SettingItem::new("Folder", text(entity, folder_text, set_folder))
+                                    .description("A path; ~/ is the home folder")
+                            }),
+                    ),
+                ),
+            ),
     ]
 }
 
@@ -760,5 +998,24 @@ mod tests {
         assert!(is_monospace(8.4, 8.4));
         assert!(is_monospace(8.4, 8.405));
         assert!(!is_monospace(3.9, 12.6));
+    }
+
+    #[test]
+    fn args_split_on_spaces_and_keep_quoted_ones() {
+        assert_eq!(split_args("--login -i").unwrap(), ["--login", "-i"]);
+        assert_eq!(split_args("  -c  \"echo hi\" ").unwrap(), ["-c", "echo hi"]);
+        assert_eq!(split_args("-c 'say \"hi\"'").unwrap(), ["-c", "say \"hi\""]);
+        assert_eq!(split_args("\"\"").unwrap(), [""]);
+        assert!(split_args("").unwrap().is_empty());
+        assert_eq!(split_args("-c \"echo hi"), Err("Unclosed quote"));
+    }
+
+    #[test]
+    fn joined_args_split_back() {
+        let args: Vec<String> = ["--login", "a b", "it's", "say \"hi\"", ""]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(split_args(&join_args(&args)).unwrap(), args);
+        assert_eq!(join_args(&["--login".into(), "-i".into()]), "--login -i");
     }
 }
