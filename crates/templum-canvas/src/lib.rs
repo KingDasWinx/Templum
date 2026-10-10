@@ -5,10 +5,12 @@
 mod camera;
 mod canvas;
 pub mod chrome;
+mod dots;
 mod geometry;
 mod gesture;
 
 pub use camera::{Camera, FIT_MARGIN, ZOOM_STEPS};
 pub use canvas::{Block, BlockId, CASCADE, Canvas};
+pub use dots::{DOT_SPACING, DotGrid, MIN_DOT_GAP, dot_grid};
 pub use geometry::{Point, Rect, Size};
 pub use gesture::Gesture;
