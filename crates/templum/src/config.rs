@@ -412,10 +412,12 @@ pub(crate) fn save_theme(dir: &Path, dark: bool, name: &str) -> Result<(), SaveE
 pub(crate) fn template(macos: bool) -> String {
     use crate::keys::Command;
     let mut t = String::from(concat!(
-        "## Templum's configuration. Uncomment a line (remove \"# \") and save: it applies at once.\n",
+        "## Templum's configuration. Remove the \"# \" before a line (or \"## \" before an example)\n",
+        "## and save: it applies at once.\n",
         "## All options: https://github.com/KingDasWinx/Templum#configuration\n\n",
         "[font]\n",
-        "## family = \"JetBrains Mono\"   (default: the first installed font of a built-in list)\n",
+        "## Default: the first installed font of a built-in list. For example:\n",
+        "## family = \"JetBrains Mono\"\n",
         "# size = 14   # 6 to 72\n\n",
         "[window]\n",
         "# blur = \"auto\"   # \"auto\" | true | false\n",
@@ -425,7 +427,8 @@ pub(crate) fn template(macos: bool) -> String {
         "# light = \"Catppuccin Latte\"\n",
         "# dark = \"Catppuccin Mocha\"\n\n",
         "[shell]\n",
-        "## program = \"fish\"   (default: $SHELL, or PowerShell on Windows)\n",
+        "## Default: $SHELL, or PowerShell on Windows. For example:\n",
+        "## program = \"fish\"\n",
         "## args = [\"--login\"]\n",
         "# working_directory = \"inherit\"   # \"inherit\" | \"~\" | a path\n\n",
         "[cursor]\n",
@@ -787,5 +790,26 @@ scrollback = 500
             "LF only line: {text:?}"
         );
         assert!(text.contains("dark = \"One Dark\""), "{text:?}");
+    }
+
+    #[test]
+    fn the_templates_example_lines_work_once_uncommented() {
+        // "## key = value" example lines (font family, shell) become settings without "## ".
+        let t = template(false);
+        let text: String = t
+            .lines()
+            .map(|l| {
+                let l = l
+                    .strip_prefix("## ")
+                    .filter(|rest| rest.contains(" = "))
+                    .unwrap_or(l);
+                l.strip_prefix("# ").unwrap_or(l)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let c = parse(&text).unwrap();
+        assert_eq!(c.font.family.as_deref(), Some("JetBrains Mono"));
+        assert_eq!(c.shell.program.as_deref(), Some("fish"));
+        assert_eq!(c.shell.args, ["--login"]);
     }
 }

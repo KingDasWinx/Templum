@@ -101,8 +101,9 @@ scrollback = 10000
 new_terminal = "ctrl-shift-t"   # one shortcut, a list, or [] to disable
 ```
 
-A mistake in the file (a typo, a value out of range) shows a notification with the line, and Templum keeps the
-last working settings. The full list is in [docs/specs/config.md](docs/specs/config.md).
+A mistake in the file (a typo, a value out of range) shows a notification saying where, and Templum keeps the
+last working settings. On Windows, `"inherit"` follows `cd` in cmd.exe but not in PowerShell, which doesn't move its
+process's folder. The full list is in [docs/specs/config.md](docs/specs/config.md).
 
 ## Pre-built binaries
 

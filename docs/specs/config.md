@@ -184,8 +184,10 @@ and go to stderr with the `templum:` prefix.
 
 - **`SpawnOptions`** gets `working_directory: Option<PathBuf>`. `None` keeps today's home folder.
 - **`Terminal::cwd() -> Option<PathBuf>`** is the shell's current folder, read through its process ID:
-  - the shell's PID is taken from the PTY when the terminal spawns (`tty::Pty::child().id()` on Unix,
-    `child_watcher().pid()` on Windows);
+  - on Unix, the process asked is the leader of the PTY's foreground process group (`tcgetpgrp` through
+    `rustix`), which is the shell the user types into even under macOS's `login` wrapper or in a nested shell; it
+    falls back to the spawned child (`tty::Pty::child().id()`);
+  - on Windows, the process asked is the spawned shell (`child_watcher().pid()`);
   - the folder comes from `sysinfo`, the same way on every OS.
 - **`Terminal::set_options(TermOptions { scrollback, cursor })`** forwards to `Term::set_options`, which applies
   both to a running terminal. `SpawnOptions` gets the same `options` for new terminals.
@@ -280,6 +282,9 @@ Three pull requests, each green in CI and useful on its own:
 
 - **Reading another process's folder** on macOS and Windows goes through `sysinfo`. It can fail for a shell running
   as another user (`sudo -s`) or one that already exited; the rule is then "home folder, no warning".
+- **PowerShell doesn't move its process's folder.** `Set-Location`/`cd` only changes PowerShell's own location, so
+  `"inherit"` follows `cd` with cmd.exe but not with PowerShell, Windows's default shell; new terminals then start
+  where PowerShell started. Fixing it needs shell integration (OSC 7 or 9;9), which is out of scope.
 - **ConPTY's PID** on Windows is the shell's when it starts directly. Under a wrapper (`cmd /c` starting
   PowerShell) it would be the wrapper's folder; the default PowerShell starts directly.
 - **Fonts swapped at runtime** re-measure the cell and resize every terminal in one frame. With many terminals this
