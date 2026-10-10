@@ -27,7 +27,7 @@ pub(crate) struct Theme {
 /// Interface colors, computed from the terminal colors with one formula for every theme.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Ui {
-    /// Under the blocks; drawn at [`CANVAS_ALPHA`] when the window is translucent.
+    /// Under the blocks; drawn at window.opacity when the window is translucent.
     pub canvas: Rgb,
     pub dot: Hsla,
     pub hairline: Hsla,
@@ -333,9 +333,6 @@ pub(crate) fn apply_to_kit(theme: &Theme, cx: &mut App) {
         kit.selection = ui.selection;
     });
 }
-
-/// How opaque the canvas is when the window is translucent.
-pub(crate) const CANVAS_ALPHA: f32 = 0.72;
 
 /// Whether the window is drawn translucent with the desktop blurred behind it: where the
 /// system blurs (macOS, Windows, KDE and Hyprland under Wayland), never elsewhere.

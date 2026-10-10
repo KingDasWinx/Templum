@@ -13,10 +13,11 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{TITLE_BAR_HEIGHT, WindowExt, window_paddings};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler, EntityInputHandler,
-    FocusHandle, Hsla, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PinchEvent, Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent, Task,
-    UTF16Selection, Window, WindowAppearance, actions, canvas, div, fill, point, px, size,
+    Anchor, App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler,
+    EntityInputHandler, FocusHandle, Hsla, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PinchEvent, Pixels, Point as PixelPoint, ScrollDelta,
+    ScrollWheelEvent, Task, UTF16Selection, Window, WindowAppearance, actions, canvas, div, fill,
+    point, px, size,
 };
 use templum_canvas::{
     Block, BlockId, Camera, Canvas, Gesture, Point, Rect, Size, chrome, dot_grid,
@@ -24,10 +25,10 @@ use templum_canvas::{
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
 use crate::block;
-use crate::config::{self, ThemeNames};
+use crate::config::{self, Config, WorkingDirectory};
 use crate::grid::{CellMetrics, hsla};
 use crate::motion;
-use crate::theme::{self, CANVAS_ALPHA, Entry, Theme};
+use crate::theme::{self, Entry, Theme};
 use crate::theme_picker::{self, Picker};
 use crate::title_bar;
 
@@ -138,13 +139,21 @@ pub struct Workspace {
     /// Where config.toml and the themes folder live (None: defaults only, nothing saved).
     config_dir: Option<PathBuf>,
     pub(crate) themes: Vec<Entry>,
-    theme_names: ThemeNames,
     /// The system's appearance.
     dark: bool,
     /// What everything is drawn with.
     pub(crate) theme: Rc<Theme>,
-    /// The window shows the blurred desktop: the canvas is drawn at CANVAS_ALPHA.
+    /// The window shows the blurred desktop: the canvas is drawn at window.opacity.
     translucent: bool,
+    /// The active config.toml: the last valid one.
+    pub(crate) config: Config,
+    /// What config.toml looked like at the last read, for polling.
+    config_stamp: config::Stamp,
+    /// The last read failed: the next good one says so.
+    config_failed: bool,
+    /// The system's appearance. `dark` is what's in effect, since config.toml may pin a mode.
+    system_dark: bool,
+    _poll: Task<()>,
     /// The block under the pointer: it shows its close button and resize grip.
     pub(crate) hovered: Option<BlockId>,
     /// The open theme picker.
@@ -186,11 +195,38 @@ impl Workspace {
         });
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
-        let theme_names = config::read(config_dir.as_deref());
+        let (config, config_error) = match config::load(config_dir.as_deref()) {
+            Ok(config) => (config, None),
+            Err(message) => (Config::default(), Some(message)),
+        };
+        let config_stamp = config::Stamp::of(config_dir.as_deref());
         let themes = theme::load(config_dir.as_deref());
-        let dark = is_dark(window.appearance());
-        let theme = theme::pick(&themes, theme_names.get(dark), theme::default_name(dark));
+        let system_dark = is_dark(window.appearance());
+        let dark = config.theme.mode.dark(system_dark);
+        let theme = theme::pick(&themes, config.theme.name(dark), theme::default_name(dark));
         theme::apply_to_kit(&theme, cx);
+        let (cell, font_warning) =
+            CellMetrics::measure(window, config.font.family.as_deref(), config.font.size);
+        if let Some(message) = &config_error {
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::error(message.clone()));
+        }
+        if let Some(warning) = font_warning {
+            eprintln!("templum: {warning}");
+            show_notification(window, cx, Notification::warning(warning));
+        }
+        let poll = cx.spawn_in(window, async move |ws, cx| {
+            loop {
+                cx.background_executor().timer(config::POLL).await;
+                if ws
+                    .update_in(cx, |ws, window, cx| ws.poll_config(window, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let translucent = config.window.translucent();
         cx.observe_window_appearance(window, |ws, window, cx| {
             ws.set_dark(is_dark(window.appearance()), cx)
         })
@@ -207,7 +243,7 @@ impl Workspace {
             canvas: Canvas::default(),
             terminals: HashMap::new(),
             focused: None,
-            cell: CellMetrics::measure(window, None, 14.0).0,
+            cell,
             marked: None,
             ime_cursor: None,
             on_frame: None,
@@ -221,10 +257,13 @@ impl Workspace {
             pristine: true,
             config_dir,
             themes,
-            theme_names,
             dark,
             theme,
-            translucent: theme::system_translucent(),
+            translucent,
+            config_failed: config_error.is_some(),
+            config_stamp,
+            system_dark,
+            _poll: poll,
             hovered: None,
             picker: None,
             appearing: HashMap::new(),
@@ -232,6 +271,7 @@ impl Workspace {
             cursor_blinks: false,
             blink_on: true,
             _blink: blink,
+            config,
             _wake: wake,
         };
         // Startup: one terminal, centered.
@@ -245,14 +285,22 @@ impl Workspace {
     /// Starts a terminal in a new focused block; on failure, a notification instead.
     pub(crate) fn open(&mut self, rect: Rect, window: &mut Window, cx: &mut Context<Self>) {
         let (cols, rows) = chrome::grid_size(chrome::content_rect(rect).size(), self.cell.size);
+        let command = self.command.clone().or_else(|| {
+            let shell = &self.config.shell;
+            shell
+                .program
+                .clone()
+                .map(|program| (program, shell.args.clone()))
+        });
+        let working_directory = self.start_dir(window, cx);
         let opts = SpawnOptions {
             cols,
             rows,
             cell_px: self.cell.px(),
-            command: self.command.clone(),
+            command,
             palette: self.theme.palette,
-            options: templum_terminal::TermOptions::default(),
-            working_directory: None,
+            options: self.config.term_options(),
+            working_directory,
         };
         match Terminal::spawn(opts, self.notify.clone()) {
             Ok(term) => {
@@ -270,10 +318,7 @@ impl Workspace {
             Err(err) => {
                 eprintln!("templum: couldn't start a shell: {err}");
                 let message = format!("Couldn't start a shell: {err}");
-                // Deferred: at startup the window's notification layer doesn't exist yet.
-                window.defer(cx, move |window, cx| {
-                    window.push_notification(Notification::error(message), cx);
-                });
+                show_notification(window, cx, Notification::error(message));
             }
         }
         cx.notify();
@@ -313,21 +358,129 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The system switched between light and dark: use that mode's theme.
-    pub(crate) fn set_dark(&mut self, dark: bool, cx: &mut Context<Self>) {
+    /// The system switched between light and dark.
+    pub(crate) fn set_dark(&mut self, system_dark: bool, cx: &mut Context<Self>) {
         // GPUI also reports appearance on Wayland decoration and window-control changes.
-        if dark == self.dark {
+        if system_dark == self.system_dark {
             return;
         }
+        self.system_dark = system_dark;
         // A preview from the other mode must not survive (Esc would restore the wrong theme).
         self.picker = None;
-        self.dark = dark;
+        self.refresh_theme(cx);
+    }
+
+    /// Picks the theme for the mode in effect (the system's, unless config.toml pins one).
+    fn refresh_theme(&mut self, cx: &mut Context<Self>) {
+        self.dark = self.config.theme.mode.dark(self.system_dark);
         let theme = theme::pick(
             &self.themes,
-            self.theme_names.get(dark),
-            theme::default_name(dark),
+            self.config.theme.name(self.dark),
+            theme::default_name(self.dark),
         );
         self.apply(theme, cx);
+    }
+
+    /// Every config::POLL: reloads config.toml when it changed (or appeared, or went away).
+    fn poll_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let stamp = config::Stamp::of(self.config_dir.as_deref());
+        if stamp != self.config_stamp {
+            self.config_stamp = stamp;
+            self.reload_config(window, cx);
+        }
+    }
+
+    /// Reads config.toml again and applies what changed. An invalid file keeps the current
+    /// config and says why.
+    pub(crate) fn reload_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match config::load(self.config_dir.as_deref()) {
+            Ok(new) => {
+                if std::mem::take(&mut self.config_failed) {
+                    show_notification(
+                        window,
+                        cx,
+                        Notification::info(format!("{} loaded", config::FILE)),
+                    );
+                }
+                self.apply_config(new, window, cx);
+            }
+            Err(message) => {
+                eprintln!("templum: {message}");
+                self.config_failed = true;
+                show_notification(window, cx, Notification::error(message));
+            }
+        }
+    }
+
+    fn apply_config(&mut self, new: Config, window: &mut Window, cx: &mut Context<Self>) {
+        let old = std::mem::replace(&mut self.config, new);
+        if self.config.font != old.font {
+            self.set_font(window, cx);
+        }
+        if self.config.window != old.window {
+            self.translucent = self.config.window.translucent();
+            window.set_background_appearance(self.config.window.background());
+        }
+        if self.config.theme != old.theme {
+            self.picker = None;
+            self.refresh_theme(cx);
+        }
+        if self.config.cursor != old.cursor || self.config.terminal != old.terminal {
+            let options = self.config.term_options();
+            for pane in self.terminals.values() {
+                pane.term.shared().set_options(options);
+            }
+        }
+        cx.notify();
+    }
+
+    /// New cell metrics: every block keeps its rect, and its terminal gets the columns and rows
+    /// that now fit.
+    fn set_font(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let font = &self.config.font;
+        let (cell, warning) = CellMetrics::measure(window, font.family.as_deref(), font.size);
+        if let Some(warning) = warning {
+            eprintln!("templum: {warning}");
+            show_notification(window, cx, Notification::warning(warning));
+        }
+        self.cell = cell;
+        for (id, pane) in self.terminals.iter_mut() {
+            if let Some(block) = self.canvas.get(*id) {
+                let content = chrome::content_rect(block.rect).size();
+                let (cols, rows) = chrome::grid_size(content, self.cell.size);
+                pane.term.resize(cols, rows, self.cell.px());
+            }
+        }
+    }
+
+    /// Where a new terminal starts (None: the home folder).
+    fn start_dir(&self, window: &mut Window, cx: &mut App) -> Option<PathBuf> {
+        match &self.config.shell.working_directory {
+            WorkingDirectory::Inherit => self
+                .focused
+                .and_then(|id| self.terminals.get(&id))
+                .and_then(|pane| pane.term.cwd()),
+            WorkingDirectory::Home => None,
+            WorkingDirectory::Path(path) if path.is_dir() => Some(path.clone()),
+            WorkingDirectory::Path(path) => {
+                let message = format!(
+                    "{} isn't a folder; starting in the home folder",
+                    path.display()
+                );
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::warning(message));
+                None
+            }
+        }
+    }
+
+    /// The canvas's alpha: window.opacity when the window is translucent, else opaque.
+    pub(crate) fn canvas_alpha(&self) -> f32 {
+        if self.translucent {
+            self.config.window.opacity
+        } else {
+            1.0
+        }
     }
 
     /// Opens the theme picker (re-reading the user's themes folder), or closes it like Esc.
@@ -379,9 +532,9 @@ impl Workspace {
         self.preview_theme(i, cx);
         let name = self.theme.name.clone();
         if self.dark {
-            self.theme_names.dark = name.clone();
+            self.config.theme.dark = name.clone();
         } else {
-            self.theme_names.light = name.clone();
+            self.config.theme.light = name.clone();
         }
         let saved = match &self.config_dir {
             Some(dir) => config::save_theme(dir, self.dark, &name),
@@ -714,6 +867,15 @@ fn option_types_text(key: &str, key_char: Option<&str>, macos: bool) -> bool {
     macos && key_char.is_some_and(|c| c != key && !c.is_empty() && !c.chars().any(char::is_control))
 }
 
+/// Shows a notification at the bottom right, clear of the title bar's buttons. Deferred: at
+/// startup the window's notification layer doesn't exist yet.
+fn show_notification(window: &mut Window, cx: &mut App, notification: Notification) {
+    let notification = notification.placement(Anchor::BottomRight);
+    window.defer(cx, move |window, cx| {
+        window.push_notification(notification, cx)
+    });
+}
+
 /// The canvas area: the window minus the title bar and, on Linux, the client-side shadow.
 fn viewport(window: &Window) -> Size {
     let s = window.viewport_size();
@@ -877,7 +1039,7 @@ impl Render for Workspace {
                         .child(HINT),
                 )
             });
-        let alpha = if self.translucent { CANVAS_ALPHA } else { 1.0 };
+        let alpha = self.canvas_alpha();
         let picker = self
             .picker
             .as_ref()
@@ -1733,6 +1895,162 @@ mod tests {
             ws.tick_blink(cx);
             assert!(ws.blink_on);
         });
+    }
+
+    fn write_config(dir: &std::path::Path, text: &str) {
+        std::fs::write(dir.join("config.toml"), text).unwrap();
+    }
+
+    fn reload(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.reload_config(window, cx))
+        })
+        .unwrap();
+    }
+
+    fn notification_count(handle: AnyWindowHandle, cx: &mut TestAppContext) -> usize {
+        use gpui_kit::component::WindowExt as _;
+        cx.update_window(handle, |_, window, cx| window.notifications(cx).len())
+            .unwrap()
+    }
+
+    #[gpui_kit::test]
+    fn a_bigger_font_keeps_blocks_and_shrinks_grids(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        let id = first_id(&ws, cx);
+        let (rect, cell, grid) = ws.read_with(cx, |ws, _| {
+            (
+                ws.canvas.get(id).unwrap().rect,
+                ws.cell.size,
+                ws.terminals[&id].term.grid_size(),
+            )
+        });
+        write_config(dir.path(), "[font]\nsize = 28\n");
+        reload(handle, &ws, cx);
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(
+                ws.canvas.get(id).unwrap().rect,
+                rect,
+                "the block keeps its rect"
+            );
+            assert!(ws.cell.size.w > cell.w);
+            let now = ws.terminals[&id].term.grid_size();
+            assert!(now.0 < grid.0 && now.1 < grid.1, "{now:?} vs {grid:?}");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn window_and_theme_mode_apply_on_reload(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        write_config(
+            dir.path(),
+            "[window]\nblur = false\n[theme]\nmode = \"dark\"\n",
+        );
+        reload(handle, &ws, cx);
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.canvas_alpha(), 1.0, "opaque");
+            assert_eq!(
+                ws.theme.name, "Catppuccin Mocha",
+                "dark pinned on a light system"
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn cursor_options_reach_open_terminals(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        let id = first_id(&ws, cx);
+        write_config(dir.path(), "[cursor]\nshape = \"bar\"\nblink = true\n");
+        reload(handle, &ws, cx);
+        ws.read_with(cx, |ws, _| {
+            let mut snap = templum_terminal::Snapshot::default();
+            snap.refresh(ws.terminals[&id].term.shared(), &ws.theme.palette);
+            let c = snap.cursor.unwrap();
+            assert_eq!(
+                (c.shape, c.blinking),
+                (templum_terminal::CursorShape::Beam, true)
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn an_invalid_file_keeps_the_config_and_says_why(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        write_config(dir.path(), "[font]\nsize = 20\n");
+        reload(handle, &ws, cx);
+        write_config(dir.path(), "fnot = 1\n");
+        reload(handle, &ws, cx);
+        ws.read_with(cx, |ws, _| assert_eq!(ws.config.font.size, 20.0, "kept"));
+        assert_eq!(notification_count(handle, cx), 1, "the error");
+        write_config(dir.path(), "[font]\nsize = 20\n");
+        reload(handle, &ws, cx);
+        assert_eq!(notification_count(handle, cx), 2, "\"config.toml loaded\"");
+    }
+
+    #[gpui_kit::test]
+    fn missing_font_warns_but_applies_the_rest(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        write_config(dir.path(), "[font]\nfamily = \"No Such Font\"\nsize = 20\n");
+        reload(handle, &ws, cx);
+        ws.read_with(cx, |ws, _| assert_eq!(ws.cell.font_size, 20.0));
+        assert_eq!(notification_count(handle, cx), 1, "the warning");
+    }
+
+    #[gpui_kit::test]
+    fn theme_reload_closes_the_picker(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("theme-button", cx);
+            window.render_frame(cx);
+            window.hover(("theme-item", builtin_index("One Light")), cx);
+        })
+        .unwrap();
+        write_config(dir.path(), "[theme]\nlight = \"Apple Light\"\n");
+        reload(handle, &ws, cx);
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.picker.is_none());
+            assert_eq!(ws.theme.name, "Apple Light");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn new_terminals_inherit_the_focused_folder(cx: &mut TestAppContext) {
+        use std::time::{Duration, Instant};
+        let dir = tempfile::tempdir().unwrap();
+        // The plain path (cmd.exe can't start in a canonical \\?\ path), compared canonicalized.
+        let start_dir = tempfile::tempdir().unwrap();
+        let start = start_dir.path().to_path_buf();
+        // A TOML literal string: Windows backslashes need no escaping.
+        write_config(
+            dir.path(),
+            &format!("[shell]\nworking_directory = '{}'\n", start.display()),
+        );
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        write_config(dir.path(), "[shell]\nworking_directory = \"inherit\"\n");
+        reload(handle, &ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(NEW, cx);
+        })
+        .unwrap();
+        let new = ws.read_with(cx, |ws, _| ws.canvas.top().unwrap());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let cwd = ws.read_with(cx, |ws, _| ws.terminals[&new].term.cwd());
+            if let Some(cwd) = cwd {
+                assert_eq!(cwd.canonicalize().unwrap(), start.canonicalize().unwrap());
+                break;
+            }
+            assert!(Instant::now() < deadline, "no cwd");
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     #[test]
