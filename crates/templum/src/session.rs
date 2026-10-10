@@ -40,7 +40,11 @@ fn dir_from(
 ) -> Option<PathBuf> {
     match os {
         "windows" => appdata.map(|d| PathBuf::from(d).join("templum")),
-        "macos" => home.map(|h| h.join("Library").join("Application Support").join("Templum")),
+        "macos" => home.map(|h| {
+            h.join("Library")
+                .join("Application Support")
+                .join("Templum")
+        }),
         _ => xdg
             .filter(|d| !d.is_empty())
             .map(PathBuf::from)
@@ -160,7 +164,10 @@ pub(crate) enum Loaded {
     Nothing,
     Saved(Saved),
     /// A file this Templum can't use, renamed to `to` so it is never written over.
-    Moved { to: PathBuf, why: String },
+    Moved {
+        to: PathBuf,
+        why: String,
+    },
     /// The file couldn't be read, or set aside: nothing may be written this session.
     Unreadable(String),
 }
@@ -402,11 +409,7 @@ mod tests {
                 zoom: 1.5
             }
         );
-        let rects: Vec<SavedRect> = saved
-            .items
-            .iter()
-            .map(|Item::Terminal(t)| t.rect)
-            .collect();
+        let rects: Vec<SavedRect> = saved.items.iter().map(|Item::Terminal(t)| t.rect).collect();
         assert_eq!(
             rects[1],
             SavedRect {
