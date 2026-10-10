@@ -62,6 +62,11 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   reload can replace them. GPUI key bindings are only used to keep Tab for the shell.
 - `templum-terminal` gets settings as plain values (`TermOptions`, a start folder) and reports a shell's folder
   through `sysinfo`. It never reads the file.
+- The settings panel (`crates/templum/src/settings.rs`) builds gpui-kit `Settings` pages from the active `Config`
+  every frame. A change becomes a `config::Edit` (set or remove one `table.key`). The workspace applies it on the next
+  frame (fonts are measured with the window) and writes it with `toml_edit` 0.3 s after the last one, when the panel
+  closes, and when the window closes or the app quits (`config::save_edits` keeps comments, CRLF and a BOM). A write
+  that fails keeps its edits for the next try; the poll saves them before reloading a file changed by hand.
 
 ## Distribution
 

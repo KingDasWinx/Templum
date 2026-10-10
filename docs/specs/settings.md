@@ -1,7 +1,7 @@
 # Settings panel
 
 - **Date:** 2026-10-10
-- **Status:** Draft
+- **Status:** Implemented
 - **Builds on:** [config.md](config.md) (part 1: every option in `config.toml`, applied live) and
   [design-system.md](design-system.md)
 
