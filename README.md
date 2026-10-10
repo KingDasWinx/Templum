@@ -80,7 +80,9 @@ as you make it.
   removing their lines from the file.
 - To change a shortcut, click it and press the new one, with Ctrl, Alt or Super (Cmd on macOS), or an F key. Esc
   cancels, Backspace leaves the command without a shortcut, and a shortcut another command already has is refused
-  with its name.
+  with its name. A reset that would give a shortcut to two commands is refused the same way.
+- Shortcuts keep working while the panel has the focus, except copy, paste and close terminal, which need a terminal
+  to have it.
 - Edits you make by hand to `config.toml` show up in the panel.
 
 ## Configuration

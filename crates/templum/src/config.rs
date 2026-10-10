@@ -449,7 +449,28 @@ pub(crate) fn save_edits(dir: &Path, edits: &[Edit]) -> Result<(), SaveError> {
         out.insert(0, '\u{feff}');
     }
     std::fs::create_dir_all(dir).map_err(SaveError::Io)?;
-    std::fs::write(&path, out).map_err(SaveError::Io)
+    write_whole(&path, &out).map_err(SaveError::Io)
+}
+
+/// Writes a temporary file beside `path` and renames it over: a crash mid-write never leaves half
+/// a file. A linked file (from a dotfiles repository) stays linked: the file it points at is the
+/// one replaced, with its permissions.
+fn write_whole(path: &Path, text: &str) -> io::Result<()> {
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let tmp = target.with_file_name(format!(".{FILE}.tmp"));
+    let written = (|| {
+        let mut file = std::fs::File::create(&tmp)?;
+        io::Write::write_all(&mut file, text.as_bytes())?;
+        file.sync_all()?;
+        if let Ok(old) = std::fs::metadata(&target) {
+            std::fs::set_permissions(&tmp, old.permissions())?;
+        }
+        std::fs::rename(&tmp, &target)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// Removes `table.key`. The comment lines above a key belong to it in toml_edit: they move to
@@ -659,6 +680,41 @@ mod tests {
             std::fs::read_to_string(d.path().join(FILE)).unwrap(),
             "theme = \"Dracula\"\n"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_save_replaces_the_file_in_one_step() {
+        use std::os::unix::fs::MetadataExt as _;
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "[font]\nsize = 16\n");
+        let before = std::fs::metadata(d.path().join(FILE)).unwrap().ino();
+        save_theme(d.path(), true, "One Dark").unwrap();
+        let after = std::fs::metadata(d.path().join(FILE)).unwrap().ino();
+        assert_ne!(before, after, "written beside it, then renamed over it");
+        let names: Vec<_> = std::fs::read_dir(d.path()).unwrap().collect();
+        assert_eq!(names.len(), 1, "no temporary file left: {names:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_save_keeps_a_linked_file_linked_and_its_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = tempfile::tempdir().unwrap();
+        let dotfiles = d.path().join("dotfiles");
+        std::fs::create_dir(&dotfiles).unwrap();
+        let real = dotfiles.join(FILE);
+        std::fs::write(&real, "[font]\nsize = 16\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let dir = d.path().join("templum");
+        std::fs::create_dir(&dir).unwrap();
+        std::os::unix::fs::symlink(&real, dir.join(FILE)).unwrap();
+        save_theme(&dir, true, "One Dark").unwrap();
+        let link = std::fs::symlink_metadata(dir.join(FILE)).unwrap();
+        assert!(link.file_type().is_symlink(), "still a link");
+        assert!(std::fs::read_to_string(&real).unwrap().contains("One Dark"));
+        let mode = std::fs::metadata(&real).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     use templum_terminal::{CursorShape, CursorStyle};

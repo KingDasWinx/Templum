@@ -39,6 +39,29 @@ pub(crate) struct Panel {
     pub closing: bool,
 }
 
+impl Panel {
+    /// How much of the panel is in view at `now`: 0 hidden, 1 all.
+    pub fn shown(&self, now: Instant) -> f32 {
+        let t = motion::slide(motion::progress(self.since, now, motion::SLIDE));
+        if self.closing { 1.0 - t } else { t }
+    }
+
+    /// The panel sliding the other way, from where it is (no jump when turned back mid-slide).
+    pub fn reversed(&self, now: Instant) -> Panel {
+        let closing = !self.closing;
+        let shown = self.shown(now);
+        let eased = if closing { 1.0 - shown } else { shown };
+        // motion::slide inverted: the progress that eases to `eased`.
+        let progress = 1.0 - (1.0 - eased).cbrt();
+        Panel {
+            since: now
+                .checked_sub(motion::SLIDE.mul_f32(progress))
+                .unwrap_or(now),
+            closing,
+        }
+    }
+}
+
 pub(crate) fn render(
     ws: &Workspace,
     panel: &Panel,
@@ -48,8 +71,7 @@ pub(crate) fn render(
 ) -> AnyElement {
     let ui = ws.theme.ui;
     let width = WIDTH.min(canvas_w * 0.6);
-    let t = motion::slide(motion::progress(panel.since, now, motion::SLIDE));
-    let shown = if panel.closing { 1.0 - t } else { t };
+    let shown = panel.shown(now);
     let entity = cx.entity();
 
     let close = div()
@@ -618,8 +640,11 @@ pub(crate) fn join_args(args: &[String]) -> String {
         .join(" ")
 }
 
-/// `shell.program`; empty removes the key ($SHELL, or PowerShell on Windows).
+/// `shell.program`, trimmed; empty removes the key ($SHELL, or PowerShell on Windows). The typed
+/// text is kept as a draft, so a space typed before the rest of a path stays in the field.
 pub(crate) fn set_program(ws: &mut Workspace, text: &str, cx: &mut Context<Workspace>) {
+    ws.drafts.insert("program", text.to_string());
+    let text = text.trim();
     if text.is_empty() {
         ws.edit(
             Edit::remove("shell", "program"),
@@ -717,6 +742,24 @@ pub(crate) fn folder_text(ws: &Workspace) -> String {
     }
 }
 
+/// Why the folder field's text isn't in effect yet (see `set_folder`).
+pub(crate) fn folder_hint(ws: &Workspace) -> Option<&'static str> {
+    match ws.drafts.get("folder")?.as_str() {
+        "" => Some("Not applied: type a path"),
+        "~" | "inherit" => Some("Not applied: type the rest of the path"),
+        _ => None,
+    }
+}
+
+/// What the program field shows: the draft while it is what's in effect, else the config's.
+pub(crate) fn program_text(ws: &Workspace) -> String {
+    let current = ws.config.shell.program.as_deref().unwrap_or_default();
+    match ws.drafts.get("program") {
+        Some(d) if d.trim() == current => d.clone(),
+        _ => current.to_string(),
+    }
+}
+
 /// A text field whose shown value and setter come from the workspace.
 fn text(
     ws: &Entity<Workspace>,
@@ -761,11 +804,7 @@ fn folder_kind(ws: &Entity<Workspace>) -> SettingField<SharedString> {
 }
 
 fn program(ws: &Entity<Workspace>) -> SettingField<SharedString> {
-    let field = text(
-        ws,
-        |ws| ws.config.shell.program.clone().unwrap_or_default(),
-        set_program,
-    );
+    let field = text(ws, program_text, set_program);
     reset(
         field,
         ws,
@@ -797,6 +836,7 @@ fn shortcut(
 ) -> SettingField<SharedString> {
     let recording = ws.recording == Some(command);
     let strokes = ws.keymap.keystrokes(command);
+    let ui = ws.theme.ui;
     let handle = entity.clone();
     let field = SettingField::render(move |_: &RenderOptions, _: &mut Window, _: &mut App| {
         let ws = handle.clone();
@@ -810,7 +850,14 @@ fn shortcut(
             .px(px(6.0))
             .py(px(2.0))
             .rounded(px(6.0))
+            .border_1()
+            .border_color(if recording {
+                ui.accent
+            } else {
+                gpui_kit::transparent_black()
+            })
             .cursor_pointer()
+            .hover(move |s| s.bg(ui.hover))
             .map(|el| {
                 if recording {
                     el.child("Press a shortcut…")
@@ -829,15 +876,7 @@ fn shortcut(
     let write = entity.clone();
     field.on_reset(
         move |cx| read.read(cx).config.keys.get(command).is_some(),
-        move |_, cx| {
-            write.update(cx, |ws, cx| {
-                ws.edit(
-                    Edit::remove("keys", command.name()),
-                    |c| c.keys.set(command, None),
-                    cx,
-                )
-            })
-        },
+        move |window, cx| write.update(cx, |ws, cx| ws.reset_shortcut(command, window, cx)),
     )
 }
 
@@ -1035,7 +1074,9 @@ pub(crate) fn pages(ws: &Workspace, entity: &Entity<Workspace>) -> Vec<SettingPa
                         matches!(ws.config.shell.working_directory, WorkingDirectory::Path(_))
                             .then(|| {
                                 SettingItem::new("Folder", text(entity, folder_text, set_folder))
-                                    .description("A path; ~/ is the home folder")
+                                    .description(
+                                        folder_hint(ws).unwrap_or("A path; ~/ is the home folder"),
+                                    )
                             }),
                     ),
                 ),
@@ -1043,7 +1084,7 @@ pub(crate) fn pages(ws: &Workspace, entity: &Entity<Workspace>) -> Vec<SettingPa
         SettingPage::new("Shortcuts").group(SettingGroup::new().items(Command::ALL.map(
             |command| {
                 let item = SettingItem::new(command.title(), shortcut(ws, entity, command))
-                    .keywords(["keys", "keyboard", "binding"]);
+                    .keywords(["shortcuts", "keys", "keyboard", "binding"]);
                 match &ws.key_note {
                     Some(note) if ws.recording == Some(command) => item.description(note.clone()),
                     _ if ws.recording == Some(command) => {
@@ -1107,6 +1148,33 @@ mod tests {
             let c = config::parse(&text).unwrap();
             assert_eq!((c.window.opacity * 100.0).round(), p, "{text}");
         }
+    }
+
+    #[test]
+    fn turning_back_mid_slide_starts_where_the_panel_is() {
+        let start = Instant::now();
+        let opening = Panel {
+            since: start,
+            closing: false,
+        };
+        for quarter in 0..=4 {
+            let now = start + motion::SLIDE * quarter / 4;
+            let closing = opening.reversed(now);
+            assert!(closing.closing);
+            assert!(
+                (closing.shown(now) - opening.shown(now)).abs() < 1e-4,
+                "closing at {quarter}/4"
+            );
+            let later = now + motion::SLIDE / 8;
+            let reopening = closing.reversed(later);
+            assert!(!reopening.closing);
+            assert!(
+                (reopening.shown(later) - closing.shown(later)).abs() < 1e-4,
+                "reopening at {quarter}/4"
+            );
+        }
+        let settled = start + motion::SLIDE * 2;
+        assert_eq!(opening.reversed(settled).shown(settled), 1.0);
     }
 
     #[test]

@@ -63,6 +63,10 @@ same `config.toml`: what one changes, the other shows. Comments in the file are 
 - Clicking a terminal, typing into it, panning and zooming all keep working with the panel open.
 - Esc goes to whatever has the focus. With a terminal focused, it goes to the terminal (vim keeps working), and the
   panel stays open.
+- With the focus in the panel:
+  - the theme picker gets its keys;
+  - every shortcut runs, except copy, paste and close terminal, which act on the focused terminal and wait for it
+    to have the keyboard.
 
 ## Sections and fields
 
@@ -117,13 +121,17 @@ when "i" and "m" advance by the same width at 14 pt, within 0.01 px.
   key becomes the command's only shortcut.
   - Esc cancels.
   - Backspace leaves the command with no shortcut (`[]`).
+  - With Ctrl or Alt held, Esc and Backspace are recorded like other keys.
   - Modifier keys alone are ignored until a main key comes.
+  - A held key's repeats are ignored, so a shortcut just recorded doesn't run while it is still held.
   - Recording is the only state that takes keys before everything else: while recording, no shortcut runs and
     nothing reaches a terminal.
 - **Taken shortcuts:** if the pressed shortcut belongs to another command, the row says "Ctrl+Shift+T is already
   New terminal" and keeps recording.
 - **Several shortcuts:** a command with two shortcuts (zoom in has `Ctrl+=` and `Ctrl++`) gets one after recording.
   "Reset to default" brings back its defaults.
+  - If another command has one of those defaults now, the reset is refused.
+  - A notification says which command has it.
 
 ## How a change applies and is saved
 

@@ -254,13 +254,19 @@ impl Default for Keymap {
 
 /// "ctrl-shift-t" → "Ctrl+Shift+T", as menus show shortcuts.
 pub(crate) fn display(shortcut: &str) -> String {
-    shortcut
-        .split('-')
+    let mut parts: Vec<&str> = shortcut.split('-').collect();
+    // The minus key ("ctrl--") splits into two empty parts.
+    if parts.ends_with(&["", ""]) {
+        parts.truncate(parts.len() - 2);
+        parts.push("-");
+    }
+    parts
+        .iter()
         .map(|part| {
             let mut chars = part.chars();
             match chars.next() {
                 Some(first) => first.to_uppercase().chain(chars).collect(),
-                None => "-".to_string(),
+                None => String::new(),
             }
         })
         .collect::<Vec<_>>()
@@ -375,6 +381,8 @@ mod tests {
     fn shortcuts_display_like_menus() {
         assert_eq!(display("ctrl-shift-t"), "Ctrl+Shift+T");
         assert_eq!(display("cmd-t"), "Cmd+T");
+        assert_eq!(display("ctrl--"), "Ctrl+-", "the minus key");
+        assert_eq!(display("-"), "-");
     }
 
     #[test]
