@@ -1,4 +1,4 @@
-//! config.toml: every setting, typed and validated; polling for changes; saving the theme.
+//! config.toml: every setting, typed and validated; polling for changes; saving edits.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -360,7 +360,8 @@ pub(crate) enum SaveError {
     Broken {
         line: usize,
     },
-    NotATable,
+    /// `table` exists in the file but isn't a table (`theme = "Dracula"`).
+    NotATable(&'static str),
     Io(io::Error),
 }
 
@@ -369,15 +370,42 @@ impl fmt::Display for SaveError {
         match self {
             Self::NoDir => write!(f, "no config folder"),
             Self::Broken { line } => write!(f, "{FILE} has an error on line {line}"),
-            Self::NotATable => write!(f, "`theme` in {FILE} is not a table"),
+            Self::NotATable(table) => write!(f, "`{table}` in {FILE} is not a table"),
             Self::Io(e) => write!(f, "{e}"),
         }
     }
 }
 
-/// Sets `theme.dark` or `theme.light` in `<dir>/config.toml`, keeping everything else (comments
-/// included). Creates the folder and the file; never writes over a file that doesn't parse.
-pub(crate) fn save_theme(dir: &Path, dark: bool, name: &str) -> Result<(), SaveError> {
+/// One change to config.toml: `table.key` set to a value, or removed (back to its default).
+#[derive(Clone, Debug)]
+pub(crate) struct Edit {
+    pub table: &'static str,
+    pub key: &'static str,
+    pub value: Option<toml_edit::Value>,
+}
+
+impl Edit {
+    pub fn set(table: &'static str, key: &'static str, value: impl Into<toml_edit::Value>) -> Self {
+        Self {
+            table,
+            key,
+            value: Some(value.into()),
+        }
+    }
+
+    pub fn remove(table: &'static str, key: &'static str) -> Self {
+        Self {
+            table,
+            key,
+            value: None,
+        }
+    }
+}
+
+/// Applies `edits` to `<dir>/config.toml`, keeping everything else (comments, other keys, line
+/// endings, a byte-order mark). Creates the folder and the file; never writes over a file that
+/// doesn't parse.
+pub(crate) fn save_edits(dir: &Path, edits: &[Edit]) -> Result<(), SaveError> {
     let path = dir.join(FILE);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
@@ -389,12 +417,25 @@ pub(crate) fn save_theme(dir: &Path, dark: bool, name: &str) -> Result<(), SaveE
     let mut doc: DocumentMut = text.parse().map_err(|e| SaveError::Broken {
         line: line_of(&text, &e),
     })?;
-    let theme = doc
-        .entry("theme")
-        .or_insert(toml_edit::table())
-        .as_table_like_mut()
-        .ok_or(SaveError::NotATable)?;
-    theme.insert(if dark { "dark" } else { "light" }, toml_edit::value(name));
+    for edit in edits {
+        match &edit.value {
+            Some(value) => {
+                doc.entry(edit.table)
+                    .or_insert(toml_edit::table())
+                    .as_table_like_mut()
+                    .ok_or(SaveError::NotATable(edit.table))?
+                    .insert(edit.key, toml_edit::Item::Value(value.clone()));
+            }
+            None => {
+                if let Some(table) = doc.get_mut(edit.table) {
+                    table
+                        .as_table_like_mut()
+                        .ok_or(SaveError::NotATable(edit.table))?
+                        .remove(edit.key);
+                }
+            }
+        }
+    }
     // toml_edit writes LF and drops a byte-order mark: put the file's own back.
     let mut out = doc.to_string();
     if crlf {
@@ -405,6 +446,18 @@ pub(crate) fn save_theme(dir: &Path, dark: bool, name: &str) -> Result<(), SaveE
     }
     std::fs::create_dir_all(dir).map_err(SaveError::Io)?;
     std::fs::write(&path, out).map_err(SaveError::Io)
+}
+
+/// Sets `theme.dark` or `theme.light` (the theme picker's choice).
+pub(crate) fn save_theme(dir: &Path, dark: bool, name: &str) -> Result<(), SaveError> {
+    save_edits(
+        dir,
+        &[Edit::set(
+            "theme",
+            if dark { "dark" } else { "light" },
+            name,
+        )],
+    )
 }
 
 /// The commented config.toml that `open_config` writes when there is none. Uncommented, every
@@ -811,5 +864,52 @@ scrollback = 500
         assert_eq!(c.font.family.as_deref(), Some("JetBrains Mono"));
         assert_eq!(c.shell.program.as_deref(), Some("fish"));
         assert_eq!(c.shell.args, ["--login"]);
+    }
+
+    #[test]
+    fn edits_set_create_and_remove_keys() {
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            "# mine\n[font]\nsize = 16\nfamily = \"Iosevka\"\n\n[cursor]\nblink = true # on\n",
+        );
+        save_edits(
+            d.path(),
+            &[
+                Edit::set("font", "size", 20_i64),
+                Edit::remove("font", "family"),
+                Edit::set("terminal", "scrollback", 500_i64),
+                Edit::remove("keys", "copy"),
+            ],
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
+        assert!(text.contains("# mine"), "{text}");
+        assert!(text.contains("size = 20"), "{text}");
+        assert!(!text.contains("family"), "{text}");
+        assert!(text.contains("blink = true # on"), "{text}");
+        assert!(text.contains("[terminal]"), "{text}");
+        assert!(text.contains("scrollback = 500"), "{text}");
+        assert!(
+            !text.contains("[keys]"),
+            "removing from a missing table adds nothing: {text}"
+        );
+        let c = load(Some(d.path())).unwrap();
+        assert_eq!((c.font.size, c.font.family), (20.0, None));
+        assert_eq!(c.terminal.scrollback, 500);
+    }
+
+    #[test]
+    fn an_edit_to_a_non_table_names_it() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "font = 3\n");
+        let err = save_edits(d.path(), &[Edit::set("font", "size", 20_i64)]).unwrap_err();
+        assert_eq!(err.to_string(), "`font` in config.toml is not a table");
+        let err = save_edits(d.path(), &[Edit::remove("font", "size")]).unwrap_err();
+        assert_eq!(err.to_string(), "`font` in config.toml is not a table");
+        assert_eq!(
+            std::fs::read_to_string(d.path().join(FILE)).unwrap(),
+            "font = 3\n"
+        );
     }
 }
