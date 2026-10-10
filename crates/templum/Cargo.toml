@@ -16,9 +16,12 @@ templum-canvas = { path = "../templum-canvas" }
 templum-terminal = { path = "../templum-terminal" }
 # Already in the tree through GPUI: its channel wakes the UI from PTY threads.
 futures = "0.3"
+# Already in the tree: reads theme files and edits config.toml without losing the user's comments.
+toml_edit = "0.25"
 
 [dev-dependencies]
 gpui-kit = { version = "=0.7.1", features = ["test-support"] }
+tempfile = "3"
 
 [lints]
 workspace = true

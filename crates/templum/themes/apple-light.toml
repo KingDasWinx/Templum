@@ -1,0 +1,25 @@
+# Apple Light: Apple's system colors, increased-contrast variants. Written for Templum, MIT.
+
+[colors.primary]
+background = "#ffffff"
+foreground = "#1d1d1f"
+
+[colors.normal]
+black = "#1d1d1f"
+red = "#d70015"
+green = "#248a3d"
+yellow = "#b25000"
+blue = "#0040dd"
+magenta = "#8944ab"
+cyan = "#0071a4"
+white = "#aeaeb2"
+
+[colors.bright]
+black = "#636366"
+red = "#ff3b30"
+green = "#34c759"
+yellow = "#c93400"
+blue = "#007aff"
+magenta = "#af52de"
+cyan = "#32ade6"
+white = "#d1d1d6"

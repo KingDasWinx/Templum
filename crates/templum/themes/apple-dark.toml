@@ -1,0 +1,25 @@
+# Apple Dark: Apple's system colors (dark appearance). Written for Templum, MIT.
+
+[colors.primary]
+background = "#1e1e20"
+foreground = "#e5e5e7"
+
+[colors.normal]
+black = "#3a3a3c"
+red = "#ff453a"
+green = "#30d158"
+yellow = "#ffd60a"
+blue = "#0a84ff"
+magenta = "#bf5af2"
+cyan = "#64d2ff"
+white = "#d1d1d6"
+
+[colors.bright]
+black = "#636366"
+red = "#ff6961"
+green = "#30db5b"
+yellow = "#ffd426"
+blue = "#409cff"
+magenta = "#da8fff"
+cyan = "#70d7ff"
+white = "#f2f2f7"
