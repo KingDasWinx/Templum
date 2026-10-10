@@ -12,6 +12,7 @@ use templum_terminal::{CursorShape, CursorStyle, TermOptions};
 
 use toml_edit::{DocumentMut, TomlError};
 
+use crate::keys::{Keymap, KeysConfig};
 use crate::theme::{self, DEFAULT_DARK, DEFAULT_LIGHT};
 
 pub(crate) const FILE: &str = "config.toml";
@@ -30,6 +31,7 @@ pub(crate) struct Config {
     pub shell: Shell,
     pub cursor: Cursor,
     pub terminal: TerminalConfig,
+    pub keys: KeysConfig,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -279,6 +281,8 @@ pub(crate) fn parse(text: &str) -> Result<Config, String> {
         "0 and 100000",
         scrollback.to_string(),
     )?;
+    // Shortcuts are part of the file's validity: an invalid one keeps the last valid config.
+    Keymap::new(&config.keys, cfg!(target_os = "macos"))?;
     Ok(config)
 }
 
@@ -647,5 +651,18 @@ scrollback = 500
         std::fs::write(&tmp, "[font]\nsize = 16\n").unwrap();
         std::fs::rename(&tmp, d.path().join(FILE)).unwrap();
         assert_ne!(Stamp::of(Some(d.path())), before);
+    }
+
+    #[test]
+    fn keys_are_read_and_validated() {
+        let c = parse("[keys]\nnew_terminal = \"ctrl-alt-n\"\nfit_all = [\"f11\"]\n").unwrap();
+        assert_eq!(
+            c.keys.new_terminal,
+            Some(crate::keys::Keys::One("ctrl-alt-n".into()))
+        );
+        let err = parse("[keys]\nnew_terminal = \"ctrl-shft-t\"\n").unwrap_err();
+        assert!(err.contains("new_terminal"), "{err}");
+        let err = parse("[keys]\nnew_tab = \"ctrl-t\"\n").unwrap_err();
+        assert!(err.contains("new_tab"), "unknown action: {err}");
     }
 }
