@@ -134,7 +134,8 @@ pub struct Workspace {
     _flush: Vec<Subscription>,
     /// Installed monospaced families, measured when the settings panel opens.
     pub(crate) fonts: Vec<SharedString>,
-    /// What the user typed in the panel's text fields that can't apply yet (an unclosed quote).
+    /// What the user typed in the panel's text fields that can't apply yet (an unclosed quote),
+    /// by the config key it is for.
     pub(crate) drafts: HashMap<&'static str, String>,
     /// When the quit shortcut was pressed once: a second press soon after quits.
     quit_armed: Option<Instant>,
@@ -146,6 +147,8 @@ pub struct Workspace {
     pub(crate) recording: Option<Command>,
     /// Why the last key pressed while recording wasn't taken.
     pub(crate) key_note: Option<String>,
+    /// Shortcut resets asked for in this event ("Reset All" asks for several), decided together.
+    resetting: Vec<Command>,
     /// The block under the pointer: it shows its close button and resize grip.
     pub(crate) hovered: Option<BlockId>,
     /// The open theme picker.
@@ -288,6 +291,7 @@ impl Workspace {
             settings_focus: cx.focus_handle(),
             recording: None,
             key_note: None,
+            resetting: Vec::new(),
             hovered: None,
             picker: None,
             appearing: HashMap::new(),
@@ -494,6 +498,10 @@ impl Workspace {
         change: impl FnOnce(&mut Config),
         cx: &mut Context<Self>,
     ) {
+        // Back to the default: what was half-typed for the key goes too (drafts are keyed by it).
+        if edit.value.is_none() && self.drafts.remove(edit.key).is_some() {
+            cx.notify();
+        }
         let current = self.pending.as_ref().unwrap_or(&self.config);
         let mut config = current.clone();
         change(&mut config);
@@ -642,17 +650,27 @@ impl Workspace {
     pub(crate) fn choose_theme(&mut self, i: usize, cx: &mut Context<Self>) {
         self.preview_theme(i, cx);
         let name = self.theme.name.clone();
-        if self.dark {
-            self.config.theme.dark = name.clone();
-        } else {
-            self.config.theme.light = name.clone();
+        let key = if self.dark { "dark" } else { "light" };
+        for config in [Some(&mut self.config), self.pending.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            if self.dark {
+                config.theme.dark = name.clone();
+            } else {
+                config.theme.light = name.clone();
+            }
         }
         let saved = match &self.config_dir {
             Some(dir) => config::save_theme(dir, self.dark, &name),
             None => Err(config::SaveError::NoDir),
         };
         match saved {
-            Ok(()) => self.picker = None,
+            Ok(()) => {
+                // A panel change of the same theme, not written yet, would write over this choice.
+                self.unsaved.retain(|e| (e.table, e.key) != ("theme", key));
+                self.picker = None;
+            }
             Err(err) => {
                 eprintln!("templum: couldn't save the theme: {err}");
                 if let Some(picker) = &mut self.picker {
@@ -782,35 +800,52 @@ impl Workspace {
         cx.notify();
     }
 
-    /// "Reset to default" of a shortcut: refused while another command has one of its defaults,
-    /// which would then be set twice.
+    /// "Reset to default" of a shortcut. "Reset All" asks for several in one go, so they are
+    /// decided together once the event is over.
     pub(crate) fn reset_shortcut(
         &mut self,
         command: Command,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.resetting.push(command);
+        if self.resetting.len() == 1 {
+            cx.defer_in(window, |ws, window, cx| ws.finish_resets(window, cx));
+        }
+    }
+
+    /// A reset is refused while a command that keeps its shortcuts has one of the defaults, which
+    /// would then be set twice. Commands reset together may trade keys (their defaults differ).
+    fn finish_resets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let macos = cfg!(target_os = "macos");
-        // The pending config: "Reset All" resets several in one go.
+        let mut resetting = std::mem::take(&mut self.resetting);
         let keys = &self.pending.as_ref().unwrap_or(&self.config).keys;
         let (keymap, _) = Keymap::new(keys, macos).expect("config::parse validated the shortcuts");
-        for default in command.defaults(macos) {
-            let typed = Keystroke::parse(default).expect("the default shortcuts parse");
-            if let Some(owner) = keymap.command(&typed).filter(|o| *o != command) {
-                let message = format!(
-                    "Not reset: {} is {} now",
-                    keys::display(default),
-                    owner.title()
-                );
-                show_notification(window, cx, Notification::warning(message));
-                return;
-            }
+        // Refusing one can make another's default stay taken: repeat until nothing changes.
+        while let Some((i, owner, default)) = resetting.iter().enumerate().find_map(|(i, c)| {
+            c.defaults(macos).iter().find_map(|default| {
+                let typed = Keystroke::parse(default).expect("the default shortcuts parse");
+                keymap
+                    .command(&typed)
+                    .filter(|owner| owner != c && !resetting.contains(owner))
+                    .map(|owner| (i, owner, *default))
+            })
+        }) {
+            resetting.remove(i);
+            let message = format!(
+                "Not reset: {} is {} now",
+                keys::display(default),
+                owner.title()
+            );
+            show_notification(window, cx, Notification::warning(message));
         }
-        self.edit(
-            Edit::remove("keys", command.name()),
-            |c| c.keys.set(command, None),
-            cx,
-        );
+        for command in resetting {
+            self.edit(
+                Edit::remove("keys", command.name()),
+                |c| c.keys.set(command, None),
+                cx,
+            );
+        }
     }
 
     fn set_shortcut(&mut self, command: Command, keys: Keys, cx: &mut Context<Self>) {
@@ -3087,6 +3122,69 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn a_theme_picked_right_after_a_panel_change_is_the_one_saved(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        ws.update(cx, |ws, cx| {
+            ws.edit(
+                Edit::set("theme", "light", "One Light"),
+                |c| c.theme.light = "One Light".into(),
+                cx,
+            )
+        });
+        frame(handle, cx);
+        // The picker, before the panel's change is written.
+        ws.update(cx, |ws, cx| {
+            ws.choose_theme(builtin_index("Apple Light"), cx)
+        });
+        frame(handle, cx);
+        ws.update(cx, |ws, _| ws.save());
+        let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(text.contains("light = \"Apple Light\""), "{text}");
+        ws.read_with(cx, |ws, _| assert_eq!(ws.config.theme.light, "Apple Light"));
+    }
+
+    #[gpui_kit::test]
+    fn a_reset_or_another_folder_choice_drops_what_was_typed(cx: &mut TestAppContext) {
+        use crate::settings::{
+            args_error, args_text, folder_hint, folder_text, set_args, set_folder, set_folder_kind,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        ws.update(cx, |ws, cx| set_args(ws, "--login \"a b", cx));
+        frame(handle, cx);
+        // What the field's "reset to default" does.
+        ws.update(cx, |ws, cx| {
+            ws.edit(Edit::remove("shell", "args"), |c| c.shell.args.clear(), cx)
+        });
+        frame(handle, cx);
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(args_text(ws), "");
+            assert_eq!(args_error(ws), None);
+        });
+        // "~" typed, then Home chosen, then "A folder…" again (it starts at the home folder).
+        let steps: [fn(&mut Workspace, &mut Context<Workspace>); 4] = [
+            |ws, cx| set_folder_kind(ws, "folder", cx),
+            |ws, cx| set_folder(ws, "~", cx),
+            |ws, cx| set_folder_kind(ws, "home", cx),
+            |ws, cx| set_folder_kind(ws, "folder", cx),
+        ];
+        for step in steps {
+            ws.update(cx, step);
+            frame(handle, cx);
+        }
+        let home = std::env::home_dir().unwrap().display().to_string();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(
+                folder_text(ws),
+                home,
+                "the folder in effect, not the old \"~\""
+            );
+            assert_eq!(folder_hint(ws), None);
+        });
+    }
+
+    #[gpui_kit::test]
     fn the_default_font_removes_the_family(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
@@ -3571,6 +3669,33 @@ mod tests {
             assert!(ws.quit_armed.is_none(), "the second one quits")
         });
         assert_eq!(notification_count(handle, cx), 1, "no second warning");
+    }
+
+    #[gpui_kit::test]
+    fn reset_all_untangles_shortcuts_that_traded_keys(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let macos = cfg!(target_os = "macos");
+        let new = Command::NewTerminal.defaults(macos)[0];
+        let close = Command::CloseTerminal.defaults(macos)[0];
+        write_config(
+            dir.path(),
+            &format!("[keys]\nnew_terminal = \"{close}\"\nclose_terminal = \"{new}\"\n"),
+        );
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        // "Reset All" calls each row's reset in one go, with no frame between them.
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.reset_shortcut(Command::NewTerminal, window, cx);
+                ws.reset_shortcut(Command::CloseTerminal, window, cx);
+            })
+        })
+        .unwrap();
+        frame(handle, cx);
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.config.keys.new_terminal, None);
+            assert_eq!(ws.config.keys.close_terminal, None);
+        });
+        assert_eq!(notification_count(handle, cx), 0, "nothing refused");
     }
 
     #[gpui_kit::test]

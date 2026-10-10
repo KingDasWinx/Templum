@@ -690,6 +690,8 @@ pub(crate) fn args_error(ws: &Workspace) -> Option<&'static str> {
 
 /// The start folder dropdown: "inherit", "home" or "folder" (the home folder's path, to edit).
 pub(crate) fn set_folder_kind(ws: &mut Workspace, kind: &str, cx: &mut Context<Workspace>) {
+    // What was typed in the folder field belongs to the choice being left.
+    ws.drafts.remove("working_directory");
     let (value, wd) = match kind {
         "home" => ("~".to_string(), WorkingDirectory::Home),
         "folder" => {
@@ -713,7 +715,7 @@ pub(crate) fn set_folder_kind(ws: &mut Workspace, kind: &str, cx: &mut Context<W
 /// The folder field. "~" and "inherit" alone would switch the dropdown to Home or Inherit and
 /// hide the field mid-typing: they wait for the rest of the path.
 pub(crate) fn set_folder(ws: &mut Workspace, text: &str, cx: &mut Context<Workspace>) {
-    ws.drafts.insert("folder", text.to_string());
+    ws.drafts.insert("working_directory", text.to_string());
     if matches!(text, "" | "~" | "inherit") {
         cx.notify();
         return;
@@ -728,7 +730,7 @@ pub(crate) fn set_folder(ws: &mut Workspace, text: &str, cx: &mut Context<Worksp
 
 pub(crate) fn folder_text(ws: &Workspace) -> String {
     let current = &ws.config.shell.working_directory;
-    match ws.drafts.get("folder") {
+    match ws.drafts.get("working_directory") {
         Some(d)
             if matches!(d.as_str(), "" | "~" | "inherit")
                 || WorkingDirectory::from(d.clone()) == *current =>
@@ -744,7 +746,7 @@ pub(crate) fn folder_text(ws: &Workspace) -> String {
 
 /// Why the folder field's text isn't in effect yet (see `set_folder`).
 pub(crate) fn folder_hint(ws: &Workspace) -> Option<&'static str> {
-    match ws.drafts.get("folder")?.as_str() {
+    match ws.drafts.get("working_directory")?.as_str() {
         "" => Some("Not applied: type a path"),
         "~" | "inherit" => Some("Not applied: type the rest of the path"),
         _ => None,

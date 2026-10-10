@@ -121,7 +121,7 @@ when "i" and "m" advance by the same width at 14 pt, within 0.01 px.
   key becomes the command's only shortcut.
   - Esc cancels.
   - Backspace leaves the command with no shortcut (`[]`).
-  - With Ctrl or Alt held, Esc and Backspace are recorded like other keys.
+  - With Ctrl, Alt or Super (Cmd) held, Esc and Backspace are recorded like other keys.
   - Modifier keys alone are ignored until a main key comes.
   - A held key's repeats are ignored, so a shortcut just recorded doesn't run while it is still held.
   - Recording is the only state that takes keys before everything else: while recording, no shortcut runs and
@@ -132,6 +132,7 @@ when "i" and "m" advance by the same width at 14 pt, within 0.01 px.
   "Reset to default" brings back its defaults.
   - If another command has one of those defaults now, the reset is refused.
   - A notification says which command has it.
+  - "Reset All" decides its resets together, so two commands that traded keys both get their defaults back.
 
 ## How a change applies and is saved
 
