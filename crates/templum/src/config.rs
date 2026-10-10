@@ -452,10 +452,10 @@ pub(crate) fn save_edits(dir: &Path, edits: &[Edit]) -> Result<(), SaveError> {
     write_whole(&path, &out).map_err(SaveError::Io)
 }
 
-/// Writes a temporary file beside `path` and renames it over: a crash mid-write never leaves half
-/// a file. A linked file (from a dotfiles repository) stays linked: the file it points at is the
+/// Writes `text` to `path` whole: a temporary file beside it, renamed over it, so a crash
+/// mid-write never leaves half a file. A linked file (from a dotfiles repository) stays linked: the file it points at is the
 /// one replaced, with its permissions. A read-only file is left alone, as a plain write would.
-fn write_whole(path: &Path, text: &str) -> io::Result<()> {
+pub(crate) fn write_whole(path: &Path, text: &str) -> io::Result<()> {
     let target = match std::fs::canonicalize(path) {
         Ok(target) => target,
         // A link to a file not made yet: make it where the link points.
@@ -464,14 +464,17 @@ fn write_whole(path: &Path, text: &str) -> io::Result<()> {
             Err(_) => path.to_path_buf(),
         },
     };
+    let name = target
+        .file_name()
+        .map_or_else(|| FILE.to_string(), |n| n.to_string_lossy().into_owned());
     let old = std::fs::metadata(&target).ok();
     if old.as_ref().is_some_and(|m| m.permissions().readonly()) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            format!("{FILE} is read-only"),
+            format!("{name} is read-only"),
         ));
     }
-    let tmp = target.with_file_name(format!(".{FILE}.tmp"));
+    let tmp = target.with_file_name(format!(".{name}.tmp"));
     let written = (|| {
         let mut file = std::fs::File::create(&tmp)?;
         io::Write::write_all(&mut file, text.as_bytes())?;
@@ -745,6 +748,19 @@ mod tests {
         let link = std::fs::symlink_metadata(dir.join(FILE)).unwrap();
         assert!(link.file_type().is_symlink(), "still a link");
         assert!(std::fs::read_to_string(&real).unwrap().contains("One Dark"));
+    }
+
+    #[test]
+    fn any_file_is_written_whole_and_named_in_errors() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("default.json");
+        write_whole(&path, "{}").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        let err = write_whole(&path, "[]").unwrap_err();
+        assert_eq!(err.to_string(), "default.json is read-only");
     }
 
     #[test]
