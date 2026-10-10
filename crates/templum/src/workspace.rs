@@ -393,7 +393,13 @@ impl Workspace {
     fn poll_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let stamp = config::Stamp::of(self.config_dir.as_deref());
         if stamp != self.config_stamp {
-            self.config_stamp = stamp;
+            // The panel's unsaved changes go in first: saving re-reads the file, so the reload
+            // brings back both them and what changed by hand. If the file still doesn't parse,
+            // the reload says so.
+            if !self.unsaved.is_empty() {
+                self.save();
+            }
+            self.config_stamp = config::Stamp::of(self.config_dir.as_deref());
             self.reload_config(window, cx);
         }
     }
@@ -480,8 +486,8 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Writes the unsaved settings changes to config.toml. If that fails they stay in effect,
-    /// unsaved, and the message is returned and kept for the panel's footer.
+    /// Writes the unsaved settings changes to config.toml. If that fails they stay in effect and
+    /// unsaved, for the next try, and the message is returned and kept for the panel's footer.
     fn save(&mut self) -> Option<String> {
         let edits = std::mem::take(&mut self.unsaved);
         // No config folder: changes last until Templum quits (the panel's footer says so).
@@ -499,6 +505,7 @@ impl Workspace {
             Err(err) => {
                 let message = format!("Not saved: {err}");
                 eprintln!("templum: {message}");
+                self.unsaved = edits;
                 self.save_error = Some(message.clone());
                 Some(message)
             }
@@ -2560,7 +2567,10 @@ mod tests {
         });
         assert_eq!(notification_count(handle, cx), 1);
         write_config(dir.path(), "[cursor]\nblink = true\n");
-        reload(handle, &ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.poll_config(window, cx))
+        })
+        .unwrap();
         ws.read_with(cx, |ws, _| assert_eq!(ws.save_error, None, "fixed"));
     }
 
@@ -2753,5 +2763,43 @@ mod tests {
         })
         .unwrap();
         assert_eq!(scrollback(cx), 19_000, "a step applies at once");
+    }
+
+    #[gpui_kit::test]
+    fn a_change_made_while_the_file_is_broken_is_saved_once_it_is_fixed(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        write_config(dir.path(), "fnot = = 1\n");
+        ws.update(cx, |ws, cx| {
+            ws.edit(
+                Edit::set("cursor", "blink", true),
+                |c| c.cursor.blink = true,
+                cx,
+            )
+        });
+        frame(handle, cx);
+        ws.update(cx, |ws, _| {
+            assert!(ws.save().is_some(), "the file is broken")
+        });
+        // The user fixes the file, with something else in it; the poll notices.
+        write_config(dir.path(), "[cursor]\nshape = \"bar\"\n");
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.poll_config(window, cx))
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.config.cursor.blink, "the panel's change survived");
+            assert_eq!(
+                ws.config.cursor.shape,
+                crate::config::Shape::Bar,
+                "and the fix applied"
+            );
+            assert_eq!(ws.save_error, None);
+        });
+        let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(
+            text.contains("blink = true") && text.contains("shape = \"bar\""),
+            "{text}"
+        );
     }
 }
