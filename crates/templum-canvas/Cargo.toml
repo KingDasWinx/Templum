@@ -1,0 +1,12 @@
+[package]
+name = "templum-canvas"
+description = "Geometry and interaction logic of Templum's infinite canvas."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
