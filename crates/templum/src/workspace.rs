@@ -3013,7 +3013,7 @@ mod tests {
 
     use crate::keys::{Command, Keys};
 
-    /// Opens the panel and starts recording `command`'s shortcut.
+    /// Opens the panel (unless it is open) and starts recording `command`'s shortcut.
     fn start_recording(
         handle: AnyWindowHandle,
         ws: &Entity<Workspace>,
@@ -3022,7 +3022,10 @@ mod tests {
     ) {
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
-            window.press(SETTINGS, cx);
+            // Pressed again, the shortcut would close the panel.
+            if !ws.read(cx).settings.as_ref().is_some_and(|p| !p.closing) {
+                window.press(SETTINGS, cx);
+            }
             window.render_frame(cx);
             ws.update(cx, |ws, cx| ws.record(command, window, cx));
             window.render_frame(cx);
