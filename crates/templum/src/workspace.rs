@@ -112,6 +112,13 @@ pub struct Workspace {
     pub(crate) data_dir: Option<PathBuf>,
     /// The canvas as last read or written, to write only what changed.
     saved: Option<session::Saved>,
+    /// Counts snapshots: a write older than the last one done is dropped (session::save).
+    generation: u64,
+    /// A background snapshot is reading or writing: the next waits for the next period.
+    snapshotting: bool,
+    /// The last canvas write failed (and said so); the next good one says it works again.
+    canvas_save_failed: bool,
+    _snapshots: Task<()>,
     pub(crate) themes: Vec<Entry>,
     /// The system's appearance.
     dark: bool,
@@ -241,6 +248,17 @@ impl Workspace {
                 }
             }
         });
+        let snapshots = cx.spawn_in(window, async move |ws, cx| {
+            loop {
+                cx.background_executor().timer(session::EVERY).await;
+                if ws
+                    .update_in(cx, |ws, window, cx| ws.snapshot(window, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
         let translucent = config.window.translucent();
         cx.observe_window_appearance(window, |ws, window, cx| {
             ws.set_dark(is_dark(window.appearance()), cx)
@@ -257,9 +275,11 @@ impl Workspace {
         let flush = vec![
             cx.on_release(|ws, _| {
                 ws.save();
+                ws.save_canvas_now();
             }),
             cx.on_app_quit(|ws, _| {
                 ws.save();
+                ws.save_canvas_now();
                 async {}
             }),
         ];
@@ -283,6 +303,10 @@ impl Workspace {
             config_dir,
             data_dir,
             saved: None,
+            generation: 0,
+            snapshotting: false,
+            canvas_save_failed: false,
+            _snapshots: snapshots,
             themes,
             dark,
             theme,
@@ -438,6 +462,94 @@ impl Workspace {
             show_notification(window, cx, Notification::warning(message));
         }
         self.saved = Some(saved);
+    }
+
+    /// The canvas as a snapshot needs it: rects and process ids, cheap on the UI thread.
+    fn layout(&self) -> session::Layout {
+        let blocks = self.canvas.blocks();
+        session::Layout {
+            camera: self.canvas.camera,
+            blocks: blocks
+                .iter()
+                .map(|b| (b.rect, self.terminals[&b.id].term.processes()))
+                .collect(),
+            focused: self
+                .focused
+                .and_then(|id| blocks.iter().position(|b| b.id == id)),
+        }
+    }
+
+    /// Every session::EVERY: reads the processes and writes the file in the background, when the
+    /// snapshot differs from the last one written.
+    fn snapshot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dir) = self.data_dir.clone() else {
+            return;
+        };
+        if self.snapshotting {
+            return;
+        }
+        self.snapshotting = true;
+        self.generation += 1;
+        let (layout, generation, last) = (self.layout(), self.generation, self.saved.clone());
+        cx.spawn_in(window, async move |ws, cx| {
+            let done = cx
+                .background_executor()
+                .spawn(async move {
+                    let saved = layout.snapshot();
+                    let written = (last.as_ref() != Some(&saved))
+                        .then(|| session::save(&dir, &saved, generation));
+                    (saved, written)
+                })
+                .await;
+            ws.update_in(cx, |ws, window, cx| ws.snapshot_done(done, window, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    fn snapshot_done(
+        &mut self,
+        (saved, written): (session::Saved, Option<std::io::Result<()>>),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.snapshotting = false;
+        match written {
+            None => {}
+            Some(Ok(())) => {
+                if std::mem::take(&mut self.canvas_save_failed) {
+                    show_notification(
+                        window,
+                        cx,
+                        Notification::info("The canvas is saved again".to_string()),
+                    );
+                }
+                self.saved = Some(saved);
+            }
+            Some(Err(err)) => {
+                eprintln!("templum: couldn't save the canvas: {err}");
+                if !std::mem::replace(&mut self.canvas_save_failed, true) {
+                    let message = format!("Couldn't save the canvas: {err}");
+                    show_notification(window, cx, Notification::error(message));
+                }
+            }
+        }
+    }
+
+    /// When the window closes or Templum quits: the last snapshot, read and written at once.
+    fn save_canvas_now(&mut self) {
+        let Some(dir) = self.data_dir.clone() else {
+            return;
+        };
+        self.generation += 1;
+        let saved = self.layout().snapshot();
+        if self.saved.as_ref() == Some(&saved) {
+            return;
+        }
+        match session::save(&dir, &saved, self.generation) {
+            Ok(()) => self.saved = Some(saved),
+            Err(err) => eprintln!("templum: couldn't save the canvas: {err}"),
+        }
     }
 
     /// A saved rect made safe: None with a number that isn't finite; its size kept between the
@@ -4015,5 +4127,108 @@ mod tests {
             assert_eq!(ws.canvas.blocks().len(), 1, "as on a first run");
         });
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    /// One snapshot period, with the background read-and-write finished.
+    fn tick(cx: &mut TestAppContext) {
+        cx.executor().advance_clock(crate::session::EVERY);
+        cx.run_until_parked();
+    }
+
+    #[gpui_kit::test]
+    fn the_canvas_comes_back_as_it_was_left(cx: &mut TestAppContext) {
+        let data = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open(Rect::new(900.0, 40.0, 600.0, 400.0), window, cx);
+                let first = ws.canvas.blocks()[0].id;
+                ws.canvas.get_mut(first).unwrap().rect = Rect::new(-50.0, 60.0, 700.0, 450.0);
+                ws.focus_block(first, window, cx);
+                ws.canvas.camera = Camera::at(Point::new(-40.0, 25.0), 1.25);
+                ws.save_canvas_now();
+            })
+        })
+        .unwrap();
+        let before = ws.read_with(cx, |ws, _| {
+            let blocks = ws.canvas.blocks();
+            let focused = blocks.iter().position(|b| Some(b.id) == ws.focused);
+            (blocks.iter().map(|b| b.rect).collect::<Vec<_>>(), focused)
+        });
+        let (_, again) = open_in(cx, None, Some(data.path().to_path_buf()));
+        again.read_with(cx, |ws, _| {
+            let blocks = ws.canvas.blocks();
+            assert_eq!(blocks.iter().map(|b| b.rect).collect::<Vec<_>>(), before.0);
+            assert_eq!(
+                blocks.iter().position(|b| Some(b.id) == ws.focused),
+                before.1
+            );
+            assert_eq!(ws.canvas.camera.origin, Point::new(-40.0, 25.0));
+            assert_eq!(ws.canvas.camera.zoom(), 1.25);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn snapshots_write_only_what_changed(cx: &mut TestAppContext) {
+        let data = tempfile::tempdir().unwrap();
+        let path = crate::session::path(data.path());
+        let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        tick(cx);
+        assert!(path.exists(), "the first snapshot is written");
+        std::fs::remove_file(&path).unwrap();
+        tick(cx);
+        assert!(!path.exists(), "nothing changed: nothing written");
+        ws.update(cx, |ws, _| ws.canvas.camera.pan_by(Point::new(30.0, 0.0)));
+        tick(cx);
+        assert!(path.exists(), "a pan is a change");
+    }
+
+    #[gpui_kit::test]
+    fn a_failing_canvas_write_says_so_once_and_recovers(cx: &mut TestAppContext) {
+        let data = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        // A file where the workspaces folder should be: every write fails.
+        let blocker = data.path().join("workspaces");
+        std::fs::write(&blocker, "").unwrap();
+        let pan = |cx: &mut TestAppContext| {
+            ws.update(cx, |ws, _| ws.canvas.camera.pan_by(Point::new(10.0, 0.0)))
+        };
+        pan(cx);
+        tick(cx);
+        assert_eq!(notification_count(handle, cx), 1, "said once");
+        // Still failing: retried every period without saying so again (the first hides after 5 s).
+        for _ in 0..3 {
+            pan(cx);
+            tick(cx);
+        }
+        assert_eq!(notification_count(handle, cx), 0, "not again");
+        std::fs::remove_file(&blocker).unwrap();
+        tick(cx);
+        assert!(crate::session::path(data.path()).exists(), "retried");
+        assert_eq!(notification_count(handle, cx), 1, "and says it works again");
+    }
+
+    #[gpui_kit::test]
+    fn closing_the_window_saves_the_canvas(cx: &mut TestAppContext) {
+        let data = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        ws.update(cx, |ws, _| {
+            let first = ws.canvas.blocks()[0].id;
+            ws.canvas.get_mut(first).unwrap().rect = Rect::new(-500.0, 0.0, 700.0, 450.0);
+        });
+        // The test's handle would keep the workspace alive.
+        drop(ws);
+        cx.update_window(handle, |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+        let text = std::fs::read_to_string(crate::session::path(data.path())).unwrap();
+        assert!(text.contains("-500.0"), "{text}");
+    }
+
+    #[gpui_kit::test]
+    fn without_a_data_folder_nothing_is_kept(cx: &mut TestAppContext) {
+        let (_, ws) = open(cx);
+        tick(cx);
+        ws.read_with(cx, |ws, _| assert_eq!(ws.saved, None));
     }
 }
