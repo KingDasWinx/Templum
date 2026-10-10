@@ -1920,6 +1920,9 @@ mod tests {
             window.render_frame(cx);
             window.press(CLOSE, cx);
             window.render_frame(cx);
+            // Checked right after the frame that drew it: the ghost lives 0.18 s, and a slow
+            // machine may spend longer than that on the clicks below.
+            assert_eq!(ws.read(cx).ghosts.len(), 1);
             // A double click where the ghost is reaches the canvas: a terminal opens there.
             let at = window.find(("ghost", n)).bounds().center();
             let at = (f32::from(at.x), f32::from(at.y));
@@ -1933,7 +1936,6 @@ mod tests {
                 1,
                 "the click went through the ghost"
             );
-            assert_eq!(ws.ghosts.len(), 1);
         });
         std::thread::sleep(crate::motion::CLOSE + std::time::Duration::from_millis(50));
         cx.update_window(handle, |_, window, cx| window.render_frame(cx))
