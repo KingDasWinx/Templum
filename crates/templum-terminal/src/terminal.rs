@@ -95,7 +95,8 @@ impl EventListener for Listener {
                 *s.title.lock().unwrap() = None;
                 s.wake();
             }
-            Event::ChildExit(_) | Event::Exit => {
+            // Exit comes after the child's last output has been read (ChildExit comes before).
+            Event::Exit => {
                 s.exited.store(true, Ordering::Release);
                 s.wake();
             }
@@ -413,6 +414,20 @@ mod tests {
         shared.pending.store(false, Ordering::Release); // what Terminal::rearm does
         shared.wake();
         assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn exited_waits_for_the_last_output() {
+        // alacritty sends ChildExit before it reads the child's last output, and Exit after.
+        let (_, shared) = headless(10, 2);
+        let listener = Listener(shared.clone());
+        listener.send_event(Event::ChildExit(std::process::ExitStatus::default()));
+        assert!(
+            !shared.exited.load(Ordering::Acquire),
+            "output may still be unread"
+        );
+        listener.send_event(Event::Exit);
+        assert!(shared.exited.load(Ordering::Acquire));
     }
 
     #[test]
