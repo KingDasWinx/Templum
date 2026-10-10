@@ -683,4 +683,109 @@ mod tests {
             assert_eq!(ws.focused, None);
         });
     }
+
+    fn first_id(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> templum_canvas::BlockId {
+        ws.read_with(cx, |ws, _| ws.canvas.top().unwrap())
+    }
+
+    #[gpui_kit::test]
+    fn double_click_on_empty_canvas_opens_a_terminal(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            click(window, cx, (40.0, 40.0), 1);
+            click(window, cx, (40.0, 40.0), 2);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.canvas.blocks().len(), 2);
+            let new = ws.canvas.get(ws.canvas.top().unwrap()).unwrap();
+            assert_eq!((new.rect.x, new.rect.y), (40.0, 40.0));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn close_button_removes_the_block(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(("close", id.0 as usize), cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert!(ws.canvas.blocks().is_empty()));
+    }
+
+    #[gpui_kit::test]
+    fn dragging_the_title_moves_the_block(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        let before = ws.read_with(cx, |ws, _| ws.canvas.get(id).unwrap().rect);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let from = window.find(("title", id.0 as usize)).bounds().center();
+            window.drag(from, point(from.x + px(100.), from.y + px(50.)), cx);
+        })
+        .unwrap();
+        let after = ws.read_with(cx, |ws, _| ws.canvas.get(id).unwrap().rect);
+        assert_eq!((after.x - before.x, after.y - before.y), (100.0, 50.0));
+        assert_eq!((after.w, after.h), (before.w, before.h));
+    }
+
+    #[gpui_kit::test]
+    fn dragging_the_handle_resizes_block_and_terminal(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        let (before, cell) =
+            ws.read_with(cx, |ws, _| (ws.canvas.get(id).unwrap().rect, ws.cell.size));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let from = window.find(("handle", id.0 as usize)).bounds().center();
+            let to = point(from.x + px(cell.w * 10.0), from.y + px(cell.h * 3.0));
+            window.drag(from, to, cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            let rect = ws.canvas.get(id).unwrap().rect;
+            assert!(rect.w > before.w && rect.h > before.h);
+            let expected = templum_canvas::chrome::grid_size(
+                templum_canvas::chrome::content_rect(rect).size(),
+                cell,
+            );
+            assert_eq!(ws.terminals[&id].term.grid_size(), expected);
+            assert_eq!(
+                expected,
+                (super::DEFAULT_COLS + 10, super::DEFAULT_ROWS + 3)
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn wheel_on_empty_canvas_pans_and_ctrl_wheel_zooms(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            wheel(
+                window,
+                cx,
+                (30.0, 30.0),
+                ScrollDelta::Pixels(point(px(0.), px(100.))),
+                false,
+            );
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.canvas.camera.origin.y, -100.0));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            wheel(
+                window,
+                cx,
+                (30.0, 30.0),
+                ScrollDelta::Lines(point(0.0, 1.0)),
+                true,
+            );
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.canvas.camera.zoom(), 1.1));
+    }
 }
