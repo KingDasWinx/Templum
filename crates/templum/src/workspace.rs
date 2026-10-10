@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -14,13 +15,15 @@ use gpui_kit::{
     App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler, EntityInputHandler,
     FocusHandle, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, PinchEvent, Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent, Task,
-    UTF16Selection, Window, actions, canvas, div, px, rgb,
+    UTF16Selection, Window, WindowAppearance, actions, canvas, div, px,
 };
 use templum_canvas::{BlockId, Canvas, Gesture, Point, Rect, Size, chrome};
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
 use crate::block;
-use crate::grid::CellMetrics;
+use crate::config::{self, ThemeNames};
+use crate::grid::{CellMetrics, hsla};
+use crate::theme::{self, Entry, Theme};
 
 actions!(
     templum,
@@ -38,8 +41,6 @@ actions!(
 
 pub(crate) const DEFAULT_COLS: u16 = 80;
 pub(crate) const DEFAULT_ROWS: u16 = 24;
-const BACKGROUND: u32 = 0x0e0e12;
-const HINT_COLOR: u32 = 0x6b6b6b;
 #[cfg(target_os = "macos")]
 const HINT: &str = "Double-click or press Cmd+T to open a terminal";
 #[cfg(not(target_os = "macos"))]
@@ -119,16 +120,24 @@ pub struct Workspace {
     /// True until the user first moves the camera or touches a block: meanwhile the startup
     /// terminal stays centered, since tiling compositors resize the window after it opens.
     pub(crate) pristine: bool,
+    pub(crate) themes: Vec<Entry>,
+    theme_names: ThemeNames,
+    /// The system's appearance.
+    dark: bool,
+    /// What everything is drawn with.
+    pub(crate) theme: Rc<Theme>,
     _wake: Task<()>,
 }
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::with_command(None, window, cx)
+        Self::with(None, config::dir(), window, cx)
     }
 
-    pub fn with_command(
+    /// `command`: program for new terminals instead of the login shell (tests).
+    pub fn with(
         command: Option<(String, Vec<String>)>,
+        config_dir: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -146,6 +155,15 @@ impl Workspace {
         });
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
+        let theme_names = config::read(config_dir.as_deref());
+        let themes = theme::load(config_dir.as_deref());
+        let dark = is_dark(window.appearance());
+        let theme = theme::pick(&themes, theme_names.get(dark), theme::default_name(dark));
+        theme::apply_to_kit(&theme, cx);
+        cx.observe_window_appearance(window, |ws, window, cx| {
+            ws.set_dark(is_dark(window.appearance()), cx)
+        })
+        .detach();
         let mut ws = Self {
             canvas: Canvas::default(),
             terminals: HashMap::new(),
@@ -162,6 +180,10 @@ impl Workspace {
             scroll_acc: 0.0,
             command,
             pristine: true,
+            themes,
+            theme_names,
+            dark,
+            theme,
             _wake: wake,
         };
         // Startup: one terminal, centered.
@@ -180,7 +202,7 @@ impl Workspace {
             rows,
             cell_px: self.cell.px(),
             command: self.command.clone(),
-            palette: templum_terminal::Palette::default(),
+            palette: self.theme.palette,
         };
         match Terminal::spawn(opts, self.notify.clone()) {
             Ok(term) => {
@@ -216,6 +238,27 @@ impl Workspace {
         // A gesture on a block that's gone would do nothing anyway; end it.
         self.drag = None;
         cx.notify();
+    }
+
+    /// Draws with `theme` from the next frame on, in every terminal and gpui-kit widget.
+    pub(crate) fn apply(&mut self, theme: Rc<Theme>, cx: &mut Context<Self>) {
+        for pane in self.terminals.values() {
+            pane.term.set_palette(theme.palette);
+        }
+        theme::apply_to_kit(&theme, cx);
+        self.theme = theme;
+        cx.notify();
+    }
+
+    /// The system switched between light and dark: use that mode's theme.
+    pub(crate) fn set_dark(&mut self, dark: bool, cx: &mut Context<Self>) {
+        self.dark = dark;
+        let theme = theme::pick(
+            &self.themes,
+            self.theme_names.get(dark),
+            theme::default_name(dark),
+        );
+        self.apply(theme, cx);
     }
 
     pub(crate) fn focus_block(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
@@ -479,6 +522,13 @@ fn viewport(window: &Window) -> Size {
     Size::new(f32::from(s.width), f32::from(s.height))
 }
 
+fn is_dark(appearance: WindowAppearance) -> bool {
+    matches!(
+        appearance,
+        WindowAppearance::Dark | WindowAppearance::VibrantDark
+    )
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(mut hook) = self.on_frame.take()
@@ -552,7 +602,7 @@ impl Render for Workspace {
             .id("workspace")
             .relative()
             .size_full()
-            .bg(rgb(BACKGROUND))
+            .bg(hsla(self.theme.ui.canvas, 1.0))
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(Self::close_terminal))
@@ -576,7 +626,7 @@ impl Render for Workspace {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .text_color(rgb(HINT_COLOR))
+                        .text_color(self.theme.ui.hint)
                         .child(HINT),
                 )
             })
@@ -691,6 +741,14 @@ mod tests {
     }
 
     fn open(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>) {
+        open_with(cx, None)
+    }
+
+    /// Opens a workspace whose config folder is `config_dir` (None: no config, no user themes).
+    fn open_with(
+        cx: &mut TestAppContext,
+        config_dir: Option<std::path::PathBuf>,
+    ) -> (AnyWindowHandle, Entity<Workspace>) {
         // PTY threads wake the UI from outside the test scheduler.
         cx.executor().allow_parking();
         cx.update(|cx| {
@@ -703,7 +761,7 @@ mod tests {
                     ..Default::default()
                 },
                 cx,
-                |window, cx| cx.new(|cx| Workspace::with_command(Some(quiet()), window, cx)),
+                |window, cx| cx.new(|cx| Workspace::with(Some(quiet()), config_dir, window, cx)),
             )
             .expect("open window")
         })
@@ -945,10 +1003,7 @@ mod tests {
         loop {
             let shown = ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(
-                    ws.terminals[&id].term.shared(),
-                    &templum_terminal::Palette::default(),
-                );
+                snap.refresh(ws.terminals[&id].term.shared(), &ws.theme.palette);
                 snap.text()
             });
             if shown.contains("hello") {
@@ -1068,10 +1123,7 @@ mod tests {
         loop {
             let shown = ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(
-                    ws.terminals[&id].term.shared(),
-                    &templum_terminal::Palette::default(),
-                );
+                snap.refresh(ws.terminals[&id].term.shared(), &ws.theme.palette);
                 snap.text()
             });
             if shown.contains('x') {
@@ -1115,6 +1167,51 @@ mod tests {
         })
         .unwrap();
         ws.read_with(cx, |ws, _| assert_eq!(ws.canvas.camera.zoom(), 1.1));
+    }
+
+    #[gpui_kit::test]
+    fn follows_the_system_appearance(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        // The test window is light.
+        ws.read_with(cx, |ws, _| assert_eq!(ws.theme.name, "Catppuccin Latte"));
+        ws.update(cx, |ws, cx| ws.set_dark(true, cx));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(NEW, cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.theme.name, "Catppuccin Mocha");
+            assert_eq!(ws.terminals.len(), 2);
+            for pane in ws.terminals.values() {
+                assert_eq!(
+                    pane.term.palette(),
+                    ws.theme.palette,
+                    "old and new terminals"
+                );
+            }
+        });
+        cx.update(|cx| {
+            let kit = gpui_kit::component::Theme::global(cx);
+            assert!(kit.mode.is_dark());
+            assert_eq!(
+                kit.background,
+                gpui_kit::transparent_black(),
+                "the glass stays clear"
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn config_names_pick_the_theme(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[theme]\nlight = \"One Light\"\n",
+        )
+        .unwrap();
+        let (_, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        ws.read_with(cx, |ws, _| assert_eq!(ws.theme.name, "One Light"));
     }
 
     #[test]

@@ -6,16 +6,16 @@ use std::rc::Rc;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, BorderStyle, Bounds, Entity, Font, FontStyle, FontWeight, Hsla, Pixels, Point, Rgba,
-    TextAlign, TextRun, UnderlineStyle, Window, canvas, fill, font, outline, point, px, rgb, size,
+    TextAlign, TextRun, UnderlineStyle, Window, canvas, fill, font, outline, point, px, size,
 };
 use templum_canvas::Size;
 use templum_terminal::{Rgb, SharedTerm, Snapshot};
 
+use crate::theme::Theme;
 use crate::workspace::Workspace;
 
 /// World units: the font size at zoom 1.
 pub(crate) const FONT_SIZE: f32 = 14.0;
-const SELECTION: u32 = 0x3d5a80;
 const MONOSPACE: [&str; 9] = [
     "JetBrainsMono Nerd Font Mono",
     "JetBrainsMono Nerd Font",
@@ -89,6 +89,7 @@ pub(crate) fn hsla(c: Rgb, a: f32) -> Hsla {
 
 /// The grid of one terminal: refreshes its snapshot (never blocking) and paints it. The
 /// focused one also reports its cursor to the workspace, for the IME popup.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn body(
     term: SharedTerm,
     snapshot: Rc<RefCell<Snapshot>>,
@@ -96,6 +97,7 @@ pub(crate) fn body(
     zoom: f32,
     focused: bool,
     marked: Option<String>,
+    theme: Rc<Theme>,
     ws: Entity<Workspace>,
 ) -> impl IntoElement {
     canvas(
@@ -108,12 +110,13 @@ pub(crate) fn body(
                 zoom,
                 &metrics,
                 focused,
+                &theme,
                 window,
                 cx,
             );
             if focused {
                 if let (Some(at), Some(text)) = (cursor, &marked) {
-                    paint_marked(text, at, zoom, &metrics.font, window, cx);
+                    paint_marked(text, at, zoom, &metrics.font, &theme, window, cx);
                 }
                 ws.update(cx, |ws, _| ws.ime_cursor = cursor);
             }
@@ -131,11 +134,12 @@ fn paint(
     z: f32,
     metrics: &CellMetrics,
     focused: bool,
+    theme: &Theme,
     window: &mut Window,
     cx: &mut App,
 ) -> Option<Bounds<Pixels>> {
     let mut snap = snapshot.borrow_mut();
-    if !snap.refresh(term, &templum_terminal::Palette::default()) {
+    if !snap.refresh(term, &theme.palette) {
         // The PTY thread is busy: try again next frame.
         window.request_animation_frame();
     }
@@ -154,7 +158,7 @@ fn paint(
             window.paint_quad(fill(cell(i, span.start, span.len), hsla(*bg, 1.0)));
         }
         for span in &row.selected {
-            window.paint_quad(fill(cell(i, span.start, span.len), rgb(SELECTION)));
+            window.paint_quad(fill(cell(i, span.start, span.len), theme.ui.selection));
         }
         if row.text.is_empty() {
             continue;
@@ -202,16 +206,9 @@ fn paint(
     let c = snap.cursor?;
     let r = cell(c.row, c.col, 1);
     if focused {
-        window.paint_quad(fill(
-            r,
-            hsla(templum_terminal::Palette::default().foreground, 0.6),
-        ));
+        window.paint_quad(fill(r, theme.ui.cursor.opacity(0.6)));
     } else {
-        window.paint_quad(outline(
-            r,
-            hsla(templum_terminal::Palette::default().foreground, 0.6),
-            BorderStyle::Solid,
-        ));
+        window.paint_quad(outline(r, theme.ui.cursor.opacity(0.6), BorderStyle::Solid));
     }
     Some(r)
 }
@@ -222,14 +219,15 @@ fn paint_marked(
     at: Bounds<Pixels>,
     z: f32,
     font: &Font,
+    theme: &Theme,
     window: &mut Window,
     cx: &mut App,
 ) {
     let run = TextRun {
         len: text.len(),
         font: font.clone(),
-        color: rgb(0xfeca88).into(),
-        background_color: Some(hsla(templum_terminal::Palette::default().background, 1.0)),
+        color: theme.ui.marked,
+        background_color: Some(hsla(theme.palette.background, 1.0)),
         underline: Some(UnderlineStyle {
             thickness: px(1.0),
             color: None,

@@ -4,14 +4,12 @@
 use std::path::Path;
 use std::rc::Rc;
 
-use gpui_kit::Hsla;
+use gpui_kit::{App, Hsla};
 use templum_terminal::{Palette, Rgb};
 use toml_edit::DocumentMut;
 
 use crate::grid::hsla;
 
-/// How opaque the canvas is when the window is translucent.
-pub(crate) const CANVAS_ALPHA: f32 = 0.72;
 const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
 const ANSI_NAMES: [&str; 8] = [
     "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
@@ -29,7 +27,7 @@ pub(crate) struct Theme {
 /// Interface colors, computed from the terminal colors with one formula for every theme.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Ui {
-    /// Under the blocks; drawn at [`CANVAS_ALPHA`] when the window is translucent.
+    /// Under the blocks; drawn translucent when the window is.
     pub canvas: Rgb,
     pub dot: Hsla,
     pub hairline: Hsla,
@@ -231,6 +229,8 @@ pub(crate) fn default_name(dark: bool) -> &'static str {
 
 /// One line of the picker.
 pub(crate) struct Entry {
+    // Read by the theme picker, which comes next; remove this allow with it.
+    #[allow(dead_code)]
     pub group: &'static str,
     pub theme: Rc<Theme>,
 }
@@ -304,6 +304,36 @@ pub(crate) fn pick(themes: &[Entry], name: &str, default: &str) -> Rc<Theme> {
             find(themes, default)
         })
         .expect("the default themes are built in")
+}
+
+/// Gives gpui-kit's own widgets (title bar, notifications) the theme's colors.
+pub(crate) fn apply_to_kit(theme: &Theme, cx: &mut App) {
+    use gpui_kit::component::{Theme as Kit, ThemeMode};
+    let mode = if theme.is_dark {
+        ThemeMode::Dark
+    } else {
+        ThemeMode::Light
+    };
+    // A mode change reloads gpui-kit's built-in colors: switch first, then set ours.
+    Kit::update(cx, |kit| kit.mode = mode);
+    let ui = theme.ui;
+    let background = hsla(theme.palette.background, 1.0);
+    let foreground = hsla(theme.palette.foreground, 1.0);
+    Kit::update(cx, |kit| {
+        // gpui-kit's root paints `background` under the whole window: keep it clear for the glass.
+        kit.background = gpui_kit::transparent_black();
+        kit.title_bar = gpui_kit::transparent_black();
+        kit.popover = background;
+        kit.foreground = foreground;
+        kit.popover_foreground = foreground;
+        kit.border = ui.hairline;
+        kit.title_bar_border = ui.hairline;
+        kit.window_border = ui.hairline;
+        kit.muted_foreground = ui.title_dim;
+        kit.accent = ui.accent;
+        kit.ring = ui.accent;
+        kit.selection = ui.selection;
+    });
 }
 
 #[cfg(test)]

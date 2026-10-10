@@ -6,18 +6,13 @@ use gpui_kit::component::Icon;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, ClickEvent, Context, MouseButton, MouseDownEvent, ScrollWheelEvent, TestSupportExt,
-    div, px, rgb,
+    div, px,
 };
 use templum_canvas::{Block, chrome};
 
-use crate::grid;
+use crate::grid::{self, hsla};
 use crate::workspace::Workspace;
 
-const BORDER: u32 = 0x3a3a40;
-const BORDER_FOCUSED: u32 = 0x6a9fb5;
-const TITLE_BG: u32 = 0x26262c;
-const TITLE_FG: u32 = 0xb0b0b8;
-const CLOSE_HOVER: u32 = 0x3a3a40;
 /// World units, like everything in a block.
 const TITLE_FONT: f32 = 12.0;
 
@@ -28,7 +23,9 @@ pub(crate) fn render(ws: &Workspace, block: Block, cx: &mut Context<Workspace>) 
     let r = ws.canvas.camera.rect_to_screen(block.rect);
     let pane = &ws.terminals[&id];
     let focused = ws.focused == Some(id);
-    let border = if focused { BORDER_FOCUSED } else { BORDER };
+    let ui = ws.theme.ui;
+    let background = hsla(ws.theme.palette.background, 1.0);
+    let border = if focused { ui.accent } else { ui.hairline };
 
     let title = div()
         .id(("title", n))
@@ -42,7 +39,7 @@ pub(crate) fn render(ws: &Workspace, block: Block, cx: &mut Context<Workspace>) 
             div()
                 .truncate()
                 .text_size(px(TITLE_FONT * z))
-                .text_color(rgb(TITLE_FG))
+                .text_color(if focused { ui.title } else { ui.title_dim })
                 .child(pane.term.title()),
         )
         .on_mouse_down(
@@ -62,11 +59,11 @@ pub(crate) fn render(ws: &Workspace, block: Block, cx: &mut Context<Workspace>) 
         .mr(px(4.0 * z))
         .rounded(px(4.0 * z))
         .cursor_pointer()
-        .hover(|s| s.bg(rgb(CLOSE_HOVER)))
+        .hover(move |s| s.bg(ui.hover))
         .child(
             Icon::new(IconName::Close)
                 .size(px(12.0 * z))
-                .text_color(rgb(TITLE_FG)),
+                .text_color(ui.title),
         )
         .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.close(id, cx)))
         .test_support();
@@ -76,7 +73,7 @@ pub(crate) fn render(ws: &Workspace, block: Block, cx: &mut Context<Workspace>) 
         .items_center()
         .w_full()
         .h(px(chrome::TITLE_H * z))
-        .bg(rgb(TITLE_BG))
+        .bg(background)
         .child(title)
         .child(close);
 
@@ -104,6 +101,7 @@ pub(crate) fn render(ws: &Workspace, block: Block, cx: &mut Context<Workspace>) 
             z,
             focused,
             ws.marked.clone().filter(|_| focused),
+            ws.theme.clone(),
             cx.entity(),
         ))
         .test_support();
@@ -114,7 +112,7 @@ pub(crate) fn render(ws: &Workspace, block: Block, cx: &mut Context<Workspace>) 
         .right(px(0.0))
         .bottom(px(0.0))
         .size(px(chrome::HANDLE * z))
-        .bg(rgb(border))
+        .bg(border)
         .rounded(px(2.0 * z))
         .cursor_nwse_resize()
         .on_mouse_down(
@@ -138,11 +136,8 @@ pub(crate) fn render(ws: &Workspace, block: Block, cx: &mut Context<Workspace>) 
         .rounded(px(6.0 * z))
         .when(focused, |el| el.border_2())
         .when(!focused, |el| el.border_1())
-        .border_color(rgb(border))
-        .bg(grid::hsla(
-            templum_terminal::Palette::default().background,
-            1.0,
-        ))
+        .border_color(border)
+        .bg(background)
         .overflow_hidden()
         // Nothing behind a block reacts to its clicks; wheel events still bubble (title bar pans).
         .block_mouse_except_scroll()
