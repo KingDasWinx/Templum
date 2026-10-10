@@ -35,6 +35,8 @@ use crate::title_bar;
 
 pub(crate) const DEFAULT_COLS: u16 = 80;
 pub(crate) const DEFAULT_ROWS: u16 = 24;
+/// A press that moves less than this (screen pixels) before release is a click, not a pan.
+const CLICK_SLOP: f32 = 4.0;
 /// Cursor blink half-period.
 const BLINK: Duration = Duration::from_millis(500);
 
@@ -81,6 +83,8 @@ pub struct Workspace {
     pub(crate) ime_cursor: Option<Bounds<Pixels>>,
     pub(crate) on_frame: Option<FrameHook>,
     drag: Option<Drag>,
+    /// Where a press on the empty canvas started: released in place, it's a click.
+    press: Option<Point>,
     focus_handle: FocusHandle,
     /// Window position of the workspace's top-left: screen coordinates are relative to it.
     origin: PixelPoint<Pixels>,
@@ -217,6 +221,7 @@ impl Workspace {
             ime_cursor: None,
             on_frame: None,
             drag: None,
+            press: None,
             focus_handle,
             origin: PixelPoint::default(),
             notify,
@@ -695,6 +700,20 @@ impl Workspace {
 
     fn end_drag(&mut self) {
         self.drag = None;
+        self.press = None;
+    }
+
+    /// Mouse up: a press on the empty canvas that didn't pan is a click, and leaves no terminal
+    /// focused (typing then reaches none; panning keeps the focus).
+    fn release(&mut self, pos: PixelPoint<Pixels>, cx: &mut Context<Self>) {
+        if let Some(start) = self.press {
+            let p = self.local(pos);
+            let moved = (p.x - start.x).abs().max((p.y - start.y).abs());
+            if moved < CLICK_SLOP && self.focused.take().is_some() {
+                cx.notify();
+            }
+        }
+        self.end_drag();
     }
 
     pub(crate) fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -825,6 +844,7 @@ impl Workspace {
             self.open(Rect::new(at.x, at.y, size.w, size.h), window, cx);
         } else {
             self.drag = Some(Drag::Canvas(Gesture::pan(p)));
+            self.press = Some(p);
         }
     }
 
@@ -1044,7 +1064,7 @@ impl Render for Workspace {
                 let on_up = entity.clone();
                 window.on_mouse_event(move |e: &MouseUpEvent, phase, _, cx| {
                     if phase == DispatchPhase::Bubble && e.button == MouseButton::Left {
-                        on_up.update(cx, |ws, _| ws.end_drag());
+                        on_up.update(cx, |ws, cx| ws.release(e.position, cx));
                     }
                 });
             },
@@ -2182,6 +2202,50 @@ mod tests {
         let saved = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
         assert!(saved.contains("dark = \"One Dark\""), "{saved}");
         assert!(!saved.contains("light"), "{saved}");
+    }
+
+    #[gpui_kit::test]
+    fn clicking_the_empty_canvas_unfocuses_terminals(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let o = ws.read(cx).origin;
+            click(
+                window,
+                cx,
+                (f32::from(o.x) + 40.0, f32::from(o.y) + 40.0),
+                1,
+            );
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.focused, None));
+    }
+
+    #[gpui_kit::test]
+    fn panning_the_canvas_keeps_the_focused_terminal(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        let before = cx
+            .update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                ws.read(cx).canvas.camera.origin
+            })
+            .unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            let o = ws.read(cx).origin;
+            let from = point(o.x + px(40.), o.y + px(40.));
+            window.drag(from, point(from.x + px(100.), from.y + px(50.)), cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.focused, Some(id));
+            let after = ws.canvas.camera.origin;
+            assert_eq!(
+                (before.x - after.x, before.y - after.y),
+                (100.0, 50.0),
+                "it panned"
+            );
+        });
     }
 
     #[test]
