@@ -27,7 +27,7 @@ pub(crate) struct Theme {
 /// Interface colors, computed from the terminal colors with one formula for every theme.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Ui {
-    /// Under the blocks; drawn translucent when the window is.
+    /// Under the blocks; drawn at [`CANVAS_ALPHA`] when the window is translucent.
     pub canvas: Rgb,
     pub dot: Hsla,
     pub hairline: Hsla,
@@ -336,6 +336,31 @@ pub(crate) fn apply_to_kit(theme: &Theme, cx: &mut App) {
     });
 }
 
+/// How opaque the canvas is when the window is translucent.
+pub(crate) const CANVAS_ALPHA: f32 = 0.72;
+
+/// Whether the window is drawn translucent with the desktop blurred behind it: where the
+/// system blurs (macOS, Windows, KDE and Hyprland under Wayland), never elsewhere.
+pub(crate) fn translucent(os: &str, desktop: Option<&str>, wayland: bool) -> bool {
+    match os {
+        "macos" | "windows" => true,
+        // XDG_CURRENT_DESKTOP is a colon-separated list.
+        "linux" => {
+            wayland && desktop.is_some_and(|d| d.split(':').any(|d| d == "KDE" || d == "Hyprland"))
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn system_translucent() -> bool {
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").ok();
+    translucent(
+        std::env::consts::OS,
+        desktop.as_deref(),
+        std::env::var_os("WAYLAND_DISPLAY").is_some(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,5 +541,18 @@ white = "#aaaaaa"
     fn a_missing_themes_folder_is_fine() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(load(Some(dir.path())).len(), BUILTIN.len());
+    }
+
+    #[test]
+    fn translucent_only_where_the_system_blurs() {
+        assert!(translucent("macos", None, false));
+        assert!(translucent("windows", None, false));
+        assert!(translucent("linux", Some("Hyprland"), true));
+        assert!(translucent("linux", Some("KDE"), true));
+        assert!(translucent("linux", Some("ubuntu:KDE"), true));
+        assert!(!translucent("linux", Some("KDE"), false), "X11");
+        assert!(!translucent("linux", Some("GNOME"), true));
+        assert!(!translucent("linux", None, true));
+        assert!(!translucent("freebsd", Some("KDE"), true));
     }
 }

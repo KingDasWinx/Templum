@@ -8,22 +8,23 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use futures::StreamExt;
-use gpui_kit::component::WindowExt;
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::{TITLE_BAR_HEIGHT, WindowExt, window_paddings};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler, EntityInputHandler,
-    FocusHandle, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    FocusHandle, Hsla, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, PinchEvent, Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent, Task,
-    UTF16Selection, Window, WindowAppearance, actions, canvas, div, px,
+    UTF16Selection, Window, WindowAppearance, actions, canvas, div, fill, point, px, size,
 };
-use templum_canvas::{BlockId, Canvas, Gesture, Point, Rect, Size, chrome};
+use templum_canvas::{BlockId, Camera, Canvas, Gesture, Point, Rect, Size, chrome, dot_grid};
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
 use crate::block;
 use crate::config::{self, ThemeNames};
 use crate::grid::{CellMetrics, hsla};
-use crate::theme::{self, Entry, Theme};
+use crate::theme::{self, CANVAS_ALPHA, Entry, Theme};
+use crate::title_bar;
 
 actions!(
     templum,
@@ -126,6 +127,8 @@ pub struct Workspace {
     dark: bool,
     /// What everything is drawn with.
     pub(crate) theme: Rc<Theme>,
+    /// The window shows the blurred desktop: the canvas is drawn at CANVAS_ALPHA.
+    translucent: bool,
     _wake: Task<()>,
 }
 
@@ -184,6 +187,7 @@ impl Workspace {
             theme_names,
             dark,
             theme,
+            translucent: theme::system_translucent(),
             _wake: wake,
         };
         // Startup: one terminal, centered.
@@ -365,7 +369,12 @@ impl Workspace {
         cx.notify();
     }
 
-    fn zoom_reset(&mut self, _: &ZoomReset, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn zoom_reset(
+        &mut self,
+        _: &ZoomReset,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.pristine = false;
         self.canvas.camera.zoom_reset(Self::center(window));
         cx.notify();
@@ -390,7 +399,12 @@ impl Workspace {
         self.drag = None;
     }
 
-    fn new_terminal(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn new_terminal(
+        &mut self,
+        _: &NewTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.pristine = false;
         let vp = viewport(window);
         let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
@@ -517,9 +531,32 @@ fn option_types_text(key: &str, key_char: Option<&str>, macos: bool) -> bool {
     macos && key_char.is_some_and(|c| c != key && !c.is_empty() && !c.chars().any(char::is_control))
 }
 
+/// The canvas area: the window minus the title bar and, on Linux, the client-side shadow.
 fn viewport(window: &Window) -> Size {
     let s = window.viewport_size();
-    Size::new(f32::from(s.width), f32::from(s.height))
+    let pad = window_paddings(window);
+    Size::new(
+        f32::from(s.width - pad.left - pad.right),
+        f32::from(s.height - pad.top - pad.bottom - TITLE_BAR_HEIGHT),
+    )
+}
+
+/// The dot grid under the blocks; dots are 1 px on screen at any zoom.
+fn paint_dots(camera: &Camera, color: Hsla, bounds: Bounds<Pixels>, window: &mut Window) {
+    let grid = dot_grid(camera);
+    let step = grid.spacing * camera.zoom();
+    let start = camera.to_screen(grid.first);
+    let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+    let mut y = start.y;
+    while y < h {
+        let mut x = start.x;
+        while x < w {
+            let at = point(bounds.origin.x + px(x), bounds.origin.y + px(y));
+            window.paint_quad(fill(Bounds::new(at, size(px(1.0), px(1.0))), color));
+            x += step;
+        }
+        y += step;
+    }
 }
 
 fn is_dark(appearance: WindowAppearance) -> bool {
@@ -568,11 +605,14 @@ impl Render for Workspace {
 
         let entity = cx.entity();
         let focus = self.focus_handle.clone();
+        let camera = self.canvas.camera;
+        let dot = self.theme.ui.dot;
         // A full-size layer under the blocks: the IME handler, the workspace origin, and
         // window-wide drag listeners (drags keep working outside the window).
         let layer = canvas(
             |_, _, _| {},
             move |bounds, _, window, cx| {
+                paint_dots(&camera, dot, bounds, window);
                 window.handle_input(&focus, ElementInputHandler::new(bounds, entity.clone()), cx);
                 entity.update(cx, |ws, _| ws.origin = bounds.origin);
                 let on_move = entity.clone();
@@ -598,11 +638,11 @@ impl Render for Workspace {
         .absolute()
         .size_full();
 
-        div()
+        let area = div()
             .id("workspace")
             .relative()
-            .size_full()
-            .bg(hsla(self.theme.ui.canvas, 1.0))
+            .flex_1()
+            .overflow_hidden()
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(Self::close_terminal))
@@ -629,7 +669,16 @@ impl Render for Workspace {
                         .text_color(self.theme.ui.hint)
                         .child(HINT),
                 )
-            })
+            });
+        let alpha = if self.translucent { CANVAS_ALPHA } else { 1.0 };
+        div()
+            .id("window")
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(hsla(self.theme.ui.canvas, alpha))
+            .child(title_bar::render(self, cx))
+            .child(area)
     }
 }
 
@@ -827,19 +876,22 @@ mod tests {
         let (handle, ws) = open(cx);
         // Tiling compositors resize the window right after it opens.
         cx.simulate_window_resize(handle, size(px(600.), px(400.)));
-        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
-            .unwrap();
-        ws.read_with(cx, |ws, _| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            // The canvas area: the window minus the title bar.
+            let vp = super::viewport(window);
+            let ws = ws.read(cx);
             let b = ws.canvas.blocks()[0].rect;
             let center = ws
                 .canvas
                 .camera
                 .to_screen(templum_canvas::Point::new(b.x + b.w / 2.0, b.y + b.h / 2.0));
             assert!(
-                (center.x - 300.0).abs() < 1.0 && (center.y - 200.0).abs() < 1.0,
-                "startup block center on screen: {center:?}"
+                (center.x - vp.w / 2.0).abs() < 1.0 && (center.y - vp.h / 2.0).abs() < 1.0,
+                "startup block center on screen: {center:?}, canvas {vp:?}"
             );
-        });
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]
@@ -884,8 +936,11 @@ mod tests {
         let (handle, ws) = open(cx);
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
-            click(window, cx, (40.0, 40.0), 1);
-            click(window, cx, (40.0, 40.0), 2);
+            // The canvas starts below the title bar.
+            let o = ws.read(cx).origin;
+            let at = (f32::from(o.x) + 40.0, f32::from(o.y) + 40.0);
+            click(window, cx, at, 1);
+            click(window, cx, at, 2);
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {
@@ -956,10 +1011,11 @@ mod tests {
         let (handle, ws) = open(cx);
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
+            let o = ws.read(cx).origin;
             wheel(
                 window,
                 cx,
-                (30.0, 30.0),
+                (f32::from(o.x) + 30.0, f32::from(o.y) + 30.0),
                 ScrollDelta::Pixels(point(px(0.), px(100.))),
                 false,
             );
@@ -968,10 +1024,11 @@ mod tests {
         ws.read_with(cx, |ws, _| assert_eq!(ws.canvas.camera.origin.y, -100.0));
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
+            let o = ws.read(cx).origin;
             wheel(
                 window,
                 cx,
-                (30.0, 30.0),
+                (f32::from(o.x) + 30.0, f32::from(o.y) + 30.0),
                 ScrollDelta::Lines(point(0.0, 1.0)),
                 true,
             );
@@ -1212,6 +1269,24 @@ mod tests {
         .unwrap();
         let (_, ws) = open_with(cx, Some(dir.path().to_path_buf()));
         ws.read_with(cx, |ws, _| assert_eq!(ws.theme.name, "One Light"));
+    }
+
+    #[gpui_kit::test]
+    fn title_bar_buttons_reset_zoom_and_open_terminals(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(ZOOM_IN, cx);
+            window.render_frame(cx);
+            window.click("zoom-level", cx);
+            window.render_frame(cx);
+            window.click("new-terminal", cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.canvas.camera.zoom(), 1.0);
+            assert_eq!(ws.canvas.blocks().len(), 2);
+        });
     }
 
     #[test]

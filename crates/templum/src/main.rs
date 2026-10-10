@@ -3,9 +3,14 @@ mod block;
 mod config;
 mod grid;
 mod theme;
+mod title_bar;
 mod workspace;
 
-use gpui_kit::{AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
+use gpui_kit::component::TitleBar;
+use gpui_kit::{
+    AppContext as _, Bounds, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
+    WindowDecorations, WindowOptions, px, size,
+};
 use workspace::Workspace;
 
 fn main() {
@@ -23,8 +28,15 @@ fn main() {
                 ))),
                 titlebar: Some(TitlebarOptions {
                     title: Some("Templum".into()),
-                    ..Default::default()
+                    ..TitleBar::title_bar_options()
                 }),
+                window_background: if theme::system_translucent() {
+                    WindowBackgroundAppearance::Blurred
+                } else {
+                    WindowBackgroundAppearance::Opaque
+                },
+                // Linux: our title bar instead of the desktop's (elsewhere `titlebar` does it).
+                window_decorations: cfg!(target_os = "linux").then_some(WindowDecorations::Client),
                 app_id: Some("templum".into()),
                 // The bench must not be throttled to 30 fps when the window loses focus.
                 inactive_frame_interval: if bench {
@@ -32,7 +44,7 @@ fn main() {
                 } else {
                     Some(std::time::Duration::from_micros(33_333))
                 },
-                ..Default::default()
+                ..TitleBar::window_options()
             };
             let (window, ws) = gpui_kit::open_window(options, cx, |window, cx| {
                 cx.new(|cx| Workspace::new(window, cx))
