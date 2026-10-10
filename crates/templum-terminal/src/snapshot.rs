@@ -240,4 +240,16 @@ mod tests {
         let s = snap(b"abc\r\nde");
         assert_eq!(s.cursor, Some(Cursor { row: 1, col: 2 }));
     }
+
+    #[test]
+    fn selection_spans() {
+        use crate::{SelectionKind, Side};
+        let (term, _) = headless(20, 4);
+        feed(&term, b"hello world");
+        term.select_start(0, 0, Side::Left, SelectionKind::Simple);
+        term.select_update(0, 4, Side::Right);
+        let mut s = Snapshot::default();
+        s.refresh(&term);
+        assert_eq!(s.rows[0].selected, vec![Span { start: 0, len: 5 }]);
+    }
 }

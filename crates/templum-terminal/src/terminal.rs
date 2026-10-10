@@ -8,10 +8,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg};
-use alacritty_terminal::grid::Scroll;
+use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::index::{Column, Point as GridPoint, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::test::TermSize;
-use alacritty_terminal::term::{Config, Term, TermMode};
+use alacritty_terminal::term::{Config, Term, TermMode, viewport_to_point};
 use alacritty_terminal::tty;
 
 use crate::input::{KeyInput, encode_key, paste_bytes};
@@ -101,6 +103,60 @@ impl EventListener for Listener {
 /// The terminal grid, shared with the PTY thread. Cheap to clone.
 #[derive(Clone)]
 pub struct SharedTerm(pub(crate) Arc<FairMutex<Term<Listener>>>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionKind {
+    /// Drag.
+    Simple,
+    /// Double-click: the word under the pointer.
+    Word,
+    /// Triple-click: whole lines.
+    Line,
+}
+
+impl SharedTerm {
+    /// Starts a selection at a viewport cell (row 0 = top visible line).
+    pub fn select_start(&self, row: usize, col: usize, side: Side, kind: SelectionKind) {
+        let mut term = self.0.lock();
+        let point = grid_point(&term, row, col);
+        let ty = match kind {
+            SelectionKind::Simple => SelectionType::Simple,
+            SelectionKind::Word => SelectionType::Semantic,
+            SelectionKind::Line => SelectionType::Lines,
+        };
+        term.selection = Some(Selection::new(ty, point, side));
+    }
+
+    pub fn select_update(&self, row: usize, col: usize, side: Side) {
+        let mut term = self.0.lock();
+        let point = grid_point(&term, row, col);
+        if let Some(selection) = term.selection.as_mut() {
+            selection.update(point, side);
+        }
+    }
+
+    pub fn select_clear(&self) {
+        self.0.lock().selection = None;
+    }
+
+    /// The selected text; None when nothing (or only an empty range) is selected.
+    pub fn selection_text(&self) -> Option<String> {
+        self.0
+            .lock()
+            .selection_to_string()
+            .filter(|t| !t.is_empty())
+    }
+}
+
+/// A viewport cell, clamped to the grid, as a grid point (accounting for scrollback).
+fn grid_point(term: &Term<Listener>, row: usize, col: usize) -> GridPoint {
+    let row = row.min(term.screen_lines() - 1);
+    let col = col.min(term.columns() - 1);
+    viewport_to_point(
+        term.grid().display_offset(),
+        GridPoint::new(row, Column(col)),
+    )
+}
 
 pub struct SpawnOptions {
     pub cols: u16,
@@ -344,6 +400,36 @@ mod tests {
             shared.title(),
             None,
             "blank titles fall back to the shell name"
+        );
+    }
+
+    #[test]
+    fn selection_text_by_kind() {
+        let (term, _) = headless(20, 4);
+        feed(&term, b"hello world\r\nsecond line");
+        term.select_start(0, 0, Side::Left, SelectionKind::Simple);
+        term.select_update(0, 4, Side::Right);
+        assert_eq!(term.selection_text().as_deref(), Some("hello"));
+        term.select_start(0, 7, Side::Left, SelectionKind::Word);
+        assert_eq!(term.selection_text().as_deref(), Some("world"));
+        term.select_start(1, 3, Side::Left, SelectionKind::Line);
+        assert_eq!(term.selection_text().as_deref(), Some("second line\n"));
+        term.select_clear();
+        assert_eq!(term.selection_text(), None);
+    }
+
+    #[test]
+    fn selection_outside_the_grid_clamps() {
+        let (term, _) = headless(20, 4);
+        feed(&term, b"abc");
+        term.select_start(0, 0, Side::Left, SelectionKind::Simple);
+        term.select_update(500, 500, Side::Right);
+        assert!(term.selection_text().is_some_and(|t| t.starts_with("abc")));
+        term.select_start(1000, 1000, Side::Left, SelectionKind::Simple);
+        assert_eq!(
+            term.selection_text(),
+            None,
+            "an empty selection is no selection"
         );
     }
 }
