@@ -92,6 +92,9 @@ impl Row {
 pub struct Cursor {
     pub row: usize,
     pub col: usize,
+    /// As the terminal resolves it: the program's DECSCUSR, else the configured default.
+    pub shape: CursorShape,
+    pub blinking: bool,
 }
 
 #[derive(Debug, Default)]
@@ -114,6 +117,7 @@ impl Snapshot {
             None if stale => term.0.lock(),
             None => return false,
         };
+        let blinking = term.cursor_style().blinking;
         let screen_rows = term.screen_lines();
         let content = term.renderable_content();
         let offset = content.display_offset as i32;
@@ -126,6 +130,8 @@ impl Snapshot {
                 self.cursor = Some(Cursor {
                     row: row as usize,
                     col: content.cursor.point.column.0,
+                    shape: content.cursor.shape,
+                    blinking,
                 });
             }
         }
@@ -246,7 +252,30 @@ mod tests {
     #[test]
     fn cursor_position() {
         let s = snap(b"abc\r\nde");
-        assert_eq!(s.cursor, Some(Cursor { row: 1, col: 2 }));
+        let c = s.cursor.unwrap();
+        assert_eq!((c.row, c.col), (1, 2));
+    }
+
+    #[test]
+    fn cursor_shape_comes_from_options_unless_the_program_asks() {
+        use crate::{CursorShape, CursorStyle, TermOptions};
+        let (term, _) = headless(20, 4);
+        term.set_options(TermOptions {
+            cursor: CursorStyle {
+                shape: CursorShape::Beam,
+                blinking: true,
+            },
+            ..TermOptions::default()
+        });
+        let mut s = Snapshot::default();
+        s.refresh(&term, &Palette::default());
+        let c = s.cursor.unwrap();
+        assert_eq!((c.shape, c.blinking), (CursorShape::Beam, true));
+        // DECSCUSR 2: a steady block, asked for by the program.
+        feed(&term, b"\x1b[2 q");
+        s.refresh(&term, &Palette::default());
+        let c = s.cursor.unwrap();
+        assert_eq!((c.shape, c.blinking), (CursorShape::Block, false));
     }
 
     #[test]

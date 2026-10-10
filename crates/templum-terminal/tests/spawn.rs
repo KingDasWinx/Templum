@@ -3,7 +3,7 @@
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use templum_terminal::{Notify, Palette, Snapshot, SpawnOptions, Terminal};
+use templum_terminal::{Notify, Palette, Snapshot, SpawnOptions, TermOptions, Terminal};
 
 #[test]
 fn runs_a_command_and_reports_its_exit() {
@@ -29,6 +29,7 @@ fn runs_a_command_and_reports_its_exit() {
             cell_px: (8, 16),
             command: Some(command),
             palette: Palette::default(),
+            options: TermOptions::default(),
         },
         notify,
     )
@@ -65,6 +66,7 @@ fn shells_start_in_the_home_directory() {
             cell_px: (8, 16),
             command: Some(command),
             palette: Palette::default(),
+            options: TermOptions::default(),
         },
         notify,
     )

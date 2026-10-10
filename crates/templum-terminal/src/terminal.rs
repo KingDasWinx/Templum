@@ -15,6 +15,7 @@ use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode, viewport_to_point};
 use alacritty_terminal::tty;
+use alacritty_terminal::vte::ansi::CursorStyle;
 
 use crate::input::{KeyInput, encode_key, paste_bytes};
 use crate::palette::{self, Palette};
@@ -111,6 +112,34 @@ impl EventListener for Listener {
 #[derive(Clone)]
 pub struct SharedTerm(pub(crate) Arc<FairMutex<Term<Listener>>>);
 
+/// Settings a running terminal can change: the history length and the default cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TermOptions {
+    /// Lines of history.
+    pub scrollback: usize,
+    /// The cursor when the program doesn't ask for another one.
+    pub cursor: CursorStyle,
+}
+
+impl Default for TermOptions {
+    fn default() -> Self {
+        Self {
+            scrollback: 10_000,
+            cursor: CursorStyle::default(),
+        }
+    }
+}
+
+impl TermOptions {
+    fn config(self) -> Config {
+        Config {
+            scrolling_history: self.scrollback,
+            default_cursor_style: self.cursor,
+            ..Config::default()
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectionKind {
     /// Drag.
@@ -122,6 +151,11 @@ pub enum SelectionKind {
 }
 
 impl SharedTerm {
+    /// Applies new options to the running terminal (alacritty trims the history if needed).
+    pub fn set_options(&self, options: TermOptions) {
+        self.0.lock().set_options(options.config());
+    }
+
     /// Starts a selection at a viewport cell (row 0 = top visible line).
     pub fn select_start(&self, row: usize, col: usize, side: Side, kind: SelectionKind) {
         let mut term = self.0.lock();
@@ -175,6 +209,8 @@ pub struct SpawnOptions {
     /// Colors reported to programs that ask (vim, neovim). Change them later with
     /// [`Terminal::set_palette`].
     pub palette: Palette,
+    /// Scrollback and default cursor; change them later with [`SharedTerm::set_options`].
+    pub options: TermOptions,
 }
 
 pub struct Terminal {
@@ -216,7 +252,7 @@ impl Terminal {
         let listener = Listener(shared.clone());
         let pty = tty::new(&options, size, 0)?;
         let term = Arc::new(FairMutex::new(Term::new(
-            Config::default(),
+            opts.options.config(),
             &TermSize::new(opts.cols as usize, opts.rows as usize),
             listener.clone(),
         )));
@@ -428,6 +464,17 @@ mod tests {
         );
         listener.send_event(Event::Exit);
         assert!(shared.exited.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn scrollback_option_limits_history() {
+        let (term, _) = headless(10, 2);
+        term.set_options(TermOptions {
+            scrollback: 3,
+            ..TermOptions::default()
+        });
+        feed(&term, b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n");
+        assert_eq!(term.0.lock().grid().history_size(), 3);
     }
 
     #[test]
