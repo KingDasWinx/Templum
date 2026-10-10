@@ -35,6 +35,8 @@ pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut App) 
                     .bounds()
                     .map(|b| Point::new(b.x + b.w / 2.0, b.y + b.h / 2.0))
                     .unwrap_or_default();
+                // The bench drives the camera: stop keeping the startup terminal centered.
+                ws.pristine = false;
                 let start = Instant::now();
                 let mut last: Option<Instant> = None;
                 let mut intervals: Vec<f64> = Vec::new();

@@ -24,7 +24,16 @@ use crate::grid::CellMetrics;
 
 actions!(
     templum,
-    [NewTerminal, CloseTerminal, CopySelection, PasteClipboard]
+    [
+        NewTerminal,
+        CloseTerminal,
+        CopySelection,
+        PasteClipboard,
+        ZoomIn,
+        ZoomOut,
+        ZoomReset,
+        FitAll
+    ]
 );
 
 pub(crate) const DEFAULT_COLS: u16 = 80;
@@ -43,6 +52,13 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-w", CloseTerminal, None),
         KeyBinding::new("cmd-c", CopySelection, None),
         KeyBinding::new("cmd-v", PasteClipboard, None),
+        KeyBinding::new("cmd-=", ZoomIn, None),
+        KeyBinding::new("cmd-+", ZoomIn, None),
+        KeyBinding::new("cmd--", ZoomOut, None),
+        KeyBinding::new("cmd-0", ZoomReset, None),
+        // Shift+1 is reported as "!" on some layouts: bind both.
+        KeyBinding::new("cmd-shift-1", FitAll, None),
+        KeyBinding::new("cmd-!", FitAll, None),
     ]);
     #[cfg(not(target_os = "macos"))]
     cx.bind_keys([
@@ -50,6 +66,13 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-shift-w", CloseTerminal, None),
         KeyBinding::new("ctrl-shift-c", CopySelection, None),
         KeyBinding::new("ctrl-shift-v", PasteClipboard, None),
+        KeyBinding::new("ctrl-=", ZoomIn, None),
+        KeyBinding::new("ctrl-+", ZoomIn, None),
+        KeyBinding::new("ctrl--", ZoomOut, None),
+        KeyBinding::new("ctrl-0", ZoomReset, None),
+        // Shift+1 is reported as "!" on some layouts: bind both.
+        KeyBinding::new("ctrl-shift-1", FitAll, None),
+        KeyBinding::new("ctrl-!", FitAll, None),
     ]);
 }
 
@@ -90,7 +113,7 @@ pub struct Workspace {
     command: Option<(String, Vec<String>)>,
     /// True until the user first moves the camera or touches a block: meanwhile the startup
     /// terminal stays centered, since tiling compositors resize the window after it opens.
-    pristine: bool,
+    pub(crate) pristine: bool,
     _wake: Task<()>,
 }
 
@@ -274,6 +297,35 @@ impl Workspace {
         if let Some(text) = text {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
+    }
+
+    fn center(window: &Window) -> Point {
+        let vp = viewport(window);
+        Point::new(vp.w / 2.0, vp.h / 2.0)
+    }
+
+    fn zoom_in(&mut self, _: &ZoomIn, window: &mut Window, cx: &mut Context<Self>) {
+        self.pristine = false;
+        self.canvas.camera.zoom_step(1, Self::center(window));
+        cx.notify();
+    }
+
+    fn zoom_out(&mut self, _: &ZoomOut, window: &mut Window, cx: &mut Context<Self>) {
+        self.pristine = false;
+        self.canvas.camera.zoom_step(-1, Self::center(window));
+        cx.notify();
+    }
+
+    fn zoom_reset(&mut self, _: &ZoomReset, window: &mut Window, cx: &mut Context<Self>) {
+        self.pristine = false;
+        self.canvas.camera.zoom_reset(Self::center(window));
+        cx.notify();
+    }
+
+    fn fit_all(&mut self, _: &FitAll, window: &mut Window, cx: &mut Context<Self>) {
+        self.pristine = false;
+        self.canvas.fit_all(viewport(window));
+        cx.notify();
     }
 
     fn paste_clipboard(&mut self, _: &PasteClipboard, _: &mut Window, cx: &mut Context<Self>) {
@@ -493,6 +545,10 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::close_terminal))
             .on_action(cx.listener(Self::copy_selection))
             .on_action(cx.listener(Self::paste_clipboard))
+            .on_action(cx.listener(Self::zoom_in))
+            .on_action(cx.listener(Self::zoom_out))
+            .on_action(cx.listener(Self::zoom_reset))
+            .on_action(cx.listener(Self::fit_all))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_background_down))
             .on_scroll_wheel(cx.listener(Self::on_background_scroll))
@@ -919,5 +975,59 @@ mod tests {
             assert_eq!(ws.focused, Some(id));
             assert!(ws.drag.is_none(), "the selection drag ended on mouse up");
         });
+    }
+
+    #[cfg(target_os = "macos")]
+    const ZOOM_IN: &str = "cmd-=";
+    #[cfg(not(target_os = "macos"))]
+    const ZOOM_IN: &str = "ctrl-=";
+    #[cfg(target_os = "macos")]
+    const ZOOM_OUT: &str = "cmd--";
+    #[cfg(not(target_os = "macos"))]
+    const ZOOM_OUT: &str = "ctrl--";
+    #[cfg(target_os = "macos")]
+    const ZOOM_RESET: &str = "cmd-0";
+    #[cfg(not(target_os = "macos"))]
+    const ZOOM_RESET: &str = "ctrl-0";
+    #[cfg(target_os = "macos")]
+    const FIT: &str = "cmd-shift-1";
+    #[cfg(not(target_os = "macos"))]
+    const FIT: &str = "ctrl-shift-1";
+
+    #[gpui_kit::test]
+    fn zoom_keys_step_and_reset(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(ZOOM_IN, cx);
+            window.press(ZOOM_IN, cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.canvas.camera.zoom(), 1.25));
+        cx.update_window(handle, |_, window, cx| {
+            window.press(ZOOM_OUT, cx);
+            window.press(ZOOM_RESET, cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.canvas.camera.zoom(), 1.0));
+    }
+
+    #[gpui_kit::test]
+    fn fit_all_brings_every_block_into_view(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open(
+                    templum_canvas::Rect::new(5000.0, 3000.0, 600.0, 400.0),
+                    window,
+                    cx,
+                )
+            });
+            window.render_frame(cx);
+            window.press(FIT, cx);
+            let vp = super::viewport(window);
+            assert_eq!(ws.read(cx).canvas.visible(vp).count(), 2);
+        })
+        .unwrap();
     }
 }

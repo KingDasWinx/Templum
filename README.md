@@ -3,7 +3,7 @@
 An infinite canvas of terminals. Spawn as many terminals as you like, place them anywhere,
 resize them like blocks, and pan and zoom around your workspace.
 
-> **Status: pre-alpha.** The foundation is being laid; there is nothing usable yet.
+> **Status: pre-alpha.** Usable as a canvas of terminals; no session saving or settings yet.
 
 ## Why
 
@@ -23,6 +23,26 @@ git clone https://github.com/KingDasWinx/Templum
 cd Templum
 cargo run -p templum
 ```
+
+## Using it
+
+| Mouse | Result |
+|---|---|
+| Double-click empty canvas | New terminal there |
+| Drag a title bar / the bottom-right handle | Move / resize the block |
+| Drag empty canvas, or scroll over it | Pan |
+| Scroll over a terminal | Scroll its history |
+| Ctrl+scroll, or pinch | Zoom |
+| Drag in a terminal (double-click: word, triple-click: line) | Select text |
+
+| Linux / Windows | macOS | Action |
+|---|---|---|
+| Ctrl+Shift+T | Cmd+T | New terminal |
+| Ctrl+Shift+W | Cmd+W | Close the focused terminal |
+| Ctrl+Shift+C / V | Cmd+C / V | Copy / paste |
+| Ctrl+= / Ctrl+- | Cmd+= / Cmd+- | Zoom in / out |
+| Ctrl+0 | Cmd+0 | Zoom 100% |
+| Ctrl+Shift+1 | Cmd+Shift+1 | Fit all blocks |
 
 ## Pre-built binaries
 
