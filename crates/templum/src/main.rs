@@ -2,6 +2,7 @@ mod bench;
 mod block;
 mod config;
 mod grid;
+mod motion;
 mod theme;
 mod theme_picker;
 mod title_bar;
