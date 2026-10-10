@@ -44,6 +44,8 @@ const MODIFIER_KEYS: [&str; 8] = [
 ];
 /// Cursor blink half-period.
 const BLINK: Duration = Duration::from_millis(500);
+/// Quitting takes a second press of its shortcut within this long.
+const QUIT_AGAIN: Duration = Duration::from_secs(2);
 /// A settings change is written to config.toml this long after the last one.
 const SAVE_DELAY: Duration = Duration::from_millis(300);
 
@@ -138,6 +140,8 @@ pub struct Workspace {
     pub(crate) fonts: Vec<SharedString>,
     /// What the user typed in the panel's text fields that can't apply yet (an unclosed quote).
     pub(crate) drafts: HashMap<&'static str, String>,
+    /// When the quit shortcut was pressed once: a second press soon after quits.
+    quit_armed: Option<Instant>,
     /// The settings panel, open or sliding out.
     pub(crate) settings: Option<Panel>,
     /// The panel's keyboard focus: Esc and the settings shortcut close it from there.
@@ -283,6 +287,7 @@ impl Workspace {
             _flush: flush,
             fonts: Vec::new(),
             drafts: HashMap::new(),
+            quit_armed: None,
             settings: None,
             settings_focus: cx.focus_handle(),
             recording: None,
@@ -734,6 +739,11 @@ impl Workspace {
             cx.notify();
             return;
         }
+        if self.keymap.command(&e.keystroke) == Some(Command::Quit) {
+            self.quit(window, cx);
+            cx.stop_propagation();
+            return;
+        }
         if e.keystroke.key == "escape"
             || self.keymap.command(&e.keystroke) == Some(Command::Settings)
         {
@@ -966,7 +976,33 @@ impl Workspace {
             Command::ThemePicker => self.toggle_theme_picker(cx),
             Command::OpenConfig => self.open_config(window, cx),
             Command::Settings => self.toggle_settings(window, cx),
+            Command::Quit => self.quit(window, cx),
         }
+    }
+
+    /// Quitting closes every terminal, and Q sits next to W (close one terminal): the first
+    /// press only says to press again. Pending settings are saved on the way out.
+    fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        if self
+            .quit_armed
+            .take()
+            .is_some_and(|at| now.duration_since(at) < QUIT_AGAIN)
+        {
+            cx.quit();
+            return;
+        }
+        self.quit_armed = Some(now);
+        let shortcut = self
+            .keymap
+            .first(Command::Quit)
+            .map(keys::display)
+            .unwrap_or_else(|| "the quit shortcut".to_string());
+        show_notification(
+            window,
+            cx,
+            Notification::info(format!("Press {shortcut} again to quit")),
+        );
     }
 
     /// Opens config.toml in the system's editor, writing the commented template first if needed.
@@ -3205,5 +3241,61 @@ mod tests {
             })
         })
         .unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    const QUIT: &str = "cmd-q";
+    #[cfg(not(target_os = "macos"))]
+    const QUIT: &str = "ctrl-shift-q";
+
+    #[gpui_kit::test]
+    fn quitting_takes_a_second_press(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(QUIT, cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.quit_armed.is_some(), "the first press only warns")
+        });
+        assert_eq!(notification_count(handle, cx), 1);
+        cx.update_window(handle, |_, window, cx| window.press(QUIT, cx))
+            .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.quit_armed.is_none(), "the second one quits")
+        });
+        assert_eq!(notification_count(handle, cx), 1, "no second warning");
+    }
+
+    #[gpui_kit::test]
+    fn a_late_second_press_warns_again(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let long_ago = std::time::Instant::now()
+            .checked_sub(super::QUIT_AGAIN + std::time::Duration::from_millis(100))
+            .unwrap();
+        ws.update(cx, |ws, _| ws.quit_armed = Some(long_ago));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(QUIT, cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.quit_armed.is_some_and(|at| at > long_ago), "armed again")
+        });
+        assert_eq!(notification_count(handle, cx), 1);
+    }
+
+    #[gpui_kit::test]
+    fn quit_works_from_the_settings_panel(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(SETTINGS, cx);
+            window.render_frame(cx);
+            window.press(QUIT, cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert!(ws.quit_armed.is_some()));
     }
 }

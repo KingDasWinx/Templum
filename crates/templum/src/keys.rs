@@ -16,11 +16,12 @@ pub(crate) enum Command {
     ThemePicker,
     OpenConfig,
     Settings,
+    Quit,
 }
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 11] = [
+    pub const ALL: [Command; 12] = [
         Command::NewTerminal,
         Command::CloseTerminal,
         Command::Copy,
@@ -32,6 +33,7 @@ impl Command {
         Command::ThemePicker,
         Command::OpenConfig,
         Command::Settings,
+        Command::Quit,
     ];
 
     /// Its key in [keys].
@@ -48,6 +50,7 @@ impl Command {
             Command::ThemePicker => "theme_picker",
             Command::OpenConfig => "open_config",
             Command::Settings => "settings",
+            Command::Quit => "quit",
         }
     }
 
@@ -65,6 +68,7 @@ impl Command {
             Command::ThemePicker => "Theme picker",
             Command::OpenConfig => "Edit config.toml",
             Command::Settings => "Settings",
+            Command::Quit => "Quit Templum",
         }
     }
 
@@ -92,6 +96,8 @@ impl Command {
             (Command::OpenConfig, _) => &[],
             (Command::Settings, false) => &["ctrl-,"],
             (Command::Settings, true) => &["cmd-,"],
+            (Command::Quit, false) => &["ctrl-shift-q"],
+            (Command::Quit, true) => &["cmd-q"],
         }
     }
 }
@@ -119,6 +125,7 @@ pub(crate) struct KeysConfig {
     pub theme_picker: Option<Keys>,
     pub open_config: Option<Keys>,
     pub settings: Option<Keys>,
+    pub quit: Option<Keys>,
 }
 
 impl KeysConfig {
@@ -135,6 +142,7 @@ impl KeysConfig {
             Command::ThemePicker => self.theme_picker.as_ref(),
             Command::OpenConfig => self.open_config.as_ref(),
             Command::Settings => self.settings.as_ref(),
+            Command::Quit => self.quit.as_ref(),
         }
     }
 
@@ -151,6 +159,7 @@ impl KeysConfig {
             Command::ThemePicker => &mut self.theme_picker,
             Command::OpenConfig => &mut self.open_config,
             Command::Settings => &mut self.settings,
+            Command::Quit => &mut self.quit,
         };
         *slot = keys;
     }
@@ -291,10 +300,12 @@ mod tests {
             Some(Command::ThemePicker)
         );
         assert_eq!(linux.command(&typed("ctrl-,")), Some(Command::Settings));
+        assert_eq!(linux.command(&typed("ctrl-shift-q")), Some(Command::Quit));
         assert_eq!(linux.command(&typed("ctrl-t")), None);
         let mac = defaults(true);
         assert_eq!(mac.command(&typed("cmd-t")), Some(Command::NewTerminal));
         assert_eq!(mac.command(&typed("cmd-,")), Some(Command::Settings));
+        assert_eq!(mac.command(&typed("cmd-q")), Some(Command::Quit));
     }
 
     #[test]

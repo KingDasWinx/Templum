@@ -44,6 +44,7 @@ cargo run -p templum
 | Ctrl+0 | Cmd+0 | Zoom 100% |
 | Ctrl+Shift+1 | Cmd+Shift+1 | Fit all blocks |
 | Ctrl+, | Cmd+, | Settings |
+| Ctrl+Shift+Q, twice | Cmd+Q, twice | Quit (the first press only asks for the second) |
 
 ## Themes
 
