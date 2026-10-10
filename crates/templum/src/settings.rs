@@ -1,15 +1,164 @@
-//! The settings panel's fields: each one reads the active config and changes it through the
-//! workspace, which applies the change on the next frame and saves it shortly after.
+//! The settings panel: it slides in from the right over the canvas, and each field reads the
+//! active config and changes it through the workspace, which applies the change on the next frame
+//! and saves it shortly after.
 
+use std::time::Instant;
+
+use gpui_kit::assets::IconName;
+use gpui_kit::component::button::Button;
 use gpui_kit::component::setting::{
     NumberFieldOptions, RenderOptions, SettingField, SettingGroup, SettingItem, SettingPage,
+    Settings,
 };
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
+use gpui_kit::component::{Icon, Sizable as _, TITLE_BAR_HEIGHT};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Entity, SharedString, Subscription, Window, px};
+use gpui_kit::{
+    AnyElement, App, BoxShadow, ClickEvent, Context, Entity, SharedString, Subscription,
+    TestSupportExt, Window, div, point, px,
+};
 
 use crate::config::{self, Blur, Config, Edit, Mode, Shape, ThemeConfig, WindowConfig};
+use crate::grid::hsla;
+use crate::motion;
 use crate::workspace::Workspace;
+
+/// The panel's width, at most 60% of the canvas.
+const WIDTH: f32 = 480.0;
+
+/// The open panel, or the closed one still sliding out.
+pub(crate) struct Panel {
+    pub since: Instant,
+    pub closing: bool,
+}
+
+pub(crate) fn render(
+    ws: &Workspace,
+    panel: &Panel,
+    now: Instant,
+    canvas_w: f32,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
+    let ui = ws.theme.ui;
+    let width = WIDTH.min(canvas_w * 0.6);
+    let t = motion::slide(motion::progress(panel.since, now, motion::SLIDE));
+    let shown = if panel.closing { 1.0 - t } else { t };
+    let entity = cx.entity();
+
+    let close = div()
+        .id("settings-close")
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(22.0))
+        .rounded(px(6.0))
+        .cursor_pointer()
+        .hover(move |s| s.bg(ui.hover))
+        .child(
+            Icon::new(IconName::Close)
+                .size(px(14.0))
+                .text_color(ui.title),
+        )
+        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.close_settings(window, cx)))
+        .test_support();
+    let header = div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .h(px(36.0))
+        .px(px(12.0))
+        .border_b_1()
+        .border_color(ui.hairline)
+        .child(div().text_size(px(13.0)).child("Settings"))
+        .child(close);
+
+    let path = ws.config_dir.as_ref().map(|d| d.join(config::FILE));
+    let status = match (&path, &ws.save_error) {
+        (None, _) => Some((
+            "No config folder: changes last until Templum quits".to_string(),
+            ui.title_dim,
+        )),
+        (Some(_), Some(error)) => Some((error.clone(), hsla(ws.theme.palette.ansi[1], 1.0))),
+        (Some(_), None) => None,
+    };
+    let footer = div()
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .p(px(12.0))
+        .border_t_1()
+        .border_color(ui.hairline)
+        .text_size(px(12.0))
+        .when_some(path, |el, path| {
+            el.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .truncate()
+                            .text_color(ui.title_dim)
+                            .child(path.display().to_string()),
+                    )
+                    .child(
+                        Button::new("edit-config")
+                            .label("Edit config.toml")
+                            .small()
+                            .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| {
+                                ws.open_config(window, cx)
+                            })),
+                    ),
+            )
+        })
+        .when_some(status, |el, (text, color)| {
+            el.child(
+                div()
+                    .id("settings-status")
+                    .text_color(color)
+                    .child(text)
+                    .test_support(),
+            )
+        });
+
+    div()
+        .id("settings-panel")
+        .absolute()
+        .top(TITLE_BAR_HEIGHT)
+        .bottom(px(0.0))
+        .right(px(-width * (1.0 - shown)))
+        .w(px(width))
+        .flex()
+        .flex_col()
+        .bg(hsla(ws.theme.palette.background, 1.0))
+        .text_color(hsla(ws.theme.palette.foreground, 1.0))
+        .border_l_1()
+        .border_color(ui.hairline)
+        .shadow(vec![BoxShadow {
+            color: ui.shadow,
+            offset: point(px(-8.0), px(0.0)),
+            blur_radius: px(32.0),
+            spread_radius: px(0.0),
+            inset: false,
+        }])
+        .track_focus(&ws.settings_focus)
+        .on_key_down(cx.listener(Workspace::on_settings_key))
+        // Nothing under the panel (blocks, the canvas) gets its presses or its wheel.
+        .occlude()
+        .child(header)
+        .child(
+            div().flex_1().min_h(px(0.0)).child(
+                Settings::new("settings")
+                    .sidebar_width(px(140.0))
+                    .sidebar_size_range(px(120.0)..px(200.0))
+                    .pages(pages(ws, &entity)),
+            ),
+        )
+        .child(footer)
+        .test_support()
+        .into_any_element()
+}
 
 /// A dropdown setting: its options (value, label), the option the config is at, and what
 /// choosing one does to the config and writes to the file.

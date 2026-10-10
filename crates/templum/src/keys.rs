@@ -15,11 +15,12 @@ pub(crate) enum Command {
     FitAll,
     ThemePicker,
     OpenConfig,
+    Settings,
 }
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 10] = [
+    pub const ALL: [Command; 11] = [
         Command::NewTerminal,
         Command::CloseTerminal,
         Command::Copy,
@@ -30,6 +31,7 @@ impl Command {
         Command::FitAll,
         Command::ThemePicker,
         Command::OpenConfig,
+        Command::Settings,
     ];
 
     /// Its key in [keys].
@@ -45,6 +47,7 @@ impl Command {
             Command::FitAll => "fit_all",
             Command::ThemePicker => "theme_picker",
             Command::OpenConfig => "open_config",
+            Command::Settings => "settings",
         }
     }
 
@@ -69,8 +72,9 @@ impl Command {
             (Command::FitAll, true) => &["cmd-shift-1", "cmd-!"],
             (Command::ThemePicker, false) => &["ctrl-shift-p"],
             (Command::ThemePicker, true) => &["cmd-shift-p"],
-            (Command::OpenConfig, false) => &["ctrl-,"],
-            (Command::OpenConfig, true) => &["cmd-,"],
+            (Command::OpenConfig, _) => &[],
+            (Command::Settings, false) => &["ctrl-,"],
+            (Command::Settings, true) => &["cmd-,"],
         }
     }
 }
@@ -97,6 +101,7 @@ pub(crate) struct KeysConfig {
     pub fit_all: Option<Keys>,
     pub theme_picker: Option<Keys>,
     pub open_config: Option<Keys>,
+    pub settings: Option<Keys>,
 }
 
 impl KeysConfig {
@@ -112,6 +117,7 @@ impl KeysConfig {
             Command::FitAll => self.fit_all.as_ref(),
             Command::ThemePicker => self.theme_picker.as_ref(),
             Command::OpenConfig => self.open_config.as_ref(),
+            Command::Settings => self.settings.as_ref(),
         }
     }
 }
@@ -241,11 +247,11 @@ mod tests {
             linux.command(&typed("ctrl-shift-p")),
             Some(Command::ThemePicker)
         );
-        assert_eq!(linux.command(&typed("ctrl-,")), Some(Command::OpenConfig));
+        assert_eq!(linux.command(&typed("ctrl-,")), Some(Command::Settings));
         assert_eq!(linux.command(&typed("ctrl-t")), None);
         let mac = defaults(true);
         assert_eq!(mac.command(&typed("cmd-t")), Some(Command::NewTerminal));
-        assert_eq!(mac.command(&typed("cmd-,")), Some(Command::OpenConfig));
+        assert_eq!(mac.command(&typed("cmd-,")), Some(Command::Settings));
     }
 
     #[test]
@@ -315,5 +321,12 @@ mod tests {
     fn shortcuts_display_like_menus() {
         assert_eq!(display("ctrl-shift-t"), "Ctrl+Shift+T");
         assert_eq!(display("cmd-t"), "Cmd+T");
+    }
+
+    #[test]
+    fn open_config_has_no_default_shortcut() {
+        for macos in [false, true] {
+            assert_eq!(defaults(macos).first(Command::OpenConfig), None);
+        }
     }
 }

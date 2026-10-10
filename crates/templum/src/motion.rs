@@ -1,9 +1,12 @@
-//! Block open and close animations: timing, easing, and the scale steps they are drawn at.
+//! Animations: blocks opening and closing, the settings panel sliding; timing, easing, and the
+//! scale steps blocks are drawn at.
 
 use std::time::{Duration, Instant};
 
 pub(crate) const OPEN: Duration = Duration::from_millis(280);
 pub(crate) const CLOSE: Duration = Duration::from_millis(180);
+/// The settings panel slides in or out.
+pub(crate) const SLIDE: Duration = Duration::from_millis(200);
 /// Blocks are scaled by redrawing them at zoom × scale, which rasterizes text at that size:
 /// scales snap to steps so only a few extra sizes are ever cached (like the zoom steps).
 const SCALE_STEP: f32 = 0.02;
@@ -26,6 +29,11 @@ impl Look {
 /// 0 at `since`, 1 once `duration` has passed.
 pub(crate) fn progress(since: Instant, now: Instant, duration: Duration) -> f32 {
     (now.saturating_duration_since(since).as_secs_f32() / duration.as_secs_f32()).min(1.0)
+}
+
+/// Ease-out (cubic): fast at first, settling at the end.
+pub(crate) fn slide(t: f32) -> f32 {
+    1.0 - (1.0 - t).powi(3)
 }
 
 /// Ease-out that goes a little past 1 and settles back ("back out"), peaking near 1.13.
@@ -121,5 +129,12 @@ mod tests {
             let (a, b) = (opening(t).scale, closing(t).scale);
             assert!(on_a_step(a) && on_a_step(b), "t {t}: {a} {b}");
         }
+    }
+
+    #[test]
+    fn slide_eases_out() {
+        assert_eq!(slide(0.0), 0.0);
+        assert_eq!(slide(1.0), 1.0);
+        assert!(slide(0.5) > 0.8, "most of the way by half time");
     }
 }

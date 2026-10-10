@@ -1,5 +1,6 @@
 //! The integrated title bar, drawn on the window's glass: the title in the middle, and on the
-//! right the zoom level (click: back to 100%), the theme picker and a button for a new terminal.
+//! right the zoom level (click: back to 100%), the theme picker, the settings and a button for a
+//! new terminal.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{Icon, TitleBar};
@@ -50,6 +51,18 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
                         .on_click(
                             cx.listener(|ws, _: &ClickEvent, _, cx| ws.toggle_theme_picker(cx)),
                         )
+                        .test_support(),
+                )
+                .child(
+                    button("settings-button", ui)
+                        .child(
+                            Icon::new(IconName::Settings)
+                                .size(px(14.0))
+                                .text_color(ui.title),
+                        )
+                        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| {
+                            ws.toggle_settings(window, cx)
+                        }))
                         .test_support(),
                 )
                 .child(

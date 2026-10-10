@@ -29,6 +29,7 @@ use crate::config::{self, Config, Edit, ThemeConfig, WorkingDirectory};
 use crate::grid::{CellMetrics, hsla};
 use crate::keys::{self, Command, Keymap};
 use crate::motion;
+use crate::settings::{self, Panel};
 use crate::theme::{self, Entry, Theme};
 use crate::theme_picker::{self, Picker};
 use crate::title_bar;
@@ -129,6 +130,10 @@ pub struct Workspace {
     pub(crate) save_error: Option<String>,
     /// Write `unsaved` when the window closes or the app quits.
     _flush: Vec<Subscription>,
+    /// The settings panel, open or sliding out.
+    pub(crate) settings: Option<Panel>,
+    /// The panel's keyboard focus: Esc and the settings shortcut close it from there.
+    pub(crate) settings_focus: FocusHandle,
     /// The block under the pointer: it shows its close button and resize grip.
     pub(crate) hovered: Option<BlockId>,
     /// The open theme picker.
@@ -264,6 +269,8 @@ impl Workspace {
             _save: Task::ready(()),
             save_error: None,
             _flush: flush,
+            settings: None,
+            settings_focus: cx.focus_handle(),
             hovered: None,
             picker: None,
             appearing: HashMap::new(),
@@ -632,6 +639,47 @@ impl Workspace {
         }
     }
 
+    /// Opens the settings panel (re-reading the themes folder for its lists), or closes it.
+    pub(crate) fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.as_ref().is_some_and(|p| !p.closing) {
+            self.close_settings(window, cx);
+            return;
+        }
+        self.themes = theme::load(self.config_dir.as_deref());
+        self.settings = Some(Panel {
+            since: Instant::now(),
+            closing: false,
+        });
+        window.focus(&self.settings_focus, cx);
+        cx.notify();
+    }
+
+    /// Slides the panel out, saves what's pending, and gives the keyboard back to the terminals.
+    pub(crate) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings = Some(Panel {
+            since: Instant::now(),
+            closing: true,
+        });
+        self.save_or_notify(window, cx);
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
+    /// Keys while the panel has the focus: Esc and the settings shortcut close it.
+    pub(crate) fn on_settings_key(
+        &mut self,
+        e: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if e.keystroke.key == "escape"
+            || self.keymap.command(&e.keystroke) == Some(Command::Settings)
+        {
+            self.close_settings(window, cx);
+            cx.stop_propagation();
+        }
+    }
+
     pub(crate) fn focus_block(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         self.pristine = false;
         self.canvas.raise(id);
@@ -829,11 +877,12 @@ impl Workspace {
             Command::FitAll => self.fit_all(window, cx),
             Command::ThemePicker => self.toggle_theme_picker(cx),
             Command::OpenConfig => self.open_config(window, cx),
+            Command::Settings => self.toggle_settings(window, cx),
         }
     }
 
     /// Opens config.toml in the system's editor, writing the commented template first if needed.
-    fn open_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(dir) = self.config_dir.clone() else {
             let message = "No config folder: neither HOME nor APPDATA is set".to_string();
             eprintln!("templum: {message}");
@@ -1106,6 +1155,14 @@ impl Render for Workspace {
             .retain(|_, since| motion::progress(*since, now, motion::OPEN) < 1.0);
         self.ghosts
             .retain(|g| motion::progress(g.since, now, motion::CLOSE) < 1.0);
+        if let Some(panel) = &self.settings {
+            let t = motion::progress(panel.since, now, motion::SLIDE);
+            if t < 1.0 {
+                window.request_animation_frame();
+            } else if panel.closing {
+                self.settings = None;
+            }
+        }
         if !self.appearing.is_empty() || !self.ghosts.is_empty() {
             window.request_animation_frame();
         }
@@ -1192,14 +1249,21 @@ impl Render for Workspace {
             .picker
             .as_ref()
             .map(|p| theme_picker::render(self, p, cx));
+        let panel = self
+            .settings
+            .as_ref()
+            .map(|p| settings::render(self, p, now, vp.w, cx));
         div()
             .id("window")
             .size_full()
             .flex()
             .flex_col()
+            // The settings panel slides in from beyond the right edge.
+            .overflow_hidden()
             .bg(hsla(self.theme.ui.canvas, alpha))
             .child(title_bar::render(self, cx))
             .child(area)
+            .children(panel)
             .children(picker)
     }
 }
@@ -2536,5 +2600,113 @@ mod tests {
             assert_eq!(ws.save(), None);
             assert_eq!(ws.save_error, None, "the footer says it, not an error");
         });
+    }
+
+    #[cfg(target_os = "macos")]
+    const SETTINGS: &str = "cmd-,";
+    #[cfg(not(target_os = "macos"))]
+    const SETTINGS: &str = "ctrl-,";
+
+    fn panel_open(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> bool {
+        ws.read_with(cx, |ws, _| ws.settings.as_ref().is_some_and(|p| !p.closing))
+    }
+
+    /// Lets the panel's slide finish (it runs on the real clock, like the block animations).
+    fn settle_slide(handle: AnyWindowHandle, cx: &mut TestAppContext) {
+        std::thread::sleep(crate::motion::SLIDE + std::time::Duration::from_millis(50));
+        frame(handle, cx);
+    }
+
+    #[gpui_kit::test]
+    fn the_settings_shortcut_and_buttons_open_and_close_the_panel(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(SETTINGS, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        assert!(panel_open(&ws, cx), "the shortcut opens it");
+        cx.update_window(handle, |_, window, cx| {
+            window.press(SETTINGS, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        assert!(!panel_open(&ws, cx), "and closes it");
+        settle_slide(handle, cx);
+        ws.read_with(cx, |ws, _| assert!(ws.settings.is_none(), "slid out"));
+        cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+            .unwrap();
+        settle_slide(handle, cx);
+        assert!(panel_open(&ws, cx), "the gear opens it");
+        cx.update_window(handle, |_, window, cx| window.click("settings-close", cx))
+            .unwrap();
+        assert!(!panel_open(&ws, cx), "the close button closes it");
+    }
+
+    #[gpui_kit::test]
+    fn esc_closes_the_panel_only_from_inside_it(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(SETTINGS, cx);
+            window.render_frame(cx);
+            window.press("escape", cx);
+        })
+        .unwrap();
+        assert!(!panel_open(&ws, cx), "Esc in the panel closes it");
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(SETTINGS, cx);
+        })
+        .unwrap();
+        settle_slide(handle, cx);
+        // Click the terminal's left part, clear of the panel on the right.
+        cx.update_window(handle, |_, window, cx| {
+            let (o, r) = {
+                let ws = ws.read(cx);
+                let rect = ws.canvas.get(id).unwrap().rect;
+                (ws.origin, ws.canvas.camera.rect_to_screen(rect))
+            };
+            let at = (
+                f32::from(o.x) + r.x + 20.0,
+                f32::from(o.y) + r.y + templum_canvas::chrome::TITLE_H + 20.0,
+            );
+            click(window, cx, at, 1);
+            window.render_frame(cx);
+            window.press("escape", cx);
+            let focused = ws.read(cx).focus_handle.is_focused(window);
+            assert!(focused, "keys go to the terminal");
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.focused, Some(id)));
+        assert!(panel_open(&ws, cx), "Esc went to the terminal");
+    }
+
+    #[gpui_kit::test]
+    fn closing_the_panel_saves_at_once(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(SETTINGS, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.update(cx, |ws, cx| {
+            ws.edit(
+                Edit::set("cursor", "blink", true),
+                |c| c.cursor.blink = true,
+                cx,
+            )
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(SETTINGS, cx);
+        })
+        .unwrap();
+        let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(text.contains("blink = true"), "{text}");
     }
 }

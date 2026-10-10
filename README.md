@@ -43,6 +43,7 @@ cargo run -p templum
 | Ctrl+= / Ctrl+- | Cmd+= / Cmd+- | Zoom in / out |
 | Ctrl+0 | Cmd+0 | Zoom 100% |
 | Ctrl+Shift+1 | Cmd+Shift+1 | Fit all blocks |
+| Ctrl+, | Cmd+, | Settings |
 
 ## Themes
 
@@ -69,9 +70,10 @@ dark = "Catppuccin Mocha"
 ## Configuration
 
 Everything is in `config.toml`, in the folder from [Themes](#themes) (`~/.config/templum/` on Linux and macOS,
-`%APPDATA%\templum\` on Windows). Press **Ctrl+,** (**Cmd+,** on macOS) to open it in your editor: if it doesn't
-exist yet, Templum writes it first with every option commented out. Uncomment a line and save, and it applies at
-once.
+`%APPDATA%\templum\` on Windows). Press **Ctrl+,** (**Cmd+,** on macOS), or the ⚙ in the title bar, to open the
+settings panel; every change applies at once and is saved to the file, comments included. Its **Edit config.toml**
+button opens the file in your editor: if it doesn't exist yet, Templum writes it first with every option commented
+out. Uncomment a line and save, and it applies at once.
 
 ```toml
 [font]
