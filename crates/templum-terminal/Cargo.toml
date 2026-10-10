@@ -10,6 +10,8 @@ publish.workspace = true
 
 [dependencies]
 alacritty_terminal = "=0.26.0"
+# Already in the tree: reads a shell's current folder (for "new terminal in the same folder").
+sysinfo = { version = "0.31", default-features = false, features = ["system"] }
 
 [lints]
 workspace = true

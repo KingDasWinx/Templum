@@ -235,6 +235,7 @@ impl Workspace {
             command: self.command.clone(),
             palette: self.theme.palette,
             options: templum_terminal::TermOptions::default(),
+            working_directory: None,
         };
         match Terminal::spawn(opts, self.notify.clone()) {
             Ok(term) => {

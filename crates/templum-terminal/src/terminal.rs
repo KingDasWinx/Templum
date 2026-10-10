@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -211,10 +212,14 @@ pub struct SpawnOptions {
     pub palette: Palette,
     /// Scrollback and default cursor; change them later with [`SharedTerm::set_options`].
     pub options: TermOptions,
+    /// Where the shell starts; None: the home folder.
+    pub working_directory: Option<PathBuf>,
 }
 
 pub struct Terminal {
     term: SharedTerm,
+    /// The shell's process ID, when the OS gave one.
+    pid: Option<u32>,
     shared: Arc<Shared>,
     pty: EventLoopSender,
     cols: u16,
@@ -243,7 +248,7 @@ impl Terminal {
             ]),
             // Like other GUI terminals: a launch from Finder or the Start menu doesn't leave
             // shells in / or the install folder.
-            working_directory: std::env::home_dir(),
+            working_directory: opts.working_directory.clone().or_else(std::env::home_dir),
             // Show everything the shell printed before reporting its exit.
             drain_on_exit: true,
             ..Default::default()
@@ -251,6 +256,11 @@ impl Terminal {
         let shared = Arc::new(Shared::new(notify, size, opts.palette));
         let listener = Listener(shared.clone());
         let pty = tty::new(&options, size, 0)?;
+        // The shell's process, to ask the OS for its current folder later.
+        #[cfg(unix)]
+        let pid = Some(pty.child().id());
+        #[cfg(windows)]
+        let pid = pty.child_watcher().pid().map(|pid| pid.get());
         let term = Arc::new(FairMutex::new(Term::new(
             opts.options.config(),
             &TermSize::new(opts.cols as usize, opts.rows as usize),
@@ -262,6 +272,7 @@ impl Terminal {
         event_loop.spawn();
         Ok(Self {
             term: SharedTerm(term),
+            pid,
             shared,
             pty,
             cols: opts.cols,
@@ -292,6 +303,22 @@ impl Terminal {
 
     pub fn exited(&self) -> bool {
         self.shared.exited.load(Ordering::Acquire)
+    }
+
+    /// The shell's current folder. None when the OS won't say (another user, already gone).
+    pub fn cwd(&self) -> Option<PathBuf> {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+        let pid = Pid::from_u32(self.pid?);
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            ProcessRefreshKind::new().with_cwd(UpdateKind::Always),
+        );
+        system
+            .process(pid)?
+            .cwd()
+            .filter(|cwd| !cwd.as_os_str().is_empty())
+            .map(Path::to_path_buf)
     }
 
     /// The colors this terminal reports to programs that ask for them.

@@ -30,6 +30,7 @@ fn runs_a_command_and_reports_its_exit() {
             command: Some(command),
             palette: Palette::default(),
             options: TermOptions::default(),
+            working_directory: None,
         },
         notify,
     )
@@ -67,6 +68,7 @@ fn shells_start_in_the_home_directory() {
             command: Some(command),
             palette: Palette::default(),
             options: TermOptions::default(),
+            working_directory: None,
         },
         notify,
     )
@@ -85,4 +87,41 @@ fn shells_start_in_the_home_directory() {
         "expected {home:?}, screen was: {:?}",
         snapshot.text()
     );
+}
+
+#[test]
+fn starts_in_the_given_folder_and_reports_it() {
+    // Started in the plain path (cmd.exe can't start in a canonical \\?\ path), compared
+    // canonicalized: macOS's temp folder is behind a symlink, Windows's may be a short name.
+    let dir = std::env::temp_dir();
+    // Long-lived, so the process is still there to ask.
+    #[cfg(unix)]
+    let command = (
+        "sh".to_string(),
+        vec!["-c".to_string(), "sleep 20".to_string()],
+    );
+    #[cfg(windows)]
+    let command = ("cmd".to_string(), vec!["/K".to_string()]);
+    let term = Terminal::spawn(
+        SpawnOptions {
+            cols: 40,
+            rows: 5,
+            cell_px: (8, 16),
+            command: Some(command),
+            palette: Palette::default(),
+            options: TermOptions::default(),
+            working_directory: Some(dir.clone()),
+        },
+        Arc::new(|| {}),
+    )
+    .expect("spawn");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(cwd) = term.cwd() {
+            assert_eq!(cwd.canonicalize().unwrap(), dir.canonicalize().unwrap());
+            break;
+        }
+        assert!(Instant::now() < deadline, "cwd() never answered");
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
