@@ -6,7 +6,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use gpui_kit::component::notification::Notification;
@@ -47,6 +47,8 @@ actions!(
 
 pub(crate) const DEFAULT_COLS: u16 = 80;
 pub(crate) const DEFAULT_ROWS: u16 = 24;
+/// Cursor blink half-period.
+const BLINK: Duration = Duration::from_millis(500);
 #[cfg(target_os = "macos")]
 const HINT: &str = "Double-click or press Cmd+T to open a terminal";
 #[cfg(not(target_os = "macos"))]
@@ -151,6 +153,10 @@ pub struct Workspace {
     pub(crate) appearing: HashMap<BlockId, Instant>,
     /// Closed blocks still fading out.
     pub(crate) ghosts: Vec<Ghost>,
+    /// The focused terminal's cursor blinks (painting reports it); and the blink phase.
+    pub(crate) cursor_blinks: bool,
+    pub(crate) blink_on: bool,
+    _blink: Task<()>,
     _wake: Task<()>,
 }
 
@@ -189,11 +195,19 @@ impl Workspace {
             ws.set_dark(is_dark(window.appearance()), cx)
         })
         .detach();
+        let blink = cx.spawn_in(window, async move |ws, cx| {
+            loop {
+                cx.background_executor().timer(BLINK).await;
+                if ws.update(cx, |ws, cx| ws.tick_blink(cx)).is_err() {
+                    break;
+                }
+            }
+        });
         let mut ws = Self {
             canvas: Canvas::default(),
             terminals: HashMap::new(),
             focused: None,
-            cell: CellMetrics::measure(window),
+            cell: CellMetrics::measure(window, None, 14.0).0,
             marked: None,
             ime_cursor: None,
             on_frame: None,
@@ -215,6 +229,9 @@ impl Workspace {
             picker: None,
             appearing: HashMap::new(),
             ghosts: Vec::new(),
+            cursor_blinks: false,
+            blink_on: true,
+            _blink: blink,
             _wake: wake,
         };
         // Startup: one terminal, centered.
@@ -398,6 +415,15 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Every BLINK: toggles a blinking cursor, and makes sure a steady one is shown.
+    pub(crate) fn tick_blink(&mut self, cx: &mut Context<Self>) {
+        let next = !self.cursor_blinks || !self.blink_on;
+        if next != self.blink_on {
+            self.blink_on = next;
+            cx.notify();
+        }
+    }
+
     pub(crate) fn hover_block(&mut self, id: BlockId, hovered: bool, cx: &mut Context<Self>) {
         let next = if hovered {
             Some(id)
@@ -563,6 +589,8 @@ impl Workspace {
     }
 
     fn on_key_down(&mut self, e: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        // The cursor shows again on any key.
+        self.blink_on = true;
         if self.picker.is_some() {
             match e.keystroke.key.as_str() {
                 "up" => self.move_theme(-1, cx),
@@ -728,6 +756,8 @@ impl Render for Workspace {
         {
             self.on_frame = Some(hook);
         }
+        // The focused terminal's painting sets it again this frame, if its cursor blinks.
+        self.cursor_blinks = false;
         let exited: Vec<BlockId> = self
             .terminals
             .iter()
@@ -1688,6 +1718,21 @@ mod tests {
         cx.update_window(handle, |_, window, cx| window.render_frame(cx))
             .unwrap();
         ws.read_with(cx, |ws, _| assert!(ws.ghosts.is_empty(), "faded away"));
+    }
+
+    #[gpui_kit::test]
+    fn blink_toggles_only_while_the_cursor_blinks(cx: &mut TestAppContext) {
+        let (_, ws) = open(cx);
+        ws.update(cx, |ws, cx| {
+            ws.cursor_blinks = false;
+            ws.tick_blink(cx);
+            assert!(ws.blink_on, "steady cursors stay visible");
+            ws.cursor_blinks = true;
+            ws.tick_blink(cx);
+            assert!(!ws.blink_on);
+            ws.tick_blink(cx);
+            assert!(ws.blink_on);
+        });
     }
 
     #[test]

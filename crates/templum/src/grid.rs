@@ -9,13 +9,11 @@ use gpui_kit::{
     TextAlign, TextRun, UnderlineStyle, Window, canvas, fill, font, outline, point, px, size,
 };
 use templum_canvas::Size;
-use templum_terminal::{Rgb, SharedTerm, Snapshot};
+use templum_terminal::{CursorShape, Rgb, SharedTerm, Snapshot};
 
 use crate::theme::Theme;
 use crate::workspace::Workspace;
 
-/// World units: the font size at zoom 1.
-pub(crate) const FONT_SIZE: f32 = 14.0;
 const MONOSPACE: [&str; 9] = [
     "JetBrainsMono Nerd Font Mono",
     "JetBrainsMono Nerd Font",
@@ -33,26 +31,38 @@ pub(crate) struct CellMetrics {
     pub font: Font,
     /// One cell at zoom 1, world units.
     pub size: Size,
+    /// Points at zoom 1.
+    pub font_size: f32,
 }
 
 impl CellMetrics {
-    pub fn measure(window: &Window) -> Self {
-        let font = pick_font(window);
+    /// Measures a cell of `family` (unless $TEMPLUM_FONT is set) at `font_size`. The second
+    /// value is a warning when `family` isn't installed.
+    pub fn measure(
+        window: &Window,
+        family: Option<&str>,
+        font_size: f32,
+    ) -> (Self, Option<String>) {
+        let (font, warning) = pick_font(window, family);
         let ts = window.text_system();
         let id = ts.resolve_font(&font);
         let w = ts
-            .advance(id, px(FONT_SIZE), 'm')
+            .advance(id, px(font_size), 'm')
             .map(|s| f32::from(s.width))
             .unwrap_or(0.0);
-        let ascent = f32::from(ts.ascent(id, px(FONT_SIZE)));
-        let descent = f32::from(ts.descent(id, px(FONT_SIZE))).abs();
+        let ascent = f32::from(ts.ascent(id, px(font_size)));
+        let descent = f32::from(ts.descent(id, px(font_size))).abs();
         // Never zero: a bad font must not turn into a 65535-column grid.
-        let w = if w > 0.0 { w } else { FONT_SIZE * 0.6 };
-        let h = (ascent + descent).ceil().max(FONT_SIZE);
-        Self {
-            font,
-            size: Size::new(w, h),
-        }
+        let w = if w > 0.0 { w } else { font_size * 0.6 };
+        let h = (ascent + descent).ceil().max(font_size);
+        (
+            Self {
+                font,
+                size: Size::new(w, h),
+                font_size,
+            },
+            warning,
+        )
     }
 
     /// Cell size in whole pixels, as reported to the shell.
@@ -61,20 +71,28 @@ impl CellMetrics {
     }
 }
 
-/// $TEMPLUM_FONT, then a list of common monospace fonts, then any installed font. Never panics:
-/// the test platform has no fonts at all.
-fn pick_font(window: &Window) -> Font {
+/// $TEMPLUM_FONT, then `family`, then a list of common monospace fonts, then any installed
+/// font. Never panics: the test platform has no fonts at all.
+fn pick_font(window: &Window, family: Option<&str>) -> (Font, Option<String>) {
     let names = window.text_system().all_font_names();
-    let wanted = std::env::var("TEMPLUM_FONT").ok();
-    let family = wanted
+    let installed = |f: &str| names.iter().any(|n| n == f);
+    let env = std::env::var("TEMPLUM_FONT").ok();
+    let chosen = env
         .as_deref()
         .into_iter()
+        .chain(family)
         .chain(MONOSPACE)
-        .find(|f| names.iter().any(|n| n == f))
+        .find(|f| installed(f))
         .map(str::to_string)
         .or_else(|| names.first().cloned())
         .unwrap_or_else(|| "monospace".to_string());
-    font(family)
+    let warning = match family {
+        Some(f) if env.is_none() && !installed(f) => {
+            Some(format!("Font \"{f}\" isn't installed; using \"{chosen}\""))
+        }
+        _ => None,
+    };
+    (font(chosen), warning)
 }
 
 pub(crate) fn hsla(c: Rgb, a: f32) -> Hsla {
@@ -85,6 +103,20 @@ pub(crate) fn hsla(c: Rgb, a: f32) -> Hsla {
         a,
     }
     .into()
+}
+
+/// The cursor's quad inside its cell: the whole cell, or a thin bar or underline (2 px at zoom
+/// 1, never under 1 px).
+pub(crate) fn cursor_quad(cell: Bounds<Pixels>, shape: CursorShape, z: f32) -> Bounds<Pixels> {
+    let thin = px((2.0 * z).max(1.0));
+    match shape {
+        CursorShape::Beam => Bounds::new(cell.origin, size(thin, cell.size.height)),
+        CursorShape::Underline => Bounds::new(
+            point(cell.origin.x, cell.origin.y + cell.size.height - thin),
+            size(cell.size.width, thin),
+        ),
+        _ => cell,
+    }
 }
 
 /// The grid of one terminal: refreshes its snapshot (never blocking) and paints it. The
@@ -98,6 +130,7 @@ pub(crate) fn body(
     focused: bool,
     marked: Option<String>,
     theme: Rc<Theme>,
+    blink_on: bool,
     ws: Entity<Workspace>,
 ) -> impl IntoElement {
     canvas(
@@ -110,22 +143,27 @@ pub(crate) fn body(
                 zoom,
                 &metrics,
                 focused,
+                blink_on,
                 &theme,
                 window,
                 cx,
             );
             if focused {
-                if let (Some(at), Some(text)) = (cursor, &marked) {
-                    paint_marked(text, at, zoom, &metrics.font, &theme, window, cx);
+                let at = cursor.map(|(at, _)| at);
+                if let (Some(at), Some(text)) = (at, &marked) {
+                    paint_marked(text, at, zoom, &metrics, &theme, window, cx);
                 }
-                ws.update(cx, |ws, _| ws.ime_cursor = cursor);
+                ws.update(cx, |ws, _| {
+                    ws.ime_cursor = at;
+                    ws.cursor_blinks = cursor.is_some_and(|(_, blinking)| blinking);
+                });
             }
         },
     )
     .size_full()
 }
 
-/// Paints the cells; returns the cursor cell's bounds.
+/// Paints the cells; returns the cursor cell's bounds and whether the cursor blinks.
 #[allow(clippy::too_many_arguments)]
 fn paint(
     term: &SharedTerm,
@@ -134,10 +172,11 @@ fn paint(
     z: f32,
     metrics: &CellMetrics,
     focused: bool,
+    blink_on: bool,
     theme: &Theme,
     window: &mut Window,
     cx: &mut App,
-) -> Option<Bounds<Pixels>> {
+) -> Option<(Bounds<Pixels>, bool)> {
     let mut snap = snapshot.borrow_mut();
     if !snap.refresh(term, &theme.palette) {
         // The PTY thread is busy: try again next frame.
@@ -190,7 +229,7 @@ fn paint(
         // force_width pins glyph n to column n, like a terminal grid.
         let line = window.text_system().shape_line(
             row.text.clone().into(),
-            px(FONT_SIZE * z),
+            px(metrics.font_size * z),
             &runs,
             Some(px(cw)),
         );
@@ -205,12 +244,13 @@ fn paint(
     }
     let c = snap.cursor?;
     let r = cell(c.row, c.col, 1);
-    if focused {
-        window.paint_quad(fill(r, theme.ui.cursor.opacity(0.6)));
-    } else {
-        window.paint_quad(outline(r, theme.ui.cursor.opacity(0.6), BorderStyle::Solid));
+    let color = theme.ui.cursor.opacity(0.6);
+    if !focused || c.shape == CursorShape::HollowBlock {
+        window.paint_quad(outline(r, color, BorderStyle::Solid));
+    } else if !(c.blinking && !blink_on) {
+        window.paint_quad(fill(cursor_quad(r, c.shape, z), color));
     }
-    Some(r)
+    Some((r, c.blinking))
 }
 
 /// IME pre-edit text (dead keys, compose), drawn at the cursor until committed.
@@ -218,14 +258,14 @@ fn paint_marked(
     text: &str,
     at: Bounds<Pixels>,
     z: f32,
-    font: &Font,
+    metrics: &CellMetrics,
     theme: &Theme,
     window: &mut Window,
     cx: &mut App,
 ) {
     let run = TextRun {
         len: text.len(),
-        font: font.clone(),
+        font: metrics.font.clone(),
         color: theme.ui.marked,
         background_color: Some(hsla(theme.palette.background, 1.0)),
         underline: Some(UnderlineStyle {
@@ -235,10 +275,36 @@ fn paint_marked(
         }),
         strikethrough: None,
     };
-    let line =
-        window
-            .text_system()
-            .shape_line(text.to_string().into(), px(FONT_SIZE * z), &[run], None);
+    let line = window.text_system().shape_line(
+        text.to_string().into(),
+        px(metrics.font_size * z),
+        &[run],
+        None,
+    );
     let _ = line.paint_background(at.origin, at.size.height, TextAlign::Left, None, window, cx);
     let _ = line.paint(at.origin, at.size.height, TextAlign::Left, None, window, cx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_quads_per_shape() {
+        let cell = Bounds::new(point(px(10.), px(20.)), size(px(8.), px(16.)));
+        assert_eq!(cursor_quad(cell, CursorShape::Block, 1.0), cell);
+        let bar = cursor_quad(cell, CursorShape::Beam, 1.0);
+        assert_eq!(
+            (bar.origin, bar.size.width, bar.size.height),
+            (cell.origin, px(2.), px(16.))
+        );
+        let under = cursor_quad(cell, CursorShape::Underline, 2.0);
+        assert_eq!(under.size, size(px(8.), px(4.)));
+        assert_eq!(under.origin.y, px(32.), "at the cell's bottom");
+        // Thin shapes never vanish when zoomed out.
+        assert_eq!(
+            cursor_quad(cell, CursorShape::Beam, 0.25).size.width,
+            px(1.)
+        );
+    }
 }

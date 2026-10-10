@@ -127,6 +127,7 @@ pub(crate) fn render(
                 focused,
                 ws.marked.clone().filter(|_| focused),
                 ws.theme.clone(),
+                ws.blink_on,
                 cx.entity(),
             ))
             .test_support();
