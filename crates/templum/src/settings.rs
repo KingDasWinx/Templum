@@ -18,8 +18,8 @@ use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _, TITLE_BAR_HEIGHT};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, Entity, SharedString, Subscription,
-    TestSupportExt, Window, div, font, point, px,
+    AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, Entity, MouseDownEvent,
+    SharedString, Subscription, TestSupportExt, Window, div, font, point, px,
 };
 
 use crate::config::{
@@ -151,6 +151,14 @@ pub(crate) fn render(
         }])
         .track_focus(&ws.settings_focus)
         .on_key_down(cx.listener(Workspace::on_settings_key))
+        // A press anywhere in the panel stops recording a shortcut (a row's click, on release,
+        // starts it again).
+        .capture_any_mouse_down(cx.listener(|ws, _: &MouseDownEvent, _, cx| {
+            if ws.recording.take().is_some() {
+                ws.key_note = None;
+                cx.notify();
+            }
+        }))
         // Nothing under the panel (blocks, the canvas) gets its presses or its wheel.
         .occlude()
         .child(header)

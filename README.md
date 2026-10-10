@@ -77,8 +77,9 @@ as you make it.
 - Every change applies at once and is saved to `config.toml` a moment later, keeping your comments. Numbers apply
   when you press Enter or leave the field. Each section's reset button puts its settings back to the defaults by
   removing their lines from the file.
-- To change a shortcut, click it and press the new one. Esc cancels, Backspace leaves the command without a
-  shortcut, and a shortcut another command already has is refused with its name.
+- To change a shortcut, click it and press the new one, with Ctrl, Alt or Super (Cmd on macOS), or an F key. Esc
+  cancels, Backspace leaves the command without a shortcut, and a shortcut another command already has is refused
+  with its name.
 - Edits you make by hand to `config.toml` show up in the panel.
 
 ## Configuration

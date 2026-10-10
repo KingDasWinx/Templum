@@ -14,10 +14,10 @@ use gpui_kit::component::{TITLE_BAR_HEIGHT, WindowExt, window_paddings};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Anchor, App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler,
-    EntityInputHandler, FocusHandle, Hsla, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PinchEvent, Pixels, Point as PixelPoint, ScrollDelta,
-    ScrollWheelEvent, SharedString, Subscription, Task, UTF16Selection, Window, WindowAppearance,
-    canvas, div, fill, point, px, size,
+    EntityInputHandler, FocusHandle, Hsla, KeyBinding, KeyDownEvent, Keystroke, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PinchEvent, Pixels, Point as PixelPoint,
+    ScrollDelta, ScrollWheelEvent, SharedString, Subscription, Task, UTF16Selection, Window,
+    WindowAppearance, canvas, div, fill, point, px, size,
 };
 use templum_canvas::{
     Block, BlockId, Camera, Canvas, Gesture, Point, Rect, Size, chrome, dot_grid,
@@ -710,6 +710,16 @@ impl Workspace {
                 }
                 "backspace" => self.set_shortcut(command, Keys::Many(Vec::new()), cx),
                 key if key.is_empty() || MODIFIER_KEYS.contains(&key) => return,
+                _ if !stands_as_shortcut(k) => {
+                    self.key_note = Some(
+                        if cfg!(target_os = "macos") {
+                            "Add Cmd, Ctrl or Option, or use an F key"
+                        } else {
+                            "Add Ctrl, Alt or Super, or use an F key"
+                        }
+                        .to_string(),
+                    );
+                }
                 _ => match self.keymap.command(k) {
                     Some(owner) if owner != command => {
                         self.key_note = Some(format!(
@@ -1120,6 +1130,18 @@ impl Workspace {
             cx.notify();
         }
     }
+}
+
+/// A shortcut needs Ctrl, Alt or Super (Cmd), or is an F key: any other key is typing, which the
+/// terminals must keep getting.
+fn stands_as_shortcut(k: &Keystroke) -> bool {
+    let m = &k.modifiers;
+    let f_key = k
+        .key
+        .strip_prefix('f')
+        .and_then(|n| n.parse::<u8>().ok())
+        .is_some_and(|n| (1..=35).contains(&n));
+    m.control || m.alt || m.platform || m.function || f_key
 }
 
 /// On macOS, Option+key types the layout's character (`@` on German, `~`...), like Terminal.app.
@@ -3101,5 +3123,84 @@ mod tests {
         })
         .unwrap();
         ws.read_with(cx, |ws, _| assert_eq!(ws.recording, Some(Command::Copy)));
+    }
+
+    #[gpui_kit::test]
+    fn a_key_without_ctrl_alt_or_super_is_refused(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        start_recording(handle, &ws, Command::NewTerminal, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.press("n", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.recording, Some(Command::NewTerminal), "still recording");
+            assert!(ws.key_note.is_some(), "and says why");
+            assert!(
+                ws.config.keys.new_terminal.is_none(),
+                "terminals keep their n"
+            );
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.press("f5", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(
+                ws.config.keys.new_terminal,
+                Some(Keys::One("f5".into())),
+                "F keys may stand alone"
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn clicking_elsewhere_in_the_panel_stops_recording(cx: &mut TestAppContext) {
+        // No config folder: the footer shows its line, a place to click.
+        let (handle, ws) = open(cx);
+        start_recording(handle, &ws, Command::Copy, cx);
+        settle_slide(handle, cx);
+        cx.update_window(handle, |_, window, cx| window.click("settings-status", cx))
+            .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.recording, None));
+        assert!(panel_open(&ws, cx));
+    }
+
+    #[gpui_kit::test]
+    fn clicking_a_terminal_stops_recording(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        start_recording(handle, &ws, Command::Copy, cx);
+        settle_slide(handle, cx);
+        cx.update_window(handle, |_, window, cx| {
+            let (o, r) = {
+                let ws = ws.read(cx);
+                let rect = ws.canvas.get(id).unwrap().rect;
+                (ws.origin, ws.canvas.camera.rect_to_screen(rect))
+            };
+            let at = (
+                f32::from(o.x) + r.x + 20.0,
+                f32::from(o.y) + r.y + templum_canvas::chrome::TITLE_H + 20.0,
+            );
+            click(window, cx, at, 1);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.recording, None));
+    }
+
+    #[gpui_kit::test]
+    fn closing_the_panel_stops_recording(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        start_recording(handle, &ws, Command::Copy, cx);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.close_settings(window, cx);
+                assert_eq!(ws.recording, None);
+            })
+        })
+        .unwrap();
     }
 }
