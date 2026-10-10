@@ -91,6 +91,10 @@ pub(crate) fn render(ws: &Workspace, block: Block, cx: &mut Context<Workspace>) 
         .p(px(chrome::PAD * z))
         .overflow_hidden()
         .cursor_text()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |ws, e: &MouseDownEvent, _, _| ws.begin_select(id, e)),
+        )
         .on_scroll_wheel(
             cx.listener(move |ws, e: &ScrollWheelEvent, _, cx| ws.scroll_terminal(id, e, cx)),
         )
@@ -116,7 +120,12 @@ pub(crate) fn render(ws: &Workspace, block: Block, cx: &mut Context<Workspace>) 
         .cursor_nwse_resize()
         .on_mouse_down(
             MouseButton::Left,
-            cx.listener(move |ws, e: &MouseDownEvent, _, _| ws.begin_resize(id, e.position)),
+            // The handle overlaps the body: stop here so the body doesn't start a selection.
+            cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                ws.focus_block(id, window, cx);
+                ws.begin_resize(id, e.position);
+                cx.stop_propagation();
+            }),
         )
         .test_support();
 

@@ -11,18 +11,21 @@ use gpui_kit::component::WindowExt;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Bounds, Context, DispatchPhase, ElementInputHandler, EntityInputHandler, FocusHandle,
-    KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PinchEvent, Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent, Task, UTF16Selection,
-    Window, actions, canvas, div, px, rgb,
+    App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler, EntityInputHandler,
+    FocusHandle, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PinchEvent, Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent, Task,
+    UTF16Selection, Window, actions, canvas, div, px, rgb,
 };
 use templum_canvas::{BlockId, Canvas, Gesture, Point, Rect, Size, chrome};
-use templum_terminal::{KeyInput, Notify, Snapshot, SpawnOptions, Terminal};
+use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
 use crate::block;
 use crate::grid::CellMetrics;
 
-actions!(templum, [NewTerminal, CloseTerminal]);
+actions!(
+    templum,
+    [NewTerminal, CloseTerminal, CopySelection, PasteClipboard]
+);
 
 pub(crate) const DEFAULT_COLS: u16 = 80;
 pub(crate) const DEFAULT_ROWS: u16 = 24;
@@ -38,11 +41,15 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-t", NewTerminal, None),
         KeyBinding::new("cmd-w", CloseTerminal, None),
+        KeyBinding::new("cmd-c", CopySelection, None),
+        KeyBinding::new("cmd-v", PasteClipboard, None),
     ]);
     #[cfg(not(target_os = "macos"))]
     cx.bind_keys([
         KeyBinding::new("ctrl-shift-t", NewTerminal, None),
         KeyBinding::new("ctrl-shift-w", CloseTerminal, None),
+        KeyBinding::new("ctrl-shift-c", CopySelection, None),
+        KeyBinding::new("ctrl-shift-v", PasteClipboard, None),
     ]);
 }
 
@@ -54,6 +61,8 @@ pub(crate) struct Pane {
 #[derive(Clone, Copy)]
 enum Drag {
     Canvas(Gesture),
+    /// Selecting text in a block's terminal.
+    Select(BlockId),
 }
 
 /// Called at the start of every render; returning false removes it (the bench drives frames).
@@ -218,9 +227,62 @@ impl Workspace {
                     }
                 }
             }
+            Some(Drag::Select(id)) => {
+                let id = *id;
+                if let (Some((row, col, side)), Some(pane)) =
+                    (self.cell_under(id, pos), self.terminals.get(&id))
+                {
+                    pane.term.shared().select_update(row, col, side);
+                }
+            }
             None => return,
         }
         cx.notify();
+    }
+
+    /// The terminal cell under a window position: (row, col, side), clamped by the terminal.
+    fn cell_under(&self, id: BlockId, pos: PixelPoint<Pixels>) -> Option<(usize, usize, Side)> {
+        let block = self.canvas.get(id)?;
+        let world = self.canvas.camera.to_world(self.local(pos));
+        let (row, col, right) = chrome::cell_at(block.rect, world, self.cell.size);
+        let side = if right { Side::Right } else { Side::Left };
+        Some((row, col, side))
+    }
+
+    /// Mouse down in a body: 1 click selects by character, 2 by word, 3 by line.
+    pub(crate) fn begin_select(&mut self, id: BlockId, e: &MouseDownEvent) {
+        let Some((row, col, side)) = self.cell_under(id, e.position) else {
+            return;
+        };
+        let Some(pane) = self.terminals.get(&id) else {
+            return;
+        };
+        let kind = match e.click_count {
+            1 => SelectionKind::Simple,
+            2 => SelectionKind::Word,
+            _ => SelectionKind::Line,
+        };
+        pane.term.shared().select_start(row, col, side, kind);
+        self.drag = Some(Drag::Select(id));
+    }
+
+    fn copy_selection(&mut self, _: &CopySelection, _: &mut Window, cx: &mut Context<Self>) {
+        let text = self
+            .focused
+            .and_then(|id| self.terminals.get(&id))
+            .and_then(|pane| pane.term.shared().selection_text());
+        if let Some(text) = text {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    fn paste_clipboard(&mut self, _: &PasteClipboard, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return;
+        };
+        if let Some(pane) = self.focused.and_then(|id| self.terminals.get(&id)) {
+            pane.term.paste(&text);
+        }
     }
 
     fn end_drag(&mut self) {
@@ -429,6 +491,8 @@ impl Render for Workspace {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(Self::close_terminal))
+            .on_action(cx.listener(Self::copy_selection))
+            .on_action(cx.listener(Self::paste_clipboard))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_background_down))
             .on_scroll_wheel(cx.listener(Self::on_background_scroll))
@@ -787,5 +851,73 @@ mod tests {
         })
         .unwrap();
         ws.read_with(cx, |ws, _| assert_eq!(ws.canvas.camera.zoom(), 1.1));
+    }
+
+    #[cfg(target_os = "macos")]
+    const COPY: &str = "cmd-c";
+    #[cfg(not(target_os = "macos"))]
+    const COPY: &str = "ctrl-shift-c";
+
+    #[gpui_kit::test]
+    fn copy_puts_the_selection_on_the_clipboard(cx: &mut TestAppContext) {
+        use std::time::{Duration, Instant};
+        use templum_terminal::{SelectionKind, Side, Snapshot};
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        // `cat` echoes its input; on Windows the quiet command is `cmd /K`.
+        #[cfg(unix)]
+        let input = "hello\r";
+        #[cfg(windows)]
+        let input = "echo hello\r";
+        ws.read_with(cx, |ws, _| {
+            ws.terminals[&id].term.write(input.as_bytes().to_vec())
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let shown = ws.read_with(cx, |ws, _| {
+                let mut snap = Snapshot::default();
+                snap.refresh(ws.terminals[&id].term.shared());
+                snap.text()
+            });
+            if shown.contains("hello") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "no echo, screen: {shown:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        ws.read_with(cx, |ws, _| {
+            let pane = &ws.terminals[&id];
+            let (cols, rows) = pane.term.grid_size();
+            let term = pane.term.shared();
+            term.select_start(0, 0, Side::Left, SelectionKind::Simple);
+            term.select_update(rows as usize - 1, cols as usize - 1, Side::Right);
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(COPY, cx);
+        })
+        .unwrap();
+        let text = cx
+            .read_from_clipboard()
+            .and_then(|c| c.text())
+            .unwrap_or_default();
+        assert!(text.contains("hello"), "clipboard: {text:?}");
+    }
+
+    #[gpui_kit::test]
+    fn mouse_down_in_a_body_starts_a_selection(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let body = window.find(("body", id.0 as usize)).bounds();
+            let from = point(body.origin.x + px(20.), body.origin.y + px(20.));
+            window.drag(from, point(from.x + px(80.), from.y), cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.focused, Some(id));
+            assert!(ws.drag.is_none(), "the selection drag ended on mouse up");
+        });
     }
 }
