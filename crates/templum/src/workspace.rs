@@ -25,7 +25,7 @@ use templum_canvas::{
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
 use crate::block;
-use crate::config::{self, Config, WorkingDirectory};
+use crate::config::{self, Config, ThemeConfig, WorkingDirectory};
 use crate::grid::{CellMetrics, hsla};
 use crate::motion;
 use crate::theme::{self, Entry, Theme};
@@ -201,6 +201,10 @@ impl Workspace {
         };
         let config_stamp = config::Stamp::of(config_dir.as_deref());
         let themes = theme::load(config_dir.as_deref());
+        for warning in missing_themes(&themes, &config.theme) {
+            eprintln!("templum: {warning}");
+            show_notification(window, cx, Notification::warning(warning));
+        }
         let system_dark = is_dark(window.appearance());
         let dark = config.theme.mode.dark(system_dark);
         let theme = theme::pick(&themes, config.theme.name(dark), theme::default_name(dark));
@@ -423,6 +427,12 @@ impl Workspace {
         }
         if self.config.theme != old.theme {
             self.picker = None;
+            // A theme file may have been added since startup.
+            self.themes = theme::load(self.config_dir.as_deref());
+            for warning in missing_themes(&self.themes, &self.config.theme) {
+                eprintln!("templum: {warning}");
+                show_notification(window, cx, Notification::warning(warning));
+            }
             self.refresh_theme(cx);
         }
         if self.config.cursor != old.cursor || self.config.terminal != old.terminal {
@@ -865,6 +875,19 @@ impl Workspace {
 /// Keys that produce no printable text (Option+arrows, Option+Backspace) stay Meta.
 fn option_types_text(key: &str, key_char: Option<&str>, macos: bool) -> bool {
     macos && key_char.is_some_and(|c| c != key && !c.is_empty() && !c.chars().any(char::is_control))
+}
+
+/// "No theme named X" for each configured name that is neither built in nor in the themes
+/// folder.
+fn missing_themes(themes: &[Entry], config: &ThemeConfig) -> Vec<String> {
+    [
+        (config.light.as_str(), theme::DEFAULT_LIGHT),
+        (config.dark.as_str(), theme::DEFAULT_DARK),
+    ]
+    .into_iter()
+    .filter(|(name, _)| theme::find(themes, name).is_none())
+    .map(|(name, default)| format!("No theme named \"{name}\"; using \"{default}\""))
+    .collect()
 }
 
 /// Shows a notification at the bottom right, clear of the title bar's buttons. Deferred: at
@@ -2051,6 +2074,32 @@ mod tests {
             assert!(Instant::now() < deadline, "no cwd");
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    #[gpui_kit::test]
+    fn a_theme_added_after_startup_can_be_set_in_the_config(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        std::fs::create_dir(dir.path().join("themes")).unwrap();
+        std::fs::write(
+            dir.path().join("themes").join("mine.toml"),
+            include_str!("../themes/one-dark.toml"),
+        )
+        .unwrap();
+        write_config(dir.path(), "[theme]\nlight = \"mine\"\n");
+        reload(handle, &ws, cx);
+        ws.read_with(cx, |ws, _| assert_eq!(ws.theme.name, "mine"));
+        assert_eq!(notification_count(handle, cx), 0);
+    }
+
+    #[gpui_kit::test]
+    fn an_unknown_theme_name_warns(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        write_config(dir.path(), "[theme]\nlight = \"Nope\"\n");
+        reload(handle, &ws, cx);
+        ws.read_with(cx, |ws, _| assert_eq!(ws.theme.name, "Catppuccin Latte"));
+        assert_eq!(notification_count(handle, cx), 1, "the warning");
     }
 
     #[test]
