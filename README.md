@@ -44,6 +44,28 @@ cargo run -p templum
 | Ctrl+0 | Cmd+0 | Zoom 100% |
 | Ctrl+Shift+1 | Cmd+Shift+1 | Fit all blocks |
 
+## Themes
+
+Templum follows your system's light or dark mode. Click the **palette** button in the title bar to pick a theme: hovering or the
+arrow keys preview it, and a click or Enter keeps it for the current mode. The default is Catppuccin: Latte in
+light mode, Mocha in dark mode.
+
+Any theme in [Alacritty's format](https://github.com/alacritty/alacritty-theme) works. Put its `.toml` file in the
+`themes` folder, and it shows up under "My themes" the next time you open the picker:
+
+| OS | Folder |
+|---|---|
+| Linux, macOS | `~/.config/templum/themes/` (or `$XDG_CONFIG_HOME/templum/themes/`) |
+| Windows | `%APPDATA%\templum\themes\` |
+
+Your choice is saved in `config.toml`, one folder up:
+
+```toml
+[theme]
+light = "Catppuccin Latte"
+dark = "Catppuccin Mocha"
+```
+
 ## Pre-built binaries
 
 There are no releases yet. When they arrive on the [releases page](https://github.com/KingDasWinx/Templum/releases),

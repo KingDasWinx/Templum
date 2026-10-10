@@ -1,7 +1,7 @@
 # Design system and themes
 
 - **Date:** 2026-10-10
-- **Status:** Draft
+- **Status:** Implemented
 - **Builds on:** [walking-skeleton.md](walking-skeleton.md), [ARCHITECTURE.md](../ARCHITECTURE.md),
   [ADR-0002](../adr/0002-ui-framework.md)
 
@@ -46,12 +46,12 @@ Alacritty's format dropped into a folder, all switchable from a picker in the ti
   below the bar) and a hairline bottom border:
   - left: the traffic lights (macOS only);
   - center: "Templum" in the secondary text color;
-  - right: the zoom level ("100%"; clicking it resets the zoom to 100%), **◐** (opens the theme picker) and **+**
+  - right: the zoom level ("100%"; clicking it resets the zoom to 100%), the palette button (gpui-kit's palette icon; opens the theme picker) and **+**
     (opens a terminal at the viewport center, like Ctrl/Cmd+Shift+T);
   - on Windows and Linux, the minimize, maximize and close buttons sit at the far right.
-- **Linux decorations.** The window requests client-side decorations and wraps its root in gpui-kit's
-  `window_border()`, which draws the shadow and the resize edges. Without this, KDE and GNOME would draw a second
-  title bar.
+- **Linux decorations.** The window requests client-side decorations. gpui-kit's root already wraps every window
+  in `window_border()`, which draws the shadow and the resize edges. Without client-side decorations, KDE and
+  GNOME would draw a second title bar.
 - **The canvas** sits below the title bar. The workspace's `origin` already converts window coordinates to canvas
   coordinates, so it keeps working.
 
@@ -69,7 +69,7 @@ Alacritty's format dropped into a folder, all switchable from a picker in the ti
 - One surface: the header is the same color as the terminal, with no separate strip. Corner radius is 10 world
   units (scaled by zoom), and the background is the theme's background, fully opaque.
 - **Title:** centered, in the system UI font, color `title` (focused) or `title_dim` (other blocks).
-- **Close button (✕):** right side of the header. **Resize grip:** two diagonal lines in the bottom-right corner.
+- **Close button (✕):** right side of the header. **Resize grip:** gpui-kit's resize-corner icon in the bottom-right corner.
   Both are rendered only while the pointer is over the block. They fade in over 120 ms, and fade-out is instant.
   While shown, their hit areas are the same as today: the grip keeps `chrome::HANDLE`.
 - **Border:** always 1 px. It uses the `hairline` color, or the `accent` color when the block is focused. Today the
@@ -125,7 +125,7 @@ sRGB, and `c @ a` is color `c` with alpha `a`.
 | `hint` | `foreground @ 0.40` |
 | `hover` | `foreground @ 0.08` (behind the hovered ✕) |
 | `accent` | `normal.blue` |
-| `selection` | `colors.selection.background` if set, else `mix(background, normal.blue, 0.35)` |
+| `selection` | (`colors.selection.background` if set, else `normal.blue`) `@ 0.35`, drawn over the cells |
 | `cursor` | `colors.cursor.cursor` if set, else `foreground`; drawn as today (filled at 0.6 alpha when focused, outlined otherwise) |
 | `marked` | `normal.yellow` (IME pre-edit text, on `background`, underlined) |
 | `shadow` | `black @ 0.45` for dark themes; `black @ 0.15` for light ones |
@@ -133,13 +133,13 @@ sRGB, and `c @ a` is color `c` with alpha `a`.
 The gpui-kit theme, which the picker and the title bar use, gets its colors from the active theme as well:
 
 - `mode` is light or dark;
-- `background` and `popover` are the theme background;
-- `title_bar` is transparent, so the bar shows the window's canvas fill (and the glass) behind it;
+- `background` and `title_bar` are transparent: gpui-kit's root paints `background` under the whole window, and
+  the glass must show through;
+- `popover` is the theme background;
 - `foreground` and `popover_foreground` are the theme foreground;
 - `border`, `title_bar_border` and `window_border` are `hairline`;
 - `muted_foreground` is `title_dim`;
-- `list_hover` is `hover`;
-- `list_active`, `accent`, `ring` and `primary` are `accent`;
+- `accent` and `ring` are `accent`;
 - `selection` is `selection`.
 
 Templum never calls `Theme::sync_system_appearance`, so gpui-kit never overwrites these colors.
@@ -152,7 +152,7 @@ crediting its source and license.
 | Name | Source |
 |---|---|
 | Catppuccin Latte, Catppuccin Frappé, Catppuccin Macchiato, Catppuccin Mocha | [catppuccin/alacritty](https://github.com/catppuccin/alacritty) (MIT) |
-| One Light, One Dark | Atom's One themes (MIT) |
+| One Light, One Dark | [alacritty/alacritty-theme](https://github.com/alacritty/alacritty-theme) `one_dark.toml` and `one_light.toml` (Apache-2.0; Atom's One themes are MIT) |
 | Apple Light, Apple Dark | Apple's system colors; Light uses the increased-contrast variants so yellow and cyan stay readable on white |
 
 **Defaults:** Catppuccin Latte in light mode, Catppuccin Mocha in dark mode.
@@ -173,7 +173,7 @@ crediting its source and license.
 
 ### Theme picker
 
-- **◐ opens a popover** under the button, listing:
+- **The palette button opens a popover** under it, listing:
   - three groups of built-ins: "Catppuccin", "One" and "Apple";
   - then "My themes", only when the folder has valid themes, sorted by name.
 - **The active theme has a ✓.**
@@ -233,9 +233,9 @@ background. They now get the active theme's colors instead of the constants used
 
 ### `templum-canvas`
 
-- `dots.rs` holds `dot_grid(camera, viewport) -> DotGrid { spacing, first }`: the spacing in world units after the
-  ×4 rule, and the first visible dot's world position, aligned to multiples of the spacing. It is pure and
-  unit-tested.
+- `dots.rs` holds `dot_grid(camera) -> DotGrid { spacing, first }`: the spacing in world units after the ×4 rule,
+  and the first visible dot's world position, aligned to multiples of the spacing. The painter stops at the
+  viewport's edge, so the function doesn't need the viewport. It is pure and unit-tested.
 
 ### `templum` (the app)
 
@@ -244,7 +244,7 @@ background. They now get the active theme's colors instead of the constants used
 | `theme.rs` (new) | `Theme` (name, `Palette`, cursor, selection, `is_dark`, derived tokens), parsing Alacritty TOML, the built-ins (`include_str!`), reading the user folder, `window_background(os, desktop, wayland)` |
 | `themes/*.toml` (new) | The 8 built-in themes |
 | `config.rs` (new) | Config path, reading `[theme]`, saving one key with `toml_edit` |
-| `title_bar.rs` (new) | The integrated bar: zoom level, ◐, + |
+| `title_bar.rs` (new) | The integrated bar: zoom level, palette button, + |
 | `theme_picker.rs` (new) | The popover: list, preview, choose, cancel, the save-error line |
 | `workspace.rs` | Holds the light and dark theme names, the loaded themes, the preview and the active theme; observes the appearance; applies a theme; paints the dot grid and the hint |
 | `block.rs`, `grid.rs` | Colors from the active theme; the continuous card; hover state for ✕ and grip |
@@ -337,7 +337,8 @@ Tests are written first, as always. Every item runs in CI on Linux, macOS and Wi
   - hovering an item changes the active palette;
   - Esc restores the previous palette;
   - Enter saves `config.toml` with the chosen name for the current mode.
-- An appearance change (`TestWindow::simulate_appearance_change`) swaps between the light and dark themes.
+- `Workspace::set_dark` swaps between the light and dark themes. GPUI's `simulate_appearance_change` is not
+  public outside GPUI.
 - A block's body bounds are the same focused and unfocused (the 1 px shift is gone).
 - The ✕ element doesn't exist until the pointer moves over its block.
 
@@ -362,7 +363,7 @@ Three pull requests, each green in CI and useful on its own:
    Templum turns Catppuccin.
 2. **The new look.** Window background per platform; `TitleBar` with the zoom level and **+**; client decorations on
    Linux; the dot grid; the continuous card (hover ✕ and grip, 1 px focus ring, shadows).
-3. **The picker.** **◐** and the popover, preview, choose and cancel, saving with `toml_edit`, the save-error line.
+3. **The picker.** The palette button and the popover, preview, choose and cancel, saving with `toml_edit`, the save-error line.
    The README gets a "Themes" section (where the folder is, and how to use a theme from alacritty-theme), and
    ARCHITECTURE.md gets updated.
 

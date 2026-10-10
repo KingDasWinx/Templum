@@ -14,7 +14,7 @@ Templum is a single native Rust application. There is no webview: the UI is draw
 
 All three crates exist. New library crates are created together with the first real code that needs
 them, never as empty scaffolding. The behavior of the current version is specified in
-[specs/walking-skeleton.md](specs/walking-skeleton.md).
+[specs/walking-skeleton.md](specs/walking-skeleton.md) and [specs/design-system.md](specs/design-system.md).
 
 **Boundary rule:** if the UI framework ever has to change, only `crates/templum` changes. Logic that can live
 without the UI belongs in a library crate, where it is unit-tested headlessly.
@@ -42,6 +42,16 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   far-away blocks are drawn simplified (level of detail).
 - **Persistence (planned):** the workspace (camera + blocks: rect, cwd, shell, title) is saved as JSON in the
   platform data directory. On restore, fresh shells start in the saved directories.
+
+## Look and themes
+
+- The window is translucent where the system blurs what is behind it (macOS, Windows, and KDE and Hyprland on
+  Wayland) and opaque elsewhere. Blocks are always opaque.
+- A theme is a file in Alacritty's color format. `crates/templum/src/theme.rs` derives every interface color
+  from the terminal colors, so any Alacritty theme works. The built-ins live in `crates/templum/themes/`, with
+  their credits.
+- `templum-terminal` only knows a `Palette` (foreground, background, 16 ANSI colors). It never sees a theme.
+- `config.toml` holds the light and dark theme names; the picker edits it with `toml_edit`, keeping comments.
 
 ## Distribution
 
