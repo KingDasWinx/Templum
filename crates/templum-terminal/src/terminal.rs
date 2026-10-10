@@ -185,6 +185,8 @@ impl Terminal {
             Some((program, _)) => file_stem(program),
             None => default_shell_name(),
         };
+        // Windows has one more field (escape_args): the update is only needless elsewhere.
+        #[allow(clippy::needless_update)]
         let options = tty::Options {
             shell: opts
                 .command
@@ -193,6 +195,9 @@ impl Terminal {
                 ("TERM".into(), "xterm-256color".into()),
                 ("COLORTERM".into(), "truecolor".into()),
             ]),
+            // Like other GUI terminals: a launch from Finder or the Start menu doesn't leave
+            // shells in / or the install folder.
+            working_directory: std::env::home_dir(),
             // Show everything the shell printed before reporting its exit.
             drain_on_exit: true,
             ..Default::default()

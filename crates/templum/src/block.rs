@@ -144,6 +144,8 @@ pub(crate) fn render(ws: &Workspace, block: Block, cx: &mut Context<Workspace>) 
         .overflow_hidden()
         // Nothing behind a block reacts to its clicks; wheel events still bubble (title bar pans).
         .block_mouse_except_scroll()
+        // Blocking hides the workspace from pinch (it hit-tests like a click): zoom here too.
+        .on_pinch(cx.listener(|ws, e, window, cx| ws.on_pinch(e, window, cx)))
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |ws, _: &MouseDownEvent, window, cx| {

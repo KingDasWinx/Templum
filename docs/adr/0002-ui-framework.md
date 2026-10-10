@@ -61,7 +61,11 @@ Use GPUI through **`gpui-kit`**, pinned exactly (`gpui-kit = "=0.7.1"`, which pi
    must be encoded by hand.
 4. **Waking the UI from other threads.** Send through a `futures` unbounded channel to a task spawned on the app that
    calls `notify()`. `window.refresh()` is ignored while drawing; `request_animation_frame()` works.
-5. **Surprising defaults.**
+5. **gpui-kit's Root binds keys the terminal needs.** It maps `tab`/`shift-tab` to focus navigation
+   in the `Root` context, and keybindings run before key-down listeners, so the shell never sees them.
+   Override them with `KeyBinding::new("tab", gpui_kit::NoAction {}, Some("Root"))`. Its `ctrl-c`
+   (`cmd-c` on macOS) Copy passes the key on when no text is selected.
+6. **Surprising defaults.**
    - No monospace font ships with GPUI: pick one from `all_font_names()`, because `resolve_font` panics if nothing
      matches.
    - Mouse-move listeners only fire while the pointer is over the element.

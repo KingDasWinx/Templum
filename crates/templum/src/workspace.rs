@@ -46,6 +46,11 @@ const HINT: &str = "Double-click or press Cmd+T to open a terminal";
 const HINT: &str = "Double-click or press Ctrl+Shift+T to open a terminal";
 
 pub fn bind_keys(cx: &mut App) {
+    // gpui-kit's Root binds tab/shift-tab to focus navigation: give them back to the shell.
+    cx.bind_keys([
+        KeyBinding::new("tab", gpui_kit::NoAction {}, Some("Root")),
+        KeyBinding::new("shift-tab", gpui_kit::NoAction {}, Some("Root")),
+    ]);
     #[cfg(target_os = "macos")]
     cx.bind_keys([
         KeyBinding::new("cmd-t", NewTerminal, None),
@@ -369,7 +374,8 @@ impl Workspace {
             key: &k.key,
             key_char: k.key_char.as_deref(),
             ctrl: k.modifiers.control,
-            alt: k.modifiers.alt,
+            alt: k.modifiers.alt
+                && !option_types_text(&k.key, k.key_char.as_deref(), cfg!(target_os = "macos")),
             shift: k.modifiers.shift,
         };
         if pane.term.key(&input) {
@@ -424,7 +430,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn on_pinch(&mut self, e: &PinchEvent, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn on_pinch(&mut self, e: &PinchEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.pristine = false;
         self.zoom_acc += e.delta;
         if self.zoom_acc.abs() >= 0.15 {
@@ -459,6 +465,12 @@ impl Workspace {
             cx.notify();
         }
     }
+}
+
+/// On macOS, Option+key types the layout's character (`@` on German, `~`...), like Terminal.app.
+/// Keys that produce no printable text (Option+arrows, Option+Backspace) stay Meta.
+fn option_types_text(key: &str, key_char: Option<&str>, macos: bool) -> bool {
+    macos && key_char.is_some_and(|c| c != key && !c.is_empty() && !c.chars().any(char::is_control))
 }
 
 fn viewport(window: &Window) -> Size {
@@ -1029,5 +1041,83 @@ mod tests {
             assert_eq!(ws.read(cx).canvas.visible(vp).count(), 2);
         })
         .unwrap();
+    }
+
+    /// Presses `key`, then types "x" + Enter into `cat`, and returns the screen once "x" shows.
+    fn echo_after(
+        key: &str,
+        handle: AnyWindowHandle,
+        ws: &Entity<Workspace>,
+        cx: &mut TestAppContext,
+    ) -> String {
+        use std::time::{Duration, Instant};
+        use templum_terminal::Snapshot;
+        let id = first_id(ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(key, cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| ws.terminals[&id].term.write(b"x\r".to_vec()));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let shown = ws.read_with(cx, |ws, _| {
+                let mut snap = Snapshot::default();
+                snap.refresh(ws.terminals[&id].term.shared());
+                snap.text()
+            });
+            if shown.contains('x') {
+                return shown;
+            }
+            assert!(Instant::now() < deadline, "no echo: {shown:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    // gpui-kit's Root binds tab to focus navigation; the shell must get it (completion).
+    #[cfg(unix)]
+    #[gpui_kit::test]
+    fn tab_reaches_the_shell(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let shown = echo_after("tab", handle, &ws, cx);
+        let first = shown.lines().next().unwrap_or("");
+        assert!(
+            first.starts_with(' '),
+            "Tab never reached the shell; screen: {shown:?}"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn pinch_over_a_block_zooms(cx: &mut TestAppContext) {
+        use gpui_kit::PinchEvent;
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let at = window.find(("body", id.0 as usize)).bounds().center();
+            window.dispatch_event(
+                PlatformInput::Pinch(PinchEvent {
+                    position: at,
+                    delta: 0.3,
+                    modifiers: Modifiers::default(),
+                    phase: TouchPhase::Moved,
+                }),
+                cx,
+            );
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.canvas.camera.zoom(), 1.1));
+    }
+
+    #[test]
+    fn macos_option_types_the_layout_character() {
+        use super::option_types_text;
+        // German layout: Option+L types "@".
+        assert!(option_types_text("l", Some("@"), true));
+        // Option+arrows and Option+Backspace carry no text: they stay Meta.
+        assert!(!option_types_text("left", None, true));
+        assert!(!option_types_text("backspace", Some("\x7f"), true));
+        // Elsewhere Alt is always Meta (AltGr is not reported as Alt on Linux).
+        assert!(!option_types_text("l", Some("@"), false));
     }
 }
