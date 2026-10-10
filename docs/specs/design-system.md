@@ -86,7 +86,12 @@ Alacritty's format dropped into a folder, all switchable from a picker in the ti
 
 ### Motion
 
-Only the 120 ms fade-in of the close button and grip. Nothing else animates.
+- The close button and grip fade in over 120 ms.
+- **A new block pops in** over 0.28 s: it grows from 88% past 100% (about 101.6%) and settles, fading in.
+- **A closed block** shrinks to 92% and fades out over 0.18 s. It leaves the canvas at once and is drawn as a ghost
+  that clicks go through; its shell lives until the fade ends.
+- Scales snap to 0.02 steps: a block is drawn at zoom × scale, so text is rasterized at only a few extra sizes.
+- Nothing else animates (no animated zoom).
 
 ## Themes
 
