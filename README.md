@@ -85,6 +85,14 @@ as you make it.
   to have it.
 - Edits you make by hand to `config.toml` show up in the panel.
 
+## Your canvas is kept
+
+Templum saves the canvas as you go (every few seconds, and when it quits) and brings it back when it opens: the
+view, every terminal's place and size, and a new shell in each terminal's last folder. What was on screen doesn't
+come back. The file is `~/.local/share/templum/workspaces/default.json`
+(`~/Library/Application Support/Templum/workspaces/` on macOS, `%APPDATA%\templum\workspaces\` on Windows). If
+Templum can't read it, it keeps it as `default.json.bak` and starts fresh.
+
 ## Configuration
 
 Everything is in `config.toml`, in the folder from [Themes](#themes) (`~/.config/templum/` on Linux and macOS,
