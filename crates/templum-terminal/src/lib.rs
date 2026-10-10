@@ -2,6 +2,8 @@
 
 mod input;
 pub mod palette;
+mod terminal;
 
 pub use alacritty_terminal::vte::ansi::Rgb;
 pub use input::{KeyInput, encode_key, paste_bytes};
+pub use terminal::{Notify, SharedTerm, SpawnOptions, Terminal};
