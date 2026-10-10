@@ -2165,6 +2165,23 @@ mod tests {
         ws.read_with(cx, |ws, _| assert!(ws.picker.is_none(), "closed like Esc"));
     }
 
+    #[gpui_kit::test]
+    fn choosing_in_dark_mode_saves_the_dark_theme(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        ws.update(cx, |ws, cx| ws.set_dark(true, cx));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("theme-button", cx);
+            window.render_frame(cx);
+            window.click(("theme-item", builtin_index("One Dark")), cx);
+        })
+        .unwrap();
+        let saved = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(saved.contains("dark = \"One Dark\""), "{saved}");
+        assert!(!saved.contains("light"), "{saved}");
+    }
+
     #[test]
     fn macos_option_types_the_layout_character() {
         use super::option_types_text;

@@ -66,6 +66,44 @@ light = "Catppuccin Latte"
 dark = "Catppuccin Mocha"
 ```
 
+## Configuration
+
+Everything is in `config.toml`, in the folder from [Themes](#themes) (`~/.config/templum/` on Linux and macOS,
+`%APPDATA%\templum\` on Windows). Press **Ctrl+,** (**Cmd+,** on macOS) to open it in your editor: if it doesn't
+exist yet, Templum writes it first with every option commented out. Uncomment a line and save, and it applies at
+once.
+
+```toml
+[font]
+family = "JetBrains Mono"
+size = 14
+
+[window]
+blur = "auto"     # "auto" | true | false
+opacity = 0.72    # the canvas, 0 to 1
+
+[theme]
+mode = "system"   # "system" | "light" | "dark"
+
+[shell]
+program = "fish"
+args = ["--login"]
+working_directory = "inherit"   # "inherit" (the focused terminal's folder) | "~" | a path
+
+[cursor]
+shape = "block"   # "block" | "bar" | "underline"
+blink = false
+
+[terminal]
+scrollback = 10000
+
+[keys]
+new_terminal = "ctrl-shift-t"   # one shortcut, a list, or [] to disable
+```
+
+A mistake in the file (a typo, a value out of range) shows a notification with the line, and Templum keeps the
+last working settings. The full list is in [docs/specs/config.md](docs/specs/config.md).
+
 ## Pre-built binaries
 
 There are no releases yet. When they arrive on the [releases page](https://github.com/KingDasWinx/Templum/releases),

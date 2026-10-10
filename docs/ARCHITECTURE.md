@@ -14,7 +14,8 @@ Templum is a single native Rust application. There is no webview: the UI is draw
 
 All three crates exist. New library crates are created together with the first real code that needs
 them, never as empty scaffolding. The behavior of the current version is specified in
-[specs/walking-skeleton.md](specs/walking-skeleton.md) and [specs/design-system.md](specs/design-system.md).
+[specs/walking-skeleton.md](specs/walking-skeleton.md), [specs/design-system.md](specs/design-system.md) and
+[specs/config.md](specs/config.md).
 
 **Boundary rule:** if the UI framework ever has to change, only `crates/templum` changes. Logic that can live
 without the UI belongs in a library crate, where it is unit-tested headlessly.
@@ -52,6 +53,15 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   their credits.
 - `templum-terminal` only knows a `Palette` (foreground, background, 16 ANSI colors). It never sees a theme.
 - `config.toml` holds the light and dark theme names; the picker edits it with `toml_edit`, keeping comments.
+
+## Configuration
+
+- `config.toml` is read into a typed `Config` (`crates/templum/src/config.rs`) and polled every 0.5 s. A reload
+  applies only what changed; an invalid file keeps the last valid config and shows a notification.
+- Shortcuts are Templum's own keymap (`crates/templum/src/keys.rs`), matched in the workspace's key handler, so a
+  reload can replace them. GPUI key bindings are only used to keep Tab for the shell.
+- `templum-terminal` gets settings as plain values (`TermOptions`, a start folder) and reports a shell's folder
+  through `sysinfo`. It never reads the file.
 
 ## Distribution
 

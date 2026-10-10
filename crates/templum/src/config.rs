@@ -384,6 +384,8 @@ pub(crate) fn save_theme(dir: &Path, dark: bool, name: &str) -> Result<(), SaveE
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(SaveError::Io(e)),
     };
+    let crlf = text.contains("\r\n");
+    let bom = text.starts_with('\u{feff}');
     let mut doc: DocumentMut = text.parse().map_err(|e| SaveError::Broken {
         line: line_of(&text, &e),
     })?;
@@ -393,8 +395,16 @@ pub(crate) fn save_theme(dir: &Path, dark: bool, name: &str) -> Result<(), SaveE
         .as_table_like_mut()
         .ok_or(SaveError::NotATable)?;
     theme.insert(if dark { "dark" } else { "light" }, toml_edit::value(name));
+    // toml_edit writes LF and drops a byte-order mark: put the file's own back.
+    let mut out = doc.to_string();
+    if crlf {
+        out = out.replace("\r\n", "\n").replace('\n', "\r\n");
+    }
+    if bom && !out.starts_with('\u{feff}') {
+        out.insert(0, '\u{feff}');
+    }
     std::fs::create_dir_all(dir).map_err(SaveError::Io)?;
-    std::fs::write(&path, doc.to_string()).map_err(SaveError::Io)
+    std::fs::write(&path, out).map_err(SaveError::Io)
 }
 
 /// The commented config.toml that `open_config` writes when there is none. Uncommented, every
@@ -760,5 +770,22 @@ scrollback = 500
             "[font]\nsize = 20\n",
             "kept"
         );
+    }
+
+    #[test]
+    fn saving_keeps_crlf_and_the_bom() {
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            "\u{feff}# mine\r\n[theme]\r\nlight = \"One Light\"\r\n",
+        );
+        save_theme(d.path(), true, "One Dark").unwrap();
+        let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
+        assert!(text.starts_with('\u{feff}'), "{text:?}");
+        assert!(
+            !text.replace("\r\n", "").contains('\n'),
+            "LF only line: {text:?}"
+        );
+        assert!(text.contains("dark = \"One Dark\""), "{text:?}");
     }
 }
