@@ -18,6 +18,7 @@ use alacritty_terminal::term::{Config, Term, TermMode, viewport_to_point};
 use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::CursorStyle;
 
+use crate::agent::{Agent, agent_of};
 use crate::input::{KeyInput, encode_key, paste_bytes};
 use crate::palette::{self, Palette};
 
@@ -214,36 +215,96 @@ pub struct Processes {
 pub struct Inspection {
     /// The current folder of the program in the foreground (see [`Terminal::cwd`]).
     pub folder: Option<PathBuf>,
+    /// Claude Code or Codex, when one is open in the terminal.
+    pub agent: Option<Agent>,
 }
 
 /// Reads several terminals' processes in one pass over the OS's process table: slow enough to
 /// keep off the UI thread when there are many terminals.
 pub fn inspect(terminals: &[Processes]) -> Vec<Inspection> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-    let pids: Vec<Pid> = terminals
-        .iter()
-        .flat_map(|p| [p.foreground, p.shell])
-        .flatten()
-        .map(Pid::from_u32)
-        .collect();
+    let kind = ProcessRefreshKind::new()
+        .with_cwd(UpdateKind::Always)
+        .with_cmd(UpdateKind::Always);
     let mut system = System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&pids),
-        ProcessRefreshKind::new().with_cwd(UpdateKind::Always),
-    );
-    let cwd = |pid: u32| {
+    if cfg!(windows) {
+        // No foreground process: the agent is found among the shell's descendants.
+        system.refresh_processes_specifics(ProcessesToUpdate::All, kind);
+    } else {
+        let pids: Vec<Pid> = terminals
+            .iter()
+            .flat_map(|p| [p.foreground, p.shell])
+            .flatten()
+            .map(Pid::from_u32)
+            .collect();
+        system.refresh_processes_specifics(ProcessesToUpdate::Some(&pids), kind);
+    }
+    terminals.iter().map(|p| inspect_one(&system, p)).collect()
+}
+
+fn inspect_one(system: &sysinfo::System, p: &Processes) -> Inspection {
+    use sysinfo::Pid;
+    let cwd = |pid: Pid| {
         system
-            .process(Pid::from_u32(pid))?
+            .process(pid)?
             .cwd()
             .filter(|cwd| !cwd.as_os_str().is_empty())
             .map(Path::to_path_buf)
     };
-    terminals
+    let found = candidates(system, p)
+        .into_iter()
+        .find_map(|pid| Some((pid, agent_in(system.process(pid)?)?)));
+    match found {
+        // Its folder: under PowerShell, the shell's own doesn't follow `cd`, but programs it starts do.
+        Some((pid, agent)) => Inspection {
+            folder: cwd(pid),
+            agent: Some(agent),
+        },
+        None => Inspection {
+            folder: p
+                .foreground
+                .map(Pid::from_u32)
+                .and_then(cwd)
+                .or_else(|| p.shell.map(Pid::from_u32).and_then(cwd)),
+            agent: None,
+        },
+    }
+}
+
+fn agent_in(process: &sysinfo::Process) -> Option<Agent> {
+    let args: Vec<String> = process
+        .cmd()
         .iter()
-        .map(|p| Inspection {
-            folder: p.foreground.and_then(cwd).or_else(|| p.shell.and_then(cwd)),
-        })
-        .collect()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    agent_of(&process.name().to_string_lossy(), &args)
+}
+
+/// Where an agent may be: the foreground process (Unix); without one (Windows), the shell and
+/// every process below it, nearest first.
+fn candidates(system: &sysinfo::System, p: &Processes) -> Vec<sysinfo::Pid> {
+    use sysinfo::Pid;
+    if let Some(foreground) = p.foreground {
+        return vec![Pid::from_u32(foreground)];
+    }
+    let Some(shell) = p.shell else {
+        return Vec::new();
+    };
+    let mut found = vec![Pid::from_u32(shell)];
+    let mut i = 0;
+    while i < found.len() {
+        let parent = found[i];
+        let children: Vec<Pid> = system
+            .processes()
+            .iter()
+            .filter(|(pid, process)| process.parent() == Some(parent) && !found.contains(pid))
+            .map(|(pid, _)| *pid)
+            .collect();
+        found.extend(children);
+        i += 1;
+    }
+    found
 }
 
 pub struct SpawnOptions {
@@ -360,7 +421,8 @@ impl Terminal {
 
     /// The current folder of the program in the terminal's foreground: the shell the user types
     /// into, even under macOS's `login` or in a nested shell. Falls back to the process Templum
-    /// started; None when the OS won't say (another user, already gone).
+    /// started; None when the OS won't say (another user, already gone). With Claude Code or Codex
+    /// open, its folder.
     pub fn cwd(&self) -> Option<PathBuf> {
         inspect(&[self.processes()]).pop().and_then(|i| i.folder)
     }
