@@ -129,6 +129,8 @@ pub struct Workspace {
     pub(crate) theme: Rc<Theme>,
     /// The window shows the blurred desktop: the canvas is drawn at CANVAS_ALPHA.
     translucent: bool,
+    /// The block under the pointer: it shows its close button and resize grip.
+    pub(crate) hovered: Option<BlockId>,
     _wake: Task<()>,
 }
 
@@ -188,6 +190,7 @@ impl Workspace {
             dark,
             theme,
             translucent: theme::system_translucent(),
+            hovered: None,
             _wake: wake,
         };
         // Startup: one terminal, centered.
@@ -236,6 +239,9 @@ impl Workspace {
     pub(crate) fn close(&mut self, id: BlockId, cx: &mut Context<Self>) {
         self.canvas.remove(id);
         self.terminals.remove(&id);
+        if self.hovered == Some(id) {
+            self.hovered = None;
+        }
         if self.focused == Some(id) {
             self.focused = self.canvas.top();
         }
@@ -271,6 +277,20 @@ impl Workspace {
         self.focused = Some(id);
         window.focus(&self.focus_handle, cx);
         cx.notify();
+    }
+
+    pub(crate) fn hover_block(&mut self, id: BlockId, hovered: bool, cx: &mut Context<Self>) {
+        let next = if hovered {
+            Some(id)
+        } else if self.hovered == Some(id) {
+            None
+        } else {
+            self.hovered
+        };
+        if next != self.hovered {
+            self.hovered = next;
+            cx.notify();
+        }
     }
 
     fn local(&self, pos: PixelPoint<Pixels>) -> Point {
@@ -956,6 +976,8 @@ mod tests {
         let id = first_id(&ws, cx);
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
+            window.hover(("block", id.0 as usize), cx);
+            window.render_frame(cx);
             window.click(("close", id.0 as usize), cx);
         })
         .unwrap();
@@ -985,6 +1007,8 @@ mod tests {
         let (before, cell) =
             ws.read_with(cx, |ws, _| (ws.canvas.get(id).unwrap().rect, ws.cell.size));
         cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.hover(("block", id.0 as usize), cx);
             window.render_frame(cx);
             let from = window.find(("handle", id.0 as usize)).bounds().center();
             let to = point(from.x + px(cell.w * 10.0), from.y + px(cell.h * 3.0));
@@ -1287,6 +1311,39 @@ mod tests {
             assert_eq!(ws.canvas.camera.zoom(), 1.0);
             assert_eq!(ws.canvas.blocks().len(), 2);
         });
+    }
+
+    #[gpui_kit::test]
+    fn focus_does_not_shift_the_terminal(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let focused = window.find(("body", id.0 as usize)).bounds();
+            ws.update(cx, |ws, _| ws.focused = None);
+            window.render_frame(cx);
+            let unfocused = window.find(("body", id.0 as usize)).bounds();
+            assert_eq!(focused, unfocused);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn close_button_appears_on_hover(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window.try_find(("close", id.0 as usize)).is_none(),
+                "hidden until hovered"
+            );
+            window.hover(("block", id.0 as usize), cx);
+            window.render_frame(cx);
+            assert!(window.try_find(("close", id.0 as usize)).is_some());
+            assert!(window.try_find(("handle", id.0 as usize)).is_some());
+        })
+        .unwrap();
     }
 
     #[test]

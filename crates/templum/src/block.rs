@@ -1,12 +1,15 @@
-//! One terminal block: title bar, body (the grid) and resize handle, in screen space.
-//! Every size is multiplied by the zoom, so text is laid out at its real size.
+//! One terminal block, a continuous card: header (title, close button), body (the grid) and
+//! resize grip, in screen space. Every size is multiplied by the zoom, so text is laid out at
+//! its real size. The close button and the grip show only while the pointer is over the block.
+
+use std::time::Duration;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, MouseButton, MouseDownEvent, ScrollWheelEvent, TestSupportExt,
-    div, px,
+    Animation, AnimationExt as _, AnyElement, BoxShadow, ClickEvent, Context, ElementId, Hsla,
+    MouseButton, MouseDownEvent, ScrollWheelEvent, TestSupportExt, div, point, px,
 };
 use templum_canvas::{Block, chrome};
 
@@ -15,6 +18,8 @@ use crate::workspace::Workspace;
 
 /// World units, like everything in a block.
 const TITLE_FONT: f32 = 12.0;
+const RADIUS: f32 = 10.0;
+const FADE_IN: Duration = Duration::from_millis(120);
 
 pub(crate) fn render(ws: &Workspace, block: Block, cx: &mut Context<Workspace>) -> AnyElement {
     let id = block.id;
@@ -23,17 +28,18 @@ pub(crate) fn render(ws: &Workspace, block: Block, cx: &mut Context<Workspace>) 
     let r = ws.canvas.camera.rect_to_screen(block.rect);
     let pane = &ws.terminals[&id];
     let focused = ws.focused == Some(id);
+    let hovered = ws.hovered == Some(id);
     let ui = ws.theme.ui;
-    let background = hsla(ws.theme.palette.background, 1.0);
-    let border = if focused { ui.accent } else { ui.hairline };
 
     let title = div()
         .id(("title", n))
-        .flex_1()
-        .h_full()
+        .absolute()
+        .inset_0()
         .flex()
         .items_center()
-        .px(px(8.0 * z))
+        .justify_center()
+        // Clear of the close button on the right, and centered.
+        .px(px(28.0 * z))
         .overflow_hidden()
         .child(
             div()
@@ -48,16 +54,17 @@ pub(crate) fn render(ws: &Workspace, block: Block, cx: &mut Context<Workspace>) 
         )
         .test_support();
 
-    // A sibling of the title, not a child: pressing it never starts a move.
+    // Painted over the title: pressing it never starts a move.
     let close = div()
         .id(("close", n))
+        .absolute()
+        .top(px(4.0 * z))
+        .right(px(4.0 * z))
         .flex()
-        .flex_none()
         .items_center()
         .justify_center()
         .size(px(20.0 * z))
-        .mr(px(4.0 * z))
-        .rounded(px(4.0 * z))
+        .rounded(px(5.0 * z))
         .cursor_pointer()
         .hover(move |s| s.bg(ui.hover))
         .child(
@@ -68,14 +75,12 @@ pub(crate) fn render(ws: &Workspace, block: Block, cx: &mut Context<Workspace>) 
         .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.close(id, cx)))
         .test_support();
 
-    let title_bar = div()
-        .flex()
-        .items_center()
+    let header = div()
+        .relative()
         .w_full()
         .h(px(chrome::TITLE_H * z))
-        .bg(background)
         .child(title)
-        .child(close);
+        .when(hovered, |el| el.child(fade_in(close, ("close-fade", n))));
 
     let body = div()
         .id(("body", n))
@@ -112,9 +117,15 @@ pub(crate) fn render(ws: &Workspace, block: Block, cx: &mut Context<Workspace>) 
         .right(px(0.0))
         .bottom(px(0.0))
         .size(px(chrome::HANDLE * z))
-        .bg(border)
-        .rounded(px(2.0 * z))
+        .flex()
+        .items_center()
+        .justify_center()
         .cursor_nwse_resize()
+        .child(
+            Icon::new(IconName::ResizeCorner)
+                .size(px(10.0 * z))
+                .text_color(ui.title_dim),
+        )
         .on_mouse_down(
             MouseButton::Left,
             // The handle overlaps the body: stop here so the body doesn't start a selection.
@@ -133,14 +144,16 @@ pub(crate) fn render(ws: &Workspace, block: Block, cx: &mut Context<Workspace>) 
         .top(px(r.y))
         .w(px(r.w))
         .h(px(r.h))
-        .rounded(px(6.0 * z))
-        .when(focused, |el| el.border_2())
-        .when(!focused, |el| el.border_1())
-        .border_color(border)
-        .bg(background)
+        .rounded(px(RADIUS * z))
+        // Always 1 px, so focusing never moves the grid.
+        .border_1()
+        .border_color(if focused { ui.accent } else { ui.hairline })
+        .bg(hsla(ws.theme.palette.background, 1.0))
+        .shadow(vec![shadow(ui.shadow, focused, z)])
         .overflow_hidden()
         // Nothing behind a block reacts to its clicks; wheel events still bubble (title bar pans).
         .block_mouse_except_scroll()
+        .on_hover(cx.listener(move |ws, hovered: &bool, _, cx| ws.hover_block(id, *hovered, cx)))
         // Blocking hides the workspace from pinch (it hit-tests like a click): zoom here too.
         .on_pinch(cx.listener(|ws, e, window, cx| ws.on_pinch(e, window, cx)))
         .on_mouse_down(
@@ -150,9 +163,31 @@ pub(crate) fn render(ws: &Workspace, block: Block, cx: &mut Context<Workspace>) 
                 cx.stop_propagation();
             }),
         )
-        .child(title_bar)
+        .child(header)
         .child(body)
-        .child(handle)
+        .when(hovered, |el| el.child(fade_in(handle, ("handle-fade", n))))
         .test_support()
         .into_any_element()
+}
+
+/// Hover-only controls fade in; they disappear at once. The wrapper covers its parent, since
+/// absolute children are placed relative to their direct parent.
+fn fade_in(el: impl IntoElement + 'static, id: impl Into<ElementId>) -> impl IntoElement {
+    div()
+        .absolute()
+        .inset_0()
+        .child(el)
+        .with_animation(id, Animation::new(FADE_IN), |el, t| el.opacity(t))
+}
+
+/// The focused block floats higher.
+fn shadow(color: Hsla, focused: bool, z: f32) -> BoxShadow {
+    let (y, blur) = if focused { (10.0, 30.0) } else { (4.0, 12.0) };
+    BoxShadow {
+        color,
+        offset: point(px(0.0), px(y * z)),
+        blur_radius: px(blur * z),
+        spread_radius: px(0.0),
+        inset: false,
+    }
 }
