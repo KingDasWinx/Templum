@@ -16,8 +16,8 @@ use gpui_kit::{
     Anchor, App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler,
     EntityInputHandler, FocusHandle, Hsla, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PinchEvent, Pixels, Point as PixelPoint, ScrollDelta,
-    ScrollWheelEvent, Task, UTF16Selection, Window, WindowAppearance, canvas, div, fill, point, px,
-    size,
+    ScrollWheelEvent, Subscription, Task, UTF16Selection, Window, WindowAppearance, canvas, div,
+    fill, point, px, size,
 };
 use templum_canvas::{
     Block, BlockId, Camera, Canvas, Gesture, Point, Rect, Size, chrome, dot_grid,
@@ -25,7 +25,7 @@ use templum_canvas::{
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
 use crate::block;
-use crate::config::{self, Config, ThemeConfig, WorkingDirectory};
+use crate::config::{self, Config, Edit, ThemeConfig, WorkingDirectory};
 use crate::grid::{CellMetrics, hsla};
 use crate::keys::{self, Command, Keymap};
 use crate::motion;
@@ -39,6 +39,8 @@ pub(crate) const DEFAULT_ROWS: u16 = 24;
 const CLICK_SLOP: f32 = 4.0;
 /// Cursor blink half-period.
 const BLINK: Duration = Duration::from_millis(500);
+/// A settings change is written to config.toml this long after the last one.
+const SAVE_DELAY: Duration = Duration::from_millis(300);
 
 pub fn bind_keys(cx: &mut App) {
     // gpui-kit's Root binds tab/shift-tab to focus navigation: give them back to the shell.
@@ -98,14 +100,14 @@ pub struct Workspace {
     /// terminal stays centered, since tiling compositors resize the window after it opens.
     pub(crate) pristine: bool,
     /// Where config.toml and the themes folder live (None: defaults only, nothing saved).
-    config_dir: Option<PathBuf>,
+    pub(crate) config_dir: Option<PathBuf>,
     pub(crate) themes: Vec<Entry>,
     /// The system's appearance.
     dark: bool,
     /// What everything is drawn with.
     pub(crate) theme: Rc<Theme>,
     /// The window shows the blurred desktop: the canvas is drawn at window.opacity.
-    translucent: bool,
+    pub(crate) translucent: bool,
     /// The active config.toml: the last valid one.
     pub(crate) config: Config,
     /// Its shortcuts.
@@ -117,6 +119,16 @@ pub struct Workspace {
     /// The system's appearance. `dark` is what's in effect, since config.toml may pin a mode.
     system_dark: bool,
     _poll: Task<()>,
+    /// Settings changes for the next frame to apply (applying a font measures text in the window).
+    pending: Option<Config>,
+    /// Settings changes not yet written to config.toml, one per key.
+    unsaved: Vec<Edit>,
+    /// Writes `unsaved` SAVE_DELAY after the last change.
+    _save: Task<()>,
+    /// Why the last write of config.toml failed; cleared by the next good write or reload.
+    pub(crate) save_error: Option<String>,
+    /// Write `unsaved` when the window closes or the app quits.
+    _flush: Vec<Subscription>,
     /// The block under the pointer: it shows its close button and resize grip.
     pub(crate) hovered: Option<BlockId>,
     /// The open theme picker.
@@ -212,6 +224,15 @@ impl Workspace {
                 }
             }
         });
+        let flush = vec![
+            cx.on_release(|ws, _| {
+                ws.save();
+            }),
+            cx.on_app_quit(|ws, _| {
+                ws.save();
+                async {}
+            }),
+        ];
         let mut ws = Self {
             canvas: Canvas::default(),
             terminals: HashMap::new(),
@@ -238,6 +259,11 @@ impl Workspace {
             config_stamp,
             system_dark,
             _poll: poll,
+            pending: None,
+            unsaved: Vec::new(),
+            _save: Task::ready(()),
+            save_error: None,
+            _flush: flush,
             hovered: None,
             picker: None,
             appearing: HashMap::new(),
@@ -377,6 +403,8 @@ impl Workspace {
                         Notification::info(format!("{} loaded", config::FILE)),
                     );
                 }
+                // A file that loads is a file a save can write again.
+                self.save_error = None;
                 self.apply_config(new, window, cx);
             }
             Err(message) => {
@@ -420,6 +448,60 @@ impl Workspace {
                 eprintln!("templum: {warning}");
                 show_notification(window, cx, Notification::warning(warning));
             }
+        }
+        cx.notify();
+    }
+
+    /// A change from the settings panel: in effect from the next frame, written SAVE_DELAY after
+    /// the last one. A change that changes nothing is dropped.
+    pub(crate) fn edit(
+        &mut self,
+        edit: Edit,
+        change: impl FnOnce(&mut Config),
+        cx: &mut Context<Self>,
+    ) {
+        let current = self.pending.as_ref().unwrap_or(&self.config);
+        let mut config = current.clone();
+        change(&mut config);
+        if config == *current {
+            return;
+        }
+        self.pending = Some(config);
+        self.unsaved
+            .retain(|e| (e.table, e.key) != (edit.table, edit.key));
+        self.unsaved.push(edit);
+        cx.notify();
+    }
+
+    /// Writes the unsaved settings changes to config.toml. If that fails they stay in effect,
+    /// unsaved, and the message is returned and kept for the panel's footer.
+    fn save(&mut self) -> Option<String> {
+        let edits = std::mem::take(&mut self.unsaved);
+        // No config folder: changes last until Templum quits (the panel's footer says so).
+        let dir = self.config_dir.clone()?;
+        if edits.is_empty() {
+            return None;
+        }
+        match config::save_edits(&dir, &edits) {
+            Ok(()) => {
+                // Templum's own write: the poll must not reload it.
+                self.config_stamp = config::Stamp::of(Some(&dir));
+                self.save_error = None;
+                None
+            }
+            Err(err) => {
+                let message = format!("Not saved: {err}");
+                eprintln!("templum: {message}");
+                self.save_error = Some(message.clone());
+                Some(message)
+            }
+        }
+    }
+
+    /// `save`, with a notification when it fails.
+    fn save_or_notify(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(message) = self.save() {
+            show_notification(window, cx, Notification::error(message));
         }
         cx.notify();
     }
@@ -982,6 +1064,15 @@ impl Render for Workspace {
             && hook(self, window, cx)
         {
             self.on_frame = Some(hook);
+        }
+        // Settings changes apply here, where the window is at hand; the save waits for them to settle.
+        if let Some(config) = self.pending.take() {
+            self.apply_config(config, window, cx);
+            self._save = cx.spawn_in(window, async move |ws, cx| {
+                cx.background_executor().timer(SAVE_DELAY).await;
+                ws.update_in(cx, |ws, window, cx| ws.save_or_notify(window, cx))
+                    .ok();
+            });
         }
         // The focused terminal's painting sets it again this frame, if its cursor blinks.
         self.cursor_blinks = false;
@@ -2260,5 +2351,190 @@ mod tests {
         assert!(!option_types_text("backspace", Some("\x7f"), true));
         // Elsewhere Alt is always Meta (AltGr is not reported as Alt on Linux).
         assert!(!option_types_text("l", Some("@"), false));
+    }
+
+    use crate::config::Edit;
+
+    fn frame(handle: AnyWindowHandle, cx: &mut TestAppContext) {
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_settings_edit_applies_on_the_next_frame(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "# mine\n[cursor]\nblink = false\n");
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        let cell = ws.read_with(cx, |ws, _| ws.cell.size);
+        ws.update(cx, |ws, cx| {
+            ws.edit(
+                Edit::set("font", "size", 28_i64),
+                |c| c.font.size = 28.0,
+                cx,
+            );
+            // Checked inside the update: the test app draws the window as soon as it ends.
+            assert_eq!(ws.config.font.size, 14.0, "not before the frame");
+        });
+        frame(handle, cx);
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.config.font.size, 28.0);
+            assert!(ws.cell.size.w > cell.w, "measured with the window");
+        });
+        let path = dir.path().join("config.toml");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# mine\n[cursor]\nblink = false\n",
+            "not saved yet"
+        );
+        ws.update(cx, |ws, _| ws.save());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# mine\n[cursor]\nblink = false"), "{text}");
+        assert!(text.contains("[font]\nsize = 28"), "{text}");
+    }
+
+    #[gpui_kit::test]
+    fn a_reset_removes_the_key_from_the_file(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(
+            dir.path(),
+            "[cursor]\nblink = true # mine\nshape = \"bar\"\n",
+        );
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        // What a field's "reset to default" does.
+        ws.update(cx, |ws, cx| {
+            ws.edit(
+                Edit::remove("cursor", "blink"),
+                |c| c.cursor.blink = false,
+                cx,
+            )
+        });
+        frame(handle, cx);
+        ws.update(cx, |ws, _| {
+            assert!(!ws.config.cursor.blink);
+            ws.save();
+        });
+        let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(!text.contains("blink"), "{text}");
+        assert!(text.contains("shape = \"bar\""), "{text}");
+    }
+
+    #[gpui_kit::test]
+    fn edits_are_saved_once_they_settle(cx: &mut TestAppContext) {
+        use std::time::Duration;
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        let path = dir.path().join("config.toml");
+        let scrollback = |n: usize, cx: &mut TestAppContext| {
+            ws.update(cx, |ws, cx| {
+                ws.edit(
+                    Edit::set("terminal", "scrollback", n as i64),
+                    |c| c.terminal.scrollback = n,
+                    cx,
+                )
+            });
+            frame(handle, cx);
+        };
+        scrollback(1000, cx);
+        cx.executor().advance_clock(Duration::from_millis(200));
+        cx.run_until_parked();
+        assert!(!path.exists(), "not before 0.3 s");
+        scrollback(2000, cx);
+        cx.executor().advance_clock(Duration::from_millis(200));
+        cx.run_until_parked();
+        assert!(!path.exists(), "the second edit restarted the wait");
+        cx.executor().advance_clock(Duration::from_millis(150));
+        cx.run_until_parked();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("scrollback = 2000"), "{text}");
+        assert!(!text.contains("1000"), "one write, the last value: {text}");
+    }
+
+    #[gpui_kit::test]
+    fn an_edit_that_changes_nothing_is_not_saved(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        ws.update(cx, |ws, cx| {
+            ws.edit(
+                Edit::set("terminal", "scrollback", 10_000_i64),
+                |c| c.terminal.scrollback = 10_000,
+                cx,
+            );
+            assert!(ws.unsaved.is_empty());
+            assert!(ws.save().is_none());
+        });
+        assert!(!dir.path().join("config.toml").exists());
+    }
+
+    #[gpui_kit::test]
+    fn a_broken_file_is_never_overwritten_and_says_why(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        // Broken after startup, as if the user were halfway through an edit.
+        write_config(dir.path(), "fnot = = 1\n");
+        ws.update(cx, |ws, cx| {
+            ws.edit(
+                Edit::set("cursor", "blink", true),
+                |c| c.cursor.blink = true,
+                cx,
+            )
+        });
+        frame(handle, cx);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.save_or_notify(window, cx))
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.toml")).unwrap(),
+            "fnot = = 1\n"
+        );
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.config.cursor.blink, "still in effect");
+            assert_eq!(
+                ws.save_error.as_deref(),
+                Some("Not saved: config.toml has an error on line 1")
+            );
+        });
+        assert_eq!(notification_count(handle, cx), 1);
+        write_config(dir.path(), "[cursor]\nblink = true\n");
+        reload(handle, &ws, cx);
+        ws.read_with(cx, |ws, _| assert_eq!(ws.save_error, None, "fixed"));
+    }
+
+    #[gpui_kit::test]
+    fn closing_the_window_saves_what_is_pending(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        ws.update(cx, |ws, cx| {
+            ws.edit(
+                Edit::set("cursor", "blink", true),
+                |c| c.cursor.blink = true,
+                cx,
+            )
+        });
+        // The test's handle would keep the workspace alive.
+        drop(ws);
+        cx.update_window(handle, |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+        let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(text.contains("blink = true"), "{text}");
+    }
+
+    #[gpui_kit::test]
+    fn without_a_config_folder_edits_apply_and_nothing_is_written(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        ws.update(cx, |ws, cx| {
+            ws.edit(
+                Edit::set("cursor", "blink", true),
+                |c| c.cursor.blink = true,
+                cx,
+            )
+        });
+        frame(handle, cx);
+        ws.update(cx, |ws, _| {
+            assert!(ws.config.cursor.blink);
+            assert_eq!(ws.save(), None);
+            assert_eq!(ws.save_error, None, "the footer says it, not an error");
+        });
     }
 }
