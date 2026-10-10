@@ -180,6 +180,7 @@ impl Workspace {
             rows,
             cell_px: self.cell.px(),
             command: self.command.clone(),
+            palette: templum_terminal::Palette::default(),
         };
         match Terminal::spawn(opts, self.notify.clone()) {
             Ok(term) => {
@@ -944,7 +945,10 @@ mod tests {
         loop {
             let shown = ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.terminals[&id].term.shared());
+                snap.refresh(
+                    ws.terminals[&id].term.shared(),
+                    &templum_terminal::Palette::default(),
+                );
                 snap.text()
             });
             if shown.contains("hello") {
@@ -1064,7 +1068,10 @@ mod tests {
         loop {
             let shown = ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.terminals[&id].term.shared());
+                snap.refresh(
+                    ws.terminals[&id].term.shared(),
+                    &templum_terminal::Palette::default(),
+                );
                 snap.text()
             });
             if shown.contains('x') {

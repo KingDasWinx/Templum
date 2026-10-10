@@ -9,7 +9,6 @@ use gpui_kit::{
     div, px, rgb,
 };
 use templum_canvas::{Block, chrome};
-use templum_terminal::palette::DEFAULT_BG;
 
 use crate::grid;
 use crate::workspace::Workspace;
@@ -140,7 +139,10 @@ pub(crate) fn render(ws: &Workspace, block: Block, cx: &mut Context<Workspace>) 
         .when(focused, |el| el.border_2())
         .when(!focused, |el| el.border_1())
         .border_color(rgb(border))
-        .bg(grid::hsla(DEFAULT_BG, 1.0))
+        .bg(grid::hsla(
+            templum_terminal::Palette::default().background,
+            1.0,
+        ))
         .overflow_hidden()
         // Nothing behind a block reacts to its clicks; wheel events still bubble (title bar pans).
         .block_mouse_except_scroll()

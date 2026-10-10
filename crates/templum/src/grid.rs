@@ -9,7 +9,6 @@ use gpui_kit::{
     TextAlign, TextRun, UnderlineStyle, Window, canvas, fill, font, outline, point, px, rgb, size,
 };
 use templum_canvas::Size;
-use templum_terminal::palette::{DEFAULT_BG, DEFAULT_FG};
 use templum_terminal::{Rgb, SharedTerm, Snapshot};
 
 use crate::workspace::Workspace;
@@ -136,7 +135,7 @@ fn paint(
     cx: &mut App,
 ) -> Option<Bounds<Pixels>> {
     let mut snap = snapshot.borrow_mut();
-    if !snap.refresh(term) {
+    if !snap.refresh(term, &templum_terminal::Palette::default()) {
         // The PTY thread is busy: try again next frame.
         window.request_animation_frame();
     }
@@ -203,9 +202,16 @@ fn paint(
     let c = snap.cursor?;
     let r = cell(c.row, c.col, 1);
     if focused {
-        window.paint_quad(fill(r, hsla(DEFAULT_FG, 0.6)));
+        window.paint_quad(fill(
+            r,
+            hsla(templum_terminal::Palette::default().foreground, 0.6),
+        ));
     } else {
-        window.paint_quad(outline(r, hsla(DEFAULT_FG, 0.6), BorderStyle::Solid));
+        window.paint_quad(outline(
+            r,
+            hsla(templum_terminal::Palette::default().foreground, 0.6),
+            BorderStyle::Solid,
+        ));
     }
     Some(r)
 }
@@ -223,7 +229,7 @@ fn paint_marked(
         len: text.len(),
         font: font.clone(),
         color: rgb(0xfeca88).into(),
-        background_color: Some(hsla(DEFAULT_BG, 1.0)),
+        background_color: Some(hsla(templum_terminal::Palette::default().background, 1.0)),
         underline: Some(UnderlineStyle {
             thickness: px(1.0),
             color: None,

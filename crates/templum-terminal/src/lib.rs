@@ -8,5 +8,6 @@ mod terminal;
 pub use alacritty_terminal::index::Side;
 pub use alacritty_terminal::vte::ansi::Rgb;
 pub use input::{KeyInput, encode_key, paste_bytes};
+pub use palette::Palette;
 pub use snapshot::{Cursor, Row, Run, Snapshot, Span};
 pub use terminal::{Notify, SelectionKind, SharedTerm, SpawnOptions, Terminal};

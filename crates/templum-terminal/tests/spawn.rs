@@ -3,7 +3,7 @@
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use templum_terminal::{Notify, Snapshot, SpawnOptions, Terminal};
+use templum_terminal::{Notify, Palette, Snapshot, SpawnOptions, Terminal};
 
 #[test]
 fn runs_a_command_and_reports_its_exit() {
@@ -28,6 +28,7 @@ fn runs_a_command_and_reports_its_exit() {
             rows: 5,
             cell_px: (8, 16),
             command: Some(command),
+            palette: Palette::default(),
         },
         notify,
     )
@@ -40,7 +41,7 @@ fn runs_a_command_and_reports_its_exit() {
         term.rearm();
     }
     let mut snapshot = Snapshot::default();
-    snapshot.refresh(term.shared());
+    snapshot.refresh(term.shared(), &Palette::default());
     assert!(
         snapshot.text().contains("hello"),
         "screen was: {:?}",
@@ -63,6 +64,7 @@ fn shells_start_in_the_home_directory() {
             rows: 5,
             cell_px: (8, 16),
             command: Some(command),
+            palette: Palette::default(),
         },
         notify,
     )
@@ -74,7 +76,7 @@ fn shells_start_in_the_home_directory() {
         term.rearm();
     }
     let mut snapshot = Snapshot::default();
-    snapshot.refresh(term.shared());
+    snapshot.refresh(term.shared(), &Palette::default());
     let home = home.to_string_lossy();
     assert!(
         snapshot.text().lines().any(|l| l.trim_end() == home),

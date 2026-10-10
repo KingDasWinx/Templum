@@ -7,7 +7,7 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::CursorShape;
 
-use crate::palette::{self, DEFAULT_BG};
+use crate::palette::{self, Palette};
 use crate::{Rgb, SharedTerm};
 
 const MAX_STALE: Duration = Duration::from_millis(100);
@@ -104,9 +104,10 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Re-reads the visible grid unless the PTY thread holds the lock, in which case the
-    /// previous cells are kept (past MAX_STALE it waits). Returns false when it kept them.
-    pub fn refresh(&mut self, term: &SharedTerm) -> bool {
+    /// Re-reads the visible grid, resolving colors with `palette`, unless the PTY thread holds the
+    /// lock, in which case the previous cells are kept (past MAX_STALE it waits). Returns false
+    /// when it kept them.
+    pub fn refresh(&mut self, term: &SharedTerm, palette: &Palette) -> bool {
         let stale = self.taken.is_none_or(|t| t.elapsed() > MAX_STALE);
         let term = match term.0.try_lock_unfair() {
             Some(term) => term,
@@ -134,8 +135,8 @@ impl Snapshot {
                 continue;
             };
             let cell = item.cell;
-            let mut fg = palette::resolve(cell.fg, content.colors);
-            let mut bg = palette::resolve(cell.bg, content.colors);
+            let mut fg = palette::resolve(cell.fg, content.colors, palette);
+            let mut bg = palette::resolve(cell.bg, content.colors, palette);
             if cell.flags.contains(Flags::INVERSE) {
                 std::mem::swap(&mut fg, &mut bg);
             }
@@ -143,7 +144,7 @@ impl Snapshot {
                 fg = bg;
             }
             let col = item.point.column.0;
-            if bg != DEFAULT_BG {
+            if bg != palette.background {
                 row.push_bg(col, bg);
             }
             if selection.as_ref().is_some_and(|s| s.contains(item.point)) {
@@ -185,7 +186,6 @@ impl Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::palette::DEFAULT_FG;
     use crate::terminal::{feed, headless};
     use alacritty_terminal::term::color::Colors;
     use alacritty_terminal::vte::ansi::{Color, NamedColor};
@@ -194,7 +194,7 @@ mod tests {
         let (term, _) = headless(20, 4);
         feed(&term, bytes);
         let mut s = Snapshot::default();
-        assert!(s.refresh(&term));
+        assert!(s.refresh(&term, &Palette::default()));
         s
     }
 
@@ -203,7 +203,11 @@ mod tests {
         let s = snap(b"\x1b[31mred\x1b[0m ok   ");
         assert_eq!(s.rows.len(), 4);
         assert_eq!(s.rows[0].text, "red ok");
-        let red = palette::resolve(Color::Named(NamedColor::Red), &Colors::default());
+        let red = palette::resolve(
+            Color::Named(NamedColor::Red),
+            &Colors::default(),
+            &Palette::default(),
+        );
         assert_eq!(
             s.rows[0].runs[0],
             Run {
@@ -224,8 +228,12 @@ mod tests {
     #[test]
     fn inverse_and_dim_and_bold() {
         let s = snap(b"\x1b[7mX\x1b[0m\x1b[2;1mY");
-        assert_eq!(s.rows[0].bgs, vec![(Span { start: 0, len: 1 }, DEFAULT_FG)]);
-        assert_eq!(s.rows[0].runs[0].fg, DEFAULT_BG);
+        let p = Palette::default();
+        assert_eq!(
+            s.rows[0].bgs,
+            vec![(Span { start: 0, len: 1 }, p.foreground)]
+        );
+        assert_eq!(s.rows[0].runs[0].fg, p.background);
         assert!(s.rows[0].runs[1].dim && s.rows[0].runs[1].bold);
     }
 
@@ -242,6 +250,22 @@ mod tests {
     }
 
     #[test]
+    fn refresh_resolves_cells_with_the_given_palette() {
+        let (term, _) = headless(20, 4);
+        // Red text, then one cell with a red background.
+        feed(&term, b"\x1b[31mr\x1b[0m\x1b[41m \x1b[0m");
+        let mark = Rgb { r: 1, g: 2, b: 3 };
+        let p = Palette {
+            ansi: [mark; 16],
+            ..Palette::default()
+        };
+        let mut s = Snapshot::default();
+        assert!(s.refresh(&term, &p));
+        assert_eq!(s.rows[0].runs[0].fg, mark);
+        assert_eq!(s.rows[0].bgs, vec![(Span { start: 1, len: 1 }, mark)]);
+    }
+
+    #[test]
     fn selection_spans() {
         use crate::{SelectionKind, Side};
         let (term, _) = headless(20, 4);
@@ -249,7 +273,7 @@ mod tests {
         term.select_start(0, 0, Side::Left, SelectionKind::Simple);
         term.select_update(0, 4, Side::Right);
         let mut s = Snapshot::default();
-        s.refresh(&term);
+        s.refresh(&term, &Palette::default());
         assert_eq!(s.rows[0].selected, vec![Span { start: 0, len: 5 }]);
     }
 }

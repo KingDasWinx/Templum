@@ -17,7 +17,7 @@ use alacritty_terminal::term::{Config, Term, TermMode, viewport_to_point};
 use alacritty_terminal::tty;
 
 use crate::input::{KeyInput, encode_key, paste_bytes};
-use crate::palette;
+use crate::palette::{self, Palette};
 
 /// Called (coalesced) when a terminal has something new to show.
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -33,10 +33,12 @@ pub(crate) struct Shared {
     size: Mutex<WindowSize>,
     /// PTY input: set right after the event loop exists, since the Term needs the listener first.
     pty: OnceLock<EventLoopSender>,
+    /// Answers color queries (OSC 4/10/11); the app updates it on theme changes.
+    palette: Mutex<Palette>,
 }
 
 impl Shared {
-    fn new(notify: Notify, size: WindowSize) -> Self {
+    fn new(notify: Notify, size: WindowSize, palette: Palette) -> Self {
         Self {
             notify,
             pending: AtomicBool::new(false),
@@ -44,6 +46,7 @@ impl Shared {
             exited: AtomicBool::new(false),
             size: Mutex::new(size),
             pty: OnceLock::new(),
+            palette: Mutex::new(palette),
         }
     }
 
@@ -78,8 +81,11 @@ impl EventListener for Listener {
         match event {
             // Replies to queries go straight back to the shell, off the UI thread.
             Event::PtyWrite(text) => s.reply(text),
-            // ponytail: answers default colors, not OSC-overridden ones (the Term is locked here).
-            Event::ColorRequest(index, format) => s.reply(format(palette::query(index))),
+            // ponytail: answers the theme's colors, not OSC-overridden ones (the Term is locked here).
+            Event::ColorRequest(index, format) => {
+                let color = palette::query(index, &s.palette.lock().unwrap());
+                s.reply(format(color))
+            }
             Event::TextAreaSizeRequest(format) => s.reply(format(*s.size.lock().unwrap())),
             Event::Title(title) => {
                 *s.title.lock().unwrap() = Some(title);
@@ -165,6 +171,9 @@ pub struct SpawnOptions {
     pub cell_px: (u16, u16),
     /// Program and arguments to run instead of the user's login shell (tests).
     pub command: Option<(String, Vec<String>)>,
+    /// Colors reported to programs that ask (vim, neovim). Change them later with
+    /// [`Terminal::set_palette`].
+    pub palette: Palette,
 }
 
 pub struct Terminal {
@@ -202,7 +211,7 @@ impl Terminal {
             drain_on_exit: true,
             ..Default::default()
         };
-        let shared = Arc::new(Shared::new(notify, size));
+        let shared = Arc::new(Shared::new(notify, size, opts.palette));
         let listener = Listener(shared.clone());
         let pty = tty::new(&options, size, 0)?;
         let term = Arc::new(FairMutex::new(Term::new(
@@ -246,6 +255,15 @@ impl Terminal {
 
     pub fn exited(&self) -> bool {
         self.shared.exited.load(Ordering::Acquire)
+    }
+
+    /// The colors this terminal reports to programs that ask for them.
+    pub fn palette(&self) -> Palette {
+        *self.shared.palette.lock().unwrap()
+    }
+
+    pub fn set_palette(&self, palette: Palette) {
+        *self.shared.palette.lock().unwrap() = palette;
     }
 
     /// Sends raw input (scrolling the view back to the bottom, like any typing).
@@ -357,6 +375,7 @@ pub(crate) fn headless(cols: u16, rows: u16) -> (SharedTerm, Arc<Shared>) {
     let shared = Arc::new(Shared::new(
         Arc::new(|| {}),
         window_size(cols, rows, (8, 16)),
+        Palette::default(),
     ));
     let term = Term::new(
         Config::default(),
@@ -386,6 +405,7 @@ mod tests {
                 c.fetch_add(1, Ordering::SeqCst);
             }),
             window_size(10, 2, (8, 16)),
+            Palette::default(),
         );
         shared.wake();
         shared.wake();
