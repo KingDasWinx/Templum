@@ -6,12 +6,14 @@ use std::time::Instant;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::Button;
+use gpui_kit::component::input::{
+    InputEvent, InputState, NumberInput, NumberInputEvent, StepAction,
+};
 use gpui_kit::component::setting::{
-    NumberFieldOptions, RenderOptions, SettingField, SettingGroup, SettingItem, SettingPage,
-    Settings,
+    RenderOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
-use gpui_kit::component::{Icon, Sizable as _, TITLE_BAR_HEIGHT};
+use gpui_kit::component::{Disableable as _, Icon, Sizable as _, TITLE_BAR_HEIGHT};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, BoxShadow, ClickEvent, Context, Entity, SharedString, Subscription,
@@ -238,7 +240,7 @@ static CURSOR: Choice = Choice {
 };
 
 /// A whole-number setting and its limits.
-struct Number {
+pub(crate) struct Number {
     table: &'static str,
     key: &'static str,
     min: f64,
@@ -248,7 +250,7 @@ struct Number {
     set: fn(&mut Config, f64),
 }
 
-static SCROLLBACK: Number = Number {
+pub(crate) static SCROLLBACK: Number = Number {
     table: "terminal",
     key: "scrollback",
     min: 0.0,
@@ -312,22 +314,97 @@ fn dropdown(ws: &Entity<Workspace>, choice: &'static Choice) -> SettingField<Sha
     )
 }
 
-fn number(ws: &Entity<Workspace>, n: &'static Number) -> SettingField<f64> {
-    let read = ws.clone();
-    let write = ws.clone();
-    let field = SettingField::number_input(
-        NumberFieldOptions {
-            min: n.min,
-            max: n.max,
-            step: n.step,
-        },
-        move |cx| (n.get)(&read.read(cx).config),
-        move |v, cx| {
-            // Typed values may have decimals; the file gets whole numbers.
-            let v = v.round();
-            write.update(cx, |ws, cx| {
-                ws.edit(Edit::set(n.table, n.key, v as i64), |c| (n.set)(c, v), cx)
-            })
+/// A number field's editor. The value applies on Enter, when the field loses the focus, or on a
+/// step (+/−, ↑/↓), never while typing: scrollback passing through "2" on the way to "20000"
+/// would trim every terminal's history.
+pub(crate) struct NumberState {
+    pub input: Entity<InputState>,
+    /// The config's value last shown: a different one (a hand edit, a reset) replaces the text.
+    shown: f64,
+    _events: [Subscription; 2],
+}
+
+impl NumberState {
+    pub fn new(
+        ws: Entity<Workspace>,
+        n: &'static Number,
+        value: f64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        // No step, min or max on the input: it then leaves stepping to us (NumberInputEvent).
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(value.to_string()));
+        let typed = {
+            let ws = ws.clone();
+            cx.subscribe_in(
+                &input,
+                window,
+                move |_, input, event: &InputEvent, _, cx| {
+                    if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur)
+                        && let Ok(v) = input.read(cx).value().trim().parse::<f64>()
+                    {
+                        set_number(&ws, n, v, cx);
+                    }
+                },
+            )
+        };
+        let stepped = cx.subscribe_in(
+            &input,
+            window,
+            move |_, input, event: &NumberInputEvent, window, cx| {
+                let NumberInputEvent::Step(action) = event;
+                let current = input
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .parse::<f64>()
+                    .unwrap_or_else(|_| (n.get)(&ws.read(cx).config));
+                let v = match action {
+                    StepAction::Increment => current + n.step,
+                    StepAction::Decrement => current - n.step,
+                }
+                .clamp(n.min, n.max);
+                input.update(cx, |input, cx| input.set_value(v.to_string(), window, cx));
+                set_number(&ws, n, v, cx);
+            },
+        );
+        Self {
+            input,
+            shown: value,
+            _events: [typed, stepped],
+        }
+    }
+}
+
+/// Typed values may have decimals or go past the limits; the file gets whole numbers within them.
+fn set_number(ws: &Entity<Workspace>, n: &'static Number, v: f64, cx: &mut App) {
+    let v = v.clamp(n.min, n.max).round();
+    ws.update(cx, |ws, cx| {
+        ws.edit(Edit::set(n.table, n.key, v as i64), |c| (n.set)(c, v), cx)
+    });
+}
+
+fn number(ws: &Entity<Workspace>, n: &'static Number) -> SettingField<SharedString> {
+    let handle = ws.clone();
+    let field = SettingField::render(
+        move |options: &RenderOptions, window: &mut Window, cx: &mut App| {
+            let value = (n.get)(&handle.read(cx).config);
+            let ws = handle.clone();
+            let key = SharedString::from(format!("number-{}.{}", n.table, n.key));
+            let state = window.use_keyed_state(key, cx, move |window, cx| {
+                NumberState::new(ws, n, value, window, cx)
+            });
+            state.update(cx, |state, cx| {
+                if state.shown != value {
+                    state.shown = value;
+                    state.input.update(cx, |input, cx| {
+                        input.set_value(value.to_string(), window, cx)
+                    });
+                }
+            });
+            NumberInput::new(&state.read(cx).input)
+                .disabled(options.is_disabled())
+                .w_32()
         },
     );
     let default = (n.get)(&Config::default());

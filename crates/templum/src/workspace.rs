@@ -2709,4 +2709,49 @@ mod tests {
         let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
         assert!(text.contains("blink = true"), "{text}");
     }
+
+    #[gpui_kit::test]
+    fn a_number_applies_on_enter_or_a_step_not_while_typing(cx: &mut TestAppContext) {
+        use crate::settings::{NumberState, SCROLLBACK};
+        use gpui_kit::component::input::{InputEvent, NumberInputEvent, StepAction};
+        let (handle, ws) = open(cx);
+        let state = cx
+            .update_window(handle, |_, window, cx| {
+                let ws = ws.clone();
+                cx.new(|cx| NumberState::new(ws, &SCROLLBACK, 10_000.0, window, cx))
+            })
+            .unwrap();
+        let scrollback =
+            |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.config.terminal.scrollback);
+        // Typing "20000" passes through "2": applied, it would trim every terminal's history.
+        cx.update_window(handle, |_, window, cx| {
+            let input = state.read(cx).input.clone();
+            input.update(cx, |input, cx| input.set_value("2", window, cx));
+            window.render_frame(cx);
+        })
+        .unwrap();
+        assert_eq!(scrollback(cx), 10_000, "not while typing");
+        cx.update_window(handle, |_, window, cx| {
+            let input = state.read(cx).input.clone();
+            input.update(cx, |input, cx| {
+                input.set_value("20000", window, cx);
+                cx.emit(InputEvent::PressEnter {
+                    secondary: false,
+                    shift: false,
+                });
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        assert_eq!(scrollback(cx), 20_000, "Enter applies it");
+        cx.update_window(handle, |_, window, cx| {
+            let input = state.read(cx).input.clone();
+            input.update(cx, |_, cx| {
+                cx.emit(NumberInputEvent::Step(StepAction::Decrement))
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        assert_eq!(scrollback(cx), 19_000, "a step applies at once");
+    }
 }
