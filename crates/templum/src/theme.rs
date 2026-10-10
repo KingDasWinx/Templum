@@ -1,4 +1,8 @@
-//! Themes: Alacritty color files and the interface colors derived from them.
+//! Themes: Alacritty color files, the interface colors derived from them, the built-ins and the
+//! user's themes folder.
+
+use std::path::Path;
+use std::rc::Rc;
 
 use gpui_kit::Hsla;
 use templum_terminal::{Palette, Rgb};
@@ -166,6 +170,142 @@ fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
     }
 }
 
+pub(crate) const DEFAULT_LIGHT: &str = "Catppuccin Latte";
+pub(crate) const DEFAULT_DARK: &str = "Catppuccin Mocha";
+/// The picker's group for themes from the user's folder.
+pub(crate) const MY_THEMES: &str = "My themes";
+
+pub(crate) struct Builtin {
+    pub group: &'static str,
+    pub name: &'static str,
+    pub toml: &'static str,
+}
+
+/// Embedded in the binary; sources and licenses are in themes/CREDITS.md.
+pub(crate) const BUILTIN: [Builtin; 8] = [
+    Builtin {
+        group: "Catppuccin",
+        name: "Catppuccin Latte",
+        toml: include_str!("../themes/catppuccin-latte.toml"),
+    },
+    Builtin {
+        group: "Catppuccin",
+        name: "Catppuccin Frappé",
+        toml: include_str!("../themes/catppuccin-frappe.toml"),
+    },
+    Builtin {
+        group: "Catppuccin",
+        name: "Catppuccin Macchiato",
+        toml: include_str!("../themes/catppuccin-macchiato.toml"),
+    },
+    Builtin {
+        group: "Catppuccin",
+        name: "Catppuccin Mocha",
+        toml: include_str!("../themes/catppuccin-mocha.toml"),
+    },
+    Builtin {
+        group: "One",
+        name: "One Light",
+        toml: include_str!("../themes/one-light.toml"),
+    },
+    Builtin {
+        group: "One",
+        name: "One Dark",
+        toml: include_str!("../themes/one-dark.toml"),
+    },
+    Builtin {
+        group: "Apple",
+        name: "Apple Light",
+        toml: include_str!("../themes/apple-light.toml"),
+    },
+    Builtin {
+        group: "Apple",
+        name: "Apple Dark",
+        toml: include_str!("../themes/apple-dark.toml"),
+    },
+];
+
+pub(crate) fn default_name(dark: bool) -> &'static str {
+    if dark { DEFAULT_DARK } else { DEFAULT_LIGHT }
+}
+
+/// One line of the picker.
+pub(crate) struct Entry {
+    pub group: &'static str,
+    pub theme: Rc<Theme>,
+}
+
+/// The built-ins, then the valid themes of `<config_dir>/themes` sorted by name. A user theme
+/// with a built-in's name replaces it.
+pub(crate) fn load(config_dir: Option<&Path>) -> Vec<Entry> {
+    let mut entries: Vec<Entry> = BUILTIN
+        .iter()
+        .map(|b| Entry {
+            group: b.group,
+            theme: Rc::new(parse(b.name, b.toml).expect("built-in themes are valid")),
+        })
+        .collect();
+    let mut mine = config_dir
+        .map(|dir| read_folder(&dir.join("themes")))
+        .unwrap_or_default();
+    mine.sort_by(|a, b| a.name.cmp(&b.name));
+    for theme in mine {
+        entries.retain(|e| e.theme.name != theme.name);
+        entries.push(Entry {
+            group: MY_THEMES,
+            theme: Rc::new(theme),
+        });
+    }
+    entries
+}
+
+/// Every valid `*.toml` directly inside `folder`. Broken files are reported and skipped.
+fn read_folder(folder: &Path) -> Vec<Theme> {
+    let files = match std::fs::read_dir(folder) {
+        Ok(files) => files,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(e) => {
+            eprintln!("templum: couldn't read {}: {e}", folder.display());
+            return Vec::new();
+        }
+    };
+    let mut themes = Vec::new();
+    for path in files.flatten().map(|f| f.path()) {
+        if path.extension().is_none_or(|e| e != "toml") || !path.is_file() {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let theme = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| parse(&name, &text).map_err(|e| e.to_string()));
+        match theme {
+            Ok(theme) => themes.push(theme),
+            Err(err) => eprintln!("templum: skipping theme {}: {err}", path.display()),
+        }
+    }
+    themes
+}
+
+pub(crate) fn find(themes: &[Entry], name: &str) -> Option<Rc<Theme>> {
+    themes
+        .iter()
+        .find(|e| e.theme.name == name)
+        .map(|e| e.theme.clone())
+}
+
+/// The theme called `name`, or `default` (with a warning) when there is none.
+pub(crate) fn pick(themes: &[Entry], name: &str, default: &str) -> Rc<Theme> {
+    find(themes, name)
+        .or_else(|| {
+            eprintln!("templum: no theme named {name:?}, using {default:?}");
+            find(themes, default)
+        })
+        .expect("the default themes are built in")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +430,61 @@ white = "#aaaaaa"
             "no cursor: foreground"
         );
         assert_eq!(minimal.ui.marked, hsla(rgb(0xaaaa00), 1.0));
+    }
+    #[test]
+    fn all_builtins_load_in_order() {
+        let all = load(None);
+        assert_eq!(all.len(), BUILTIN.len());
+        for (entry, builtin) in all.iter().zip(&BUILTIN) {
+            assert_eq!(entry.theme.name, builtin.name);
+            assert_eq!(entry.group, builtin.group);
+        }
+        // Frappé, Macchiato, Mocha, One Dark, Apple Dark.
+        assert_eq!(all.iter().filter(|e| e.theme.is_dark).count(), 5);
+    }
+
+    #[test]
+    fn pick_falls_back_to_the_default() {
+        let all = load(None);
+        assert_eq!(pick(&all, "One Dark", DEFAULT_DARK).name, "One Dark");
+        assert_eq!(
+            pick(&all, "No Such Theme", DEFAULT_DARK).name,
+            "Catppuccin Mocha"
+        );
+        assert_eq!(default_name(false), "Catppuccin Latte");
+        assert_eq!(default_name(true), "Catppuccin Mocha");
+    }
+
+    #[test]
+    fn user_themes_load_sorted_and_win_over_builtins() {
+        let dir = tempfile::tempdir().unwrap();
+        let themes = dir.path().join("themes");
+        std::fs::create_dir(&themes).unwrap();
+        std::fs::write(themes.join("zeta.toml"), MINIMAL).unwrap();
+        std::fs::write(themes.join("One Dark.toml"), MINIMAL).unwrap();
+        std::fs::write(themes.join("broken.toml"), "[colors").unwrap();
+        std::fs::write(themes.join("notes.txt"), MINIMAL).unwrap();
+        let all = load(Some(dir.path()));
+        let mine: Vec<&str> = all
+            .iter()
+            .filter(|e| e.group == MY_THEMES)
+            .map(|e| e.theme.name.as_str())
+            .collect();
+        assert_eq!(mine, ["One Dark", "zeta"]);
+        assert_eq!(
+            all.len(),
+            BUILTIN.len() + 1,
+            "One Dark replaced, zeta added"
+        );
+        assert_eq!(
+            find(&all, "One Dark").unwrap().palette.background,
+            rgb(0x101010)
+        );
+    }
+
+    #[test]
+    fn a_missing_themes_folder_is_fine() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(load(Some(dir.path())).len(), BUILTIN.len());
     }
 }

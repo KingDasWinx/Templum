@@ -1,5 +1,6 @@
 mod bench;
 mod block;
+mod config;
 mod grid;
 mod theme;
 mod workspace;
