@@ -5,7 +5,15 @@ Thanks for helping! Templum is early, so expect things to move fast.
 ## Setup
 
 1. Install [rustup](https://rustup.rs). The toolchain pinned in `rust-toolchain.toml` installs automatically.
-2. Clone and run:
+2. Install the platform prerequisites:
+   - **Linux (Debian/Ubuntu):**
+     `sudo apt install pkg-config libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libwayland-dev libvulkan1`
+     plus a Vulkan driver (e.g. `mesa-vulkan-drivers`).
+   - **Linux (Arch):** `sudo pacman -S --needed base-devel libxcb libxkbcommon libxkbcommon-x11 fontconfig freetype2 wayland vulkan-icd-loader`
+     plus a Vulkan driver.
+   - **macOS:** Xcode (the full app, not only the command-line tools: GPUI compiles Metal shaders).
+   - **Windows:** Visual Studio Build Tools with the "Desktop development with C++" workload.
+3. Clone and run:
 
    ```sh
    git clone https://github.com/KingDasWinx/Templum
@@ -32,6 +40,7 @@ cargo test --workspace
   "Add block snapping", "Fix resize on Windows".
 - CI (`ci-ok`) must pass and a maintainer must approve.
 - Logic changes come with a test. UI changes come with a screenshot or short clip in the PR description.
+- Before writing UI code, read the GPUI lessons in [ADR-0002](docs/adr/0002-ui-framework.md#lessons-from-the-spike-read-before-writing-gpui-code).
 
 ## Big decisions
 

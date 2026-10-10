@@ -1,13 +1,14 @@
 # Architecture
 
 Templum is a single native Rust application. There is no webview: the UI is drawn directly on the GPU
-([ADR-0001](adr/0001-pure-rust-gpu-no-webview.md)). The UI framework is being validated by a spike (ADR-0002, pending).
+([ADR-0001](adr/0001-pure-rust-gpu-no-webview.md)) with [GPUI](https://www.gpui.rs), through
+[gpui-kit](https://github.com/longbridge/gpui-kit) ([ADR-0002](adr/0002-ui-framework.md)).
 
 ## Crates
 
 | Crate | Kind | Responsibility | May depend on the UI framework? |
 |---|---|---|---|
-| `templum` | bin | Window, event loop, rendering, input, wiring | **Yes, the only one** |
+| `templum` | bin | Window, event loop, rendering, input, wiring | **Yes, the only one** (`gpui-kit`) |
 | `templum-canvas` | lib | Pure model: camera (pan, zoom), blocks, hit-testing, snapping, layout (de)serialization | No |
 | `templum-terminal` | lib | Wraps `alacritty_terminal`: shell in a PTY, input, resize, key encoding, events | No |
 
@@ -25,13 +26,15 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   mouse    ─▶ │ camera, drag, resize                      │                 │
               │ draw visible blocks at display refresh    │◀── wakeup ──┐   │ output
               └───────────────────────────────────────────┘             │   ▼
-                      │ lock + read grid                       PTY reader thread
+                      │ try_lock → snapshot                    PTY reader thread
                       └──────────▶ Arc<FairMutex<Term>> ◀─ parse ─ (one per terminal)
 ```
 
 - Each terminal owns a PTY (Unix PTY or Windows ConPTY) and a reader thread, both from `alacritty_terminal`.
   The thread parses output into a `Term` grid and wakes the UI, which coalesces redraws to the display refresh.
   Heavy output (`cat` of a huge file) is absorbed in Rust and only drawn at frame rate.
+- **Painting never waits on a terminal.** Each frame tries the lock and copies the visible cells into a snapshot;
+  if the PTY thread holds the lock, the previous snapshot is drawn. Blocking here doubled frame times in the spike.
 - Only blocks inside the viewport are drawn.
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded;

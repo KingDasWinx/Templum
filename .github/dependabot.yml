@@ -7,6 +7,8 @@ updates:
     groups:
       cargo:
         update-types: [minor, patch]
+        # GPUI snapshots break APIs: gpui-kit bumps get their own PR (docs/adr/0002-ui-framework.md).
+        exclude-patterns: ["gpui-kit"]
   - package-ecosystem: github-actions
     directory: /
     schedule:

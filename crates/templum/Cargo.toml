@@ -8,6 +8,11 @@ authors.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+# GPUI (Zed's UI framework) + widgets, through one facade that pins the GPUI snapshot.
+# Pinned exactly: upgrade only in a dedicated PR (see docs/adr/0002-ui-framework.md).
+gpui-kit = "=0.7.1"
+
 [lints]
 workspace = true
 

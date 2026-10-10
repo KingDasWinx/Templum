@@ -9,7 +9,8 @@ resize them like blocks, and pan and zoom around your workspace.
 
 - **Native and light.** Pure Rust, drawn directly on the GPU. No webview, no Electron.
 - **Cross-platform.** macOS, Linux (Wayland and X11) and Windows.
-- **Built on proven parts.** Terminal emulation by [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal).
+- **Built on proven parts.** Terminal emulation by [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal),
+  UI by [GPUI](https://www.gpui.rs) (Zed's GPU framework) through [gpui-kit](https://github.com/longbridge/gpui-kit).
   See [the architecture](docs/ARCHITECTURE.md) and the [decision records](docs/adr/).
 
 ## Build from source

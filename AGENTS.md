@@ -23,7 +23,10 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing structure. Dec
 - **No copyleft code:** never copy from GPL/AGPL projects (Zed `terminal`/`terminal_view`, Warp client, Zorite
   outside `gpui-whiteboard`). The permissive references you may port from, with an attribution comment, are listed in
   [CONTRIBUTING.md](CONTRIBUTING.md#licensing).
-- **Pinned UI framework:** versions pinned with `=` are upgraded only in a dedicated PR.
+- **Pinned UI framework:** `gpui-kit` is pinned with `=` and upgraded only in a dedicated PR. GPUI is pre-1.0 and
+  barely documented: read its source in `~/.cargo/registry/src/*/gpui-pre-*` and the lessons in
+  [ADR-0002](docs/adr/0002-ui-framework.md) instead of guessing APIs. The `spike/gpui` branch has a working
+  canvas-of-terminals prototype to learn from.
 - **Tests:** every logic change ships a test that fails without it. For UI-only changes, state how you verified them.
 - **No `unsafe`:** the workspace denies it. If it is truly unavoidable, use a local `#[allow(unsafe_code)]` with a
   `// SAFETY:` comment.
