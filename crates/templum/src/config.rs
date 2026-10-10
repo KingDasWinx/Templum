@@ -1,6 +1,8 @@
-//! `config.toml`. For now it holds only `[theme]`: the light and dark theme names.
+//! `config.toml`. For now it holds only `[theme]`, the light and dark theme names; the theme
+//! picker saves them.
 
 use std::ffi::OsString;
+use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -109,6 +111,51 @@ pub(crate) fn line_of(text: &str, err: &TomlError) -> usize {
         + 1
 }
 
+#[derive(Debug)]
+pub(crate) enum SaveError {
+    /// No config folder could be found (no HOME, no APPDATA).
+    NoDir,
+    /// The file doesn't parse: it is left alone.
+    Broken {
+        line: usize,
+    },
+    NotATable,
+    Io(io::Error),
+}
+
+impl fmt::Display for SaveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoDir => write!(f, "no config folder"),
+            Self::Broken { line } => write!(f, "{FILE} has an error on line {line}"),
+            Self::NotATable => write!(f, "`theme` in {FILE} is not a table"),
+            Self::Io(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+/// Sets `theme.dark` or `theme.light` in `<dir>/config.toml`, keeping everything else (comments
+/// included). Creates the folder and the file; never writes over a file that doesn't parse.
+pub(crate) fn save_theme(dir: &Path, dark: bool, name: &str) -> Result<(), SaveError> {
+    let path = dir.join(FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(SaveError::Io(e)),
+    };
+    let mut doc: DocumentMut = text.parse().map_err(|e| SaveError::Broken {
+        line: line_of(&text, &e),
+    })?;
+    let theme = doc
+        .entry("theme")
+        .or_insert(toml_edit::table())
+        .as_table_like_mut()
+        .ok_or(SaveError::NotATable)?;
+    theme.insert(if dark { "dark" } else { "light" }, toml_edit::value(name));
+    std::fs::create_dir_all(dir).map_err(SaveError::Io)?;
+    std::fs::write(&path, doc.to_string()).map_err(SaveError::Io)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +220,60 @@ mod tests {
         assert_eq!(
             dir_from(true, appdata, None, home),
             Some(PathBuf::from("C:/Users/u/AppData/Roaming").join("templum"))
+        );
+    }
+
+    #[test]
+    fn saving_keeps_comments_and_other_tables() {
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            "# my settings\n[theme]\nlight = \"One Light\" # sunny\n\n[other]\nkey = 1\n",
+        );
+        save_theme(d.path(), true, "One Dark").unwrap();
+        let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
+        assert!(text.contains("# my settings"), "{text}");
+        assert!(text.contains("light = \"One Light\" # sunny"), "{text}");
+        assert!(text.contains("[other]\nkey = 1"), "{text}");
+        assert_eq!(
+            read(Some(d.path())),
+            ThemeNames {
+                light: "One Light".into(),
+                dark: "One Dark".into()
+            }
+        );
+    }
+
+    #[test]
+    fn saving_creates_the_folder_and_the_file() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("templum");
+        save_theme(&dir, false, "Catppuccin Frappé").unwrap();
+        assert_eq!(read(Some(&dir)).light, "Catppuccin Frappé");
+    }
+
+    #[test]
+    fn saving_never_overwrites_a_broken_file() {
+        let d = tempfile::tempdir().unwrap();
+        let broken = "[theme]\nlight = \"One Light\"\ndark = @nope\n";
+        write(d.path(), broken);
+        let err = save_theme(d.path(), true, "One Dark").unwrap_err();
+        assert_eq!(err.to_string(), "config.toml has an error on line 3");
+        assert_eq!(
+            std::fs::read_to_string(d.path().join(FILE)).unwrap(),
+            broken
+        );
+    }
+
+    #[test]
+    fn saving_refuses_a_non_table_theme() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "theme = \"Dracula\"\n");
+        let err = save_theme(d.path(), false, "One Light").unwrap_err();
+        assert_eq!(err.to_string(), "`theme` in config.toml is not a table");
+        assert_eq!(
+            std::fs::read_to_string(d.path().join(FILE)).unwrap(),
+            "theme = \"Dracula\"\n"
         );
     }
 }
