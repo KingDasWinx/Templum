@@ -220,6 +220,9 @@ pub struct Terminal {
     term: SharedTerm,
     /// The shell's process ID, when the OS gave one.
     pid: Option<u32>,
+    /// The PTY's master side, to ask which process is in the foreground.
+    #[cfg(unix)]
+    master: Option<std::fs::File>,
     shared: Arc<Shared>,
     pty: EventLoopSender,
     cols: u16,
@@ -259,6 +262,8 @@ impl Terminal {
         // The shell's process, to ask the OS for its current folder later.
         #[cfg(unix)]
         let pid = Some(pty.child().id());
+        #[cfg(unix)]
+        let master = pty.file().try_clone().ok();
         #[cfg(windows)]
         let pid = pty.child_watcher().pid().map(|pid| pid.get());
         let term = Arc::new(FairMutex::new(Term::new(
@@ -273,6 +278,8 @@ impl Terminal {
         Ok(Self {
             term: SharedTerm(term),
             pid,
+            #[cfg(unix)]
+            master,
             shared,
             pty,
             cols: opts.cols,
@@ -305,20 +312,26 @@ impl Terminal {
         self.shared.exited.load(Ordering::Acquire)
     }
 
-    /// The shell's current folder. None when the OS won't say (another user, already gone).
+    /// The current folder of the program in the terminal's foreground: the shell the user types
+    /// into, even under macOS's `login` or in a nested shell. Falls back to the process Templum
+    /// started; None when the OS won't say (another user, already gone).
     pub fn cwd(&self) -> Option<PathBuf> {
-        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-        let pid = Pid::from_u32(self.pid?);
-        let mut system = System::new();
-        system.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&[pid]),
-            ProcessRefreshKind::new().with_cwd(UpdateKind::Always),
-        );
-        system
-            .process(pid)?
-            .cwd()
-            .filter(|cwd| !cwd.as_os_str().is_empty())
-            .map(Path::to_path_buf)
+        self.foreground()
+            .and_then(process_cwd)
+            .or_else(|| self.pid.and_then(process_cwd))
+    }
+
+    /// The PTY's foreground process group: its leader is the shell (or the program it runs).
+    #[cfg(unix)]
+    fn foreground(&self) -> Option<u32> {
+        let group = rustix::termios::tcgetpgrp(self.master.as_ref()?).ok()?;
+        u32::try_from(group.as_raw_nonzero().get()).ok()
+    }
+
+    /// ConPTY has no foreground process group: the shell Templum started is it.
+    #[cfg(windows)]
+    fn foreground(&self) -> Option<u32> {
+        None
     }
 
     /// The colors this terminal reports to programs that ask for them.
@@ -403,6 +416,22 @@ impl Drop for Terminal {
         // Ends the event loop, which drops the PTY and kills the shell.
         let _ = self.pty.send(Msg::Shutdown);
     }
+}
+
+/// A process's current folder, from the OS.
+fn process_cwd(pid: u32) -> Option<PathBuf> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let pid = Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        ProcessRefreshKind::new().with_cwd(UpdateKind::Always),
+    );
+    system
+        .process(pid)?
+        .cwd()
+        .filter(|cwd| !cwd.as_os_str().is_empty())
+        .map(Path::to_path_buf)
 }
 
 fn window_size(cols: u16, rows: u16, (cell_width, cell_height): (u16, u16)) -> WindowSize {

@@ -125,3 +125,45 @@ fn starts_in_the_given_folder_and_reports_it() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+/// macOS's login shell runs under `login`, which stays alive as the shell's parent; nested
+/// shells (`nix develop`, `poetry shell`) look the same. The folder must follow the shell the
+/// user types into, not the process Templum started.
+#[cfg(unix)]
+#[test]
+fn cwd_follows_the_shell_in_the_foreground() {
+    let start = tempfile::tempdir().unwrap();
+    let moved = tempfile::tempdir().unwrap();
+    // `; true` keeps the outer sh alive (no exec), like login.
+    let command = (
+        "sh".to_string(),
+        vec!["-c".to_string(), "sh -i; true".to_string()],
+    );
+    let term = Terminal::spawn(
+        SpawnOptions {
+            cols: 80,
+            rows: 5,
+            cell_px: (8, 16),
+            command: Some(command),
+            palette: Palette::default(),
+            options: TermOptions::default(),
+            working_directory: Some(start.path().to_path_buf()),
+        },
+        Arc::new(|| {}),
+    )
+    .expect("spawn");
+    term.write(format!("cd '{}'\r", moved.path().display()).into_bytes());
+    let want = moved.path().canonicalize().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let cwd = term.cwd().and_then(|c| c.canonicalize().ok());
+        if cwd.as_ref() == Some(&want) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "cwd stayed {cwd:?}, want {want:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}

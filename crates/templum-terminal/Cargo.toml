@@ -13,5 +13,12 @@ alacritty_terminal = "=0.26.0"
 # Already in the tree: reads a shell's current folder (for "new terminal in the same folder").
 sysinfo = { version = "0.31", default-features = false, features = ["system"] }
 
+[target.'cfg(unix)'.dependencies]
+# Already in the tree: the PTY's foreground process group (the shell the user types into).
+rustix = { version = "1.1", default-features = false, features = ["std", "termios"] }
+
+[dev-dependencies]
+tempfile = "3"
+
 [lints]
 workspace = true
