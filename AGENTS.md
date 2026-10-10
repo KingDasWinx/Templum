@@ -31,6 +31,9 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing structure. Dec
 - **No `unsafe`:** the workspace denies it. If it is truly unavoidable, use a local `#[allow(unsafe_code)]` with a
   `// SAFETY:` comment.
 - **Small PRs:** the PR title is an imperative sentence and becomes the squash commit.
+- **Performance:** pull requests that touch painting or `templum-terminal` run
+  `cargo run --release -p templum -- --bench` (Linux) and paste its JSON line in the PR description.
+  The bar is `p95_ms` <= 16.7 (see [ADR-0002](docs/adr/0002-ui-framework.md)).
 
 ## Before saying "done"
 
