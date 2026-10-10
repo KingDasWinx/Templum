@@ -174,8 +174,9 @@ pub(crate) enum Loaded {
 
 pub(crate) fn load(dir: &Path) -> Loaded {
     let path = path(dir);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
+    // Bytes, not a string: a file that isn't UTF-8 is bad content to set aside, not a read failure.
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Loaded::Nothing,
         Err(e) => return Loaded::Unreadable(format!("{}: {e}", path.display())),
     };
@@ -183,9 +184,9 @@ pub(crate) fn load(dir: &Path) -> Loaded {
     struct Version {
         version: u32,
     }
-    let why = match serde_json::from_str::<Version>(&text) {
+    let why = match serde_json::from_slice::<Version>(&bytes) {
         Ok(v) if v.version > VERSION => "it is from a newer Templum".to_string(),
-        _ => match serde_json::from_str::<Saved>(&text) {
+        _ => match serde_json::from_slice::<Saved>(&bytes) {
             Ok(saved) => return Loaded::Saved(saved),
             Err(e) => e.to_string(),
         },
@@ -351,6 +352,18 @@ mod tests {
         assert_eq!(moved(d.path(), newer), "it is from a newer Templum");
         let note = r#"{"version":1,"camera":{"x":0,"y":0,"zoom":1},"items":[{"kind":"note","text":"hi"}]}"#;
         moved(d.path(), note);
+    }
+
+    #[test]
+    fn a_file_that_isnt_utf8_is_set_aside_too() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("workspaces")).unwrap();
+        // UTF-16, as some Windows tools write.
+        std::fs::write(path(d.path()), [0xff, 0xfe, b'{', 0]).unwrap();
+        assert!(
+            matches!(load(d.path()), Loaded::Moved { .. }),
+            "not Unreadable: that would stop every future save"
+        );
     }
 
     #[test]

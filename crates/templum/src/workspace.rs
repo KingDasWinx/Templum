@@ -436,6 +436,7 @@ impl Workspace {
         }
         let mut ids = Vec::new();
         let mut gone = Vec::new();
+        let mut failed = false;
         for item in &saved.items {
             let session::Item::Terminal(t) = item;
             let Some(rect) = self.restorable(t.rect.into()) else {
@@ -450,9 +451,21 @@ impl Workspace {
                 }
                 None => None,
             };
-            ids.push(self.spawn_block(rect, folder, window, cx));
+            let id = self.spawn_block(rect, folder, window, cx);
+            failed |= id.is_none();
+            ids.push(id);
         }
         self.focused = saved.focused.and_then(|i| ids.get(i).copied().flatten());
+        if failed {
+            // A shell setting with a typo: fixing it must bring the canvas back, so it isn't
+            // written over with the blocks that couldn't start.
+            self.data_dir = None;
+            let message = "Some terminals couldn't start, so this session won't save the canvas: \
+                           the saved one stays for the next start"
+                .to_string();
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::warning(message));
+        }
         if !gone.is_empty() {
             let message = format!(
                 "Gone, so their terminals start in the home folder: {}",
@@ -1849,6 +1862,16 @@ mod tests {
         config_dir: Option<std::path::PathBuf>,
         data_dir: Option<std::path::PathBuf>,
     ) -> (AnyWindowHandle, Entity<Workspace>) {
+        open_as(cx, Some(quiet()), config_dir, data_dir)
+    }
+
+    /// `open_in` with the program new terminals run.
+    fn open_as(
+        cx: &mut TestAppContext,
+        command: Option<(String, Vec<String>)>,
+        config_dir: Option<std::path::PathBuf>,
+        data_dir: Option<std::path::PathBuf>,
+    ) -> (AnyWindowHandle, Entity<Workspace>) {
         // PTY threads wake the UI from outside the test scheduler.
         cx.executor().allow_parking();
         let opened = cx.update(|cx| {
@@ -1862,7 +1885,7 @@ mod tests {
                 },
                 cx,
                 |window, cx| {
-                    cx.new(|cx| Workspace::with(Some(quiet()), config_dir, data_dir, window, cx))
+                    cx.new(|cx| Workspace::with(command, config_dir, data_dir, window, cx))
                 },
             )
             .expect("open window")
@@ -4230,5 +4253,23 @@ mod tests {
         let (_, ws) = open(cx);
         tick(cx);
         ws.read_with(cx, |ws, _| assert_eq!(ws.saved, None));
+    }
+
+    #[gpui_kit::test]
+    fn shells_that_cant_start_leave_the_saved_canvas_alone(cx: &mut TestAppContext) {
+        let data = tempfile::tempdir().unwrap();
+        let text = r#"{"version":1,"camera":{"x":0,"y":0,"zoom":1},"items":[
+              {"kind":"terminal","rect":{"x":0,"y":0,"w":700,"h":450}}]}"#;
+        write_canvas(data.path(), text);
+        // A shell setting with a typo: no block can start.
+        let broken = Some(("/nonexistent/templum-shell".to_string(), Vec::new()));
+        let (_, ws) = open_as(cx, broken, None, Some(data.path().to_path_buf()));
+        tick(cx);
+        ws.read_with(cx, |ws, _| assert!(ws.canvas.blocks().is_empty()));
+        assert_eq!(
+            std::fs::read_to_string(crate::session::path(data.path())).unwrap(),
+            text,
+            "kept for the start after the setting is fixed"
+        );
     }
 }
