@@ -453,6 +453,11 @@ impl Workspace {
             };
             let id = self.spawn_block(rect, folder, window, cx);
             failed |= id.is_none();
+            // The shell reads it once it is ready.
+            if let (Some(id), Some(agent)) = (id, t.agent()) {
+                let line = format!("{}\r", agent.resume_command());
+                self.terminals[&id].term.write(line.into_bytes());
+            }
             ids.push(id);
         }
         self.focused = saved.focused.and_then(|i| ids.get(i).copied().flatten());
@@ -4271,5 +4276,33 @@ mod tests {
             text,
             "kept for the start after the setting is fixed"
         );
+    }
+
+    #[gpui_kit::test]
+    fn a_saved_agent_is_resumed_in_its_block(cx: &mut TestAppContext) {
+        use std::time::{Duration, Instant};
+        use templum_terminal::Snapshot;
+        let data = tempfile::tempdir().unwrap();
+        write_canvas(
+            data.path(),
+            r#"{"version":1,"camera":{"x":0,"y":0,"zoom":1},"items":[
+              {"kind":"terminal","rect":{"x":0,"y":0,"w":700,"h":450},"agent":"claude"}]}"#,
+        );
+        let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        let id = first_id(&ws, cx);
+        // The test shell echoes what it is typed.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let shown = ws.read_with(cx, |ws, _| {
+                let mut snap = Snapshot::default();
+                snap.refresh(ws.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.text()
+            });
+            if shown.contains("claude --continue") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "not typed: {shown:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 }

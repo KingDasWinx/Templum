@@ -93,6 +93,9 @@ come back. The file is `~/.local/share/templum/workspaces/default.json`
 (`~/Library/Application Support/Templum/workspaces/` on macOS, `%APPDATA%\templum\workspaces\` on Windows). If
 Templum can't read it, it keeps it as `default.json.bak` and starts fresh.
 
+If Claude Code or Codex was open in a terminal, Templum types `claude --continue` or `codex resume --last` there,
+which continues that folder's latest conversation.
+
 ## Configuration
 
 Everything is in `config.toml`, in the folder from [Themes](#themes) (`~/.config/templum/` on Linux and macOS,

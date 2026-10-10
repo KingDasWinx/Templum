@@ -89,6 +89,19 @@ pub(crate) struct TerminalItem {
     /// Missing when the OS wouldn't say, or when the path isn't UTF-8 (JSON can't hold it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
+    /// "claude" or "codex": resumed in the block's folder. Any other value is ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+}
+
+impl TerminalItem {
+    /// The agent to resume: only a known one, so an edited file can't make Templum type anything
+    /// else.
+    pub fn agent(&self) -> Option<templum_terminal::Agent> {
+        self.agent
+            .as_deref()
+            .and_then(templum_terminal::Agent::from_name)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -144,6 +157,7 @@ impl Layout {
                     Item::Terminal(TerminalItem {
                         rect: (*rect).into(),
                         folder: found.folder.and_then(utf8),
+                        agent: found.agent.map(|a| a.name().to_string()),
                     })
                 })
                 .collect(),
@@ -239,6 +253,7 @@ mod tests {
                         h: 460.0,
                     },
                     folder: Some("/home/u/proj".into()),
+                    agent: Some("claude".into()),
                 }),
                 Item::Terminal(TerminalItem {
                     rect: SavedRect {
@@ -248,6 +263,7 @@ mod tests {
                         h: 300.0,
                     },
                     folder: None,
+                    agent: None,
                 }),
             ],
             focused: Some(1),
@@ -307,6 +323,7 @@ mod tests {
             "\"kind\":\"terminal\"",
             "\"rect\":{\"x\":0.0,\"y\":0.0,\"w\":720.0,\"h\":460.0}",
             "\"folder\":\"/home/u/proj\"",
+            "\"agent\":\"claude\"",
             "\"focused\":1",
         ] {
             assert!(text.contains(part), "{part} in {text}");
@@ -316,6 +333,31 @@ mod tests {
             1,
             "a missing folder isn't written"
         );
+        assert_eq!(text.matches("agent").count(), 1, "nor a missing agent");
+    }
+
+    #[test]
+    fn only_known_agents_are_resumed() {
+        let item = |agent: Option<&str>| TerminalItem {
+            rect: SavedRect {
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0,
+            },
+            folder: None,
+            agent: agent.map(String::from),
+        };
+        assert_eq!(
+            item(Some("claude")).agent(),
+            Some(templum_terminal::Agent::Claude)
+        );
+        assert_eq!(
+            item(Some("codex")).agent(),
+            Some(templum_terminal::Agent::Codex)
+        );
+        assert_eq!(item(Some("rm -rf ~")).agent(), None);
+        assert_eq!(item(None).agent(), None);
     }
 
     #[test]

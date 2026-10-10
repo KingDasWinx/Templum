@@ -1,7 +1,7 @@
 # Canvas persistence
 
 - **Date:** 2026-10-10
-- **Status:** Draft
+- **Status:** Implemented
 - **Builds on:** [walking-skeleton.md](walking-skeleton.md) (the canvas and its terminal blocks) and
   [config.md](config.md) (the shell's start folder, and how `config.toml` is written safely)
 
@@ -75,6 +75,7 @@ What doesn't come back: the text that was on screen, and programs other than the
   | Named `codex` (`codex.exe`) | Codex |
   | `node` with an argument whose path has `@anthropic-ai/claude-code` | Claude Code (npm install) |
   | `node` with an argument whose path has `@openai/codex` | Codex (npm install) |
+  | `node` whose script is named `claude` or `codex` (an npm bin link) | That agent |
   | Anything else (`vim`, `node server.js`, the shell itself) | None |
 
 - **The block's folder:** with an agent open, it is the agent process's folder. This matters on Windows, where

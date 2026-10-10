@@ -71,9 +71,10 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   hand.
 - The canvas is saved by `crates/templum/src/session.rs`: one JSON file per workspace in the data folder. Every
   5 s the workspace takes a `Layout` (rects and process ids, cheap) and a background task reads the processes
-  (`templum_terminal::inspect`), builds the `Saved` file content and writes it when it changed; on quit it runs at
-  once. Writes take turns and an older one never replaces a newer one. At startup a saved canvas is restored (camera,
-  blocks back to front, focus, folders); a file it can't read is set aside as `.bak`.
+  (`templum_terminal::inspect`: folders, and whether Claude Code or Codex runs, by `agent_of`), builds the `Saved`
+  file content and writes it when it changed; on quit it runs at once. Writes take turns and an older one never
+  replaces a newer one. At startup a saved canvas is restored (camera, blocks back to front, focus, folders, and an
+  agent's resume command typed into its block); a file it can't read is set aside as `.bak`.
 
 ## Distribution
 
