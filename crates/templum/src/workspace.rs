@@ -898,9 +898,14 @@ mod tests {
         cx.simulate_window_resize(handle, size(px(600.), px(400.)));
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
-            // The canvas area: the window minus the title bar.
-            let vp = super::viewport(window);
+            // Measured, not computed with viewport(): the canvas area starts at the workspace's
+            // origin (below the title bar) and runs to the window's edge.
+            let full = window.viewport_size();
             let ws = ws.read(cx);
+            let vp = templum_canvas::Size::new(
+                f32::from(full.width - ws.origin.x),
+                f32::from(full.height - ws.origin.y),
+            );
             let b = ws.canvas.blocks()[0].rect;
             let center = ws
                 .canvas
