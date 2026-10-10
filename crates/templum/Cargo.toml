@@ -12,6 +12,13 @@ publish.workspace = true
 # GPUI (Zed's UI framework) + widgets, through one facade that pins the GPUI snapshot.
 # Pinned exactly: upgrade only in a dedicated PR (see docs/adr/0002-ui-framework.md).
 gpui-kit = "=0.7.1"
+templum-canvas = { path = "../templum-canvas" }
+templum-terminal = { path = "../templum-terminal" }
+# Already in the tree through GPUI: its channel wakes the UI from PTY threads.
+futures = "0.3"
+
+[dev-dependencies]
+gpui-kit = { version = "=0.7.1", features = ["test-support"] }
 
 [lints]
 workspace = true
