@@ -2,6 +2,7 @@
 //! active config and changes it through the workspace, which applies the change on the next frame
 //! and saves it shortly after.
 
+use std::collections::HashSet;
 use std::time::Instant;
 
 use gpui_kit::assets::IconName;
@@ -23,7 +24,7 @@ use gpui_kit::{
 use crate::config::{
     self, Blur, Config, Edit, Mode, Shape, ThemeConfig, WindowConfig, WorkingDirectory,
 };
-use crate::grid::hsla;
+use crate::grid::{self, hsla};
 use crate::motion;
 use crate::workspace::Workspace;
 
@@ -439,19 +440,55 @@ fn is_monospace(i: f32, m: f32) -> bool {
 /// per family.
 pub(crate) fn monospace_families(window: &Window) -> Vec<SharedString> {
     let ts = window.text_system();
-    let mut names: Vec<SharedString> = ts
-        .all_font_names()
+    let installed = ts.all_font_names();
+    let candidates = if cfg!(any(target_os = "macos", target_os = "windows")) {
+        installed
+    } else {
+        safe_to_load(installed, fc_list_with_i_and_m())
+    };
+    candidates
         .into_iter()
         .filter(|name| {
             let id = ts.resolve_font(&font(name.clone()));
+            // A family that doesn't load resolves to a fallback font: not this family.
+            let loaded = ts
+                .get_font_for_id(id)
+                .is_some_and(|f| f.family.as_ref() == name.as_str());
             let advance = |c| ts.advance(id, px(14.0), c).map(|s| f32::from(s.width)).ok();
-            matches!((advance('i'), advance('m')), (Some(i), Some(m)) if m > 0.0 && is_monospace(i, m))
+            loaded
+                && matches!((advance('i'), advance('m')), (Some(i), Some(m)) if m > 0.0 && is_monospace(i, m))
         })
         .map(SharedString::from)
-        .collect();
-    names.sort();
-    names.dedup();
-    names
+        .collect()
+}
+
+/// The families that are safe to load on Linux. There GPUI's text system drops a loaded family's
+/// faces that have no "m" from the font database for good, and those are the emoji, symbol and
+/// script fonts other text falls back to. So only families fontconfig says have both "i" and "m"
+/// are loaded; without fc-list, only the built-in list.
+fn safe_to_load(installed: Vec<String>, with_i_and_m: Option<HashSet<String>>) -> Vec<String> {
+    installed
+        .into_iter()
+        .filter(|name| match &with_i_and_m {
+            Some(families) => families.contains(name),
+            None => grid::MONOSPACE.contains(&name.as_str()),
+        })
+        .collect()
+}
+
+/// Every family name of the fonts that have both "i" and "m", from fontconfig.
+fn fc_list_with_i_and_m() -> Option<HashSet<String>> {
+    let out = std::process::Command::new("fc-list")
+        .args([":charset=69 6d", "--format", "%{family}\n"])
+        .output()
+        .ok()?;
+    out.status.success().then(|| {
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .flat_map(|line| line.split(','))
+            .map(str::to_owned)
+            .collect()
+    })
 }
 
 /// `font.family`; "" is Default (the key is removed: the first installed font of the built-in list).
@@ -1017,5 +1054,23 @@ mod tests {
             .to_vec();
         assert_eq!(split_args(&join_args(&args)).unwrap(), args);
         assert_eq!(join_args(&["--login".into(), "-i".into()]), "--login -i");
+    }
+
+    #[test]
+    fn only_families_with_i_and_m_are_loaded_on_linux() {
+        let installed: Vec<String> = ["Fira Code", "JetBrains Mono", "Noto Color Emoji"]
+            .map(String::from)
+            .to_vec();
+        let with_i_and_m: std::collections::HashSet<String> =
+            ["Fira Code", "JetBrains Mono"].map(String::from).into();
+        assert_eq!(
+            safe_to_load(installed.clone(), Some(with_i_and_m)),
+            ["Fira Code", "JetBrains Mono"]
+        );
+        assert_eq!(
+            safe_to_load(installed, None),
+            ["JetBrains Mono"],
+            "without fc-list, the built-in list"
+        );
     }
 }

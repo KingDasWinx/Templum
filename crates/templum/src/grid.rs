@@ -14,7 +14,7 @@ use templum_terminal::{CursorShape, Rgb, SharedTerm, Snapshot};
 use crate::theme::Theme;
 use crate::workspace::Workspace;
 
-const MONOSPACE: [&str; 9] = [
+pub(crate) const MONOSPACE: [&str; 9] = [
     "JetBrainsMono Nerd Font Mono",
     "JetBrainsMono Nerd Font",
     "JetBrains Mono",
