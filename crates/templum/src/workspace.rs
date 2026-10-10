@@ -1211,7 +1211,7 @@ mod tests {
     ) -> (AnyWindowHandle, Entity<Workspace>) {
         // PTY threads wake the UI from outside the test scheduler.
         cx.executor().allow_parking();
-        cx.update(|cx| {
+        let opened = cx.update(|cx| {
             gpui_kit::init(cx);
             bind_keys(cx);
             let bounds = Bounds::new(point(px(0.), px(0.)), size(px(1280.), px(800.)));
@@ -1224,7 +1224,11 @@ mod tests {
                 |window, cx| cx.new(|cx| Workspace::with(Some(quiet()), config_dir, window, cx)),
             )
             .expect("open window")
-        })
+        });
+        // The startup block at rest: tests that measure elements must not depend on how far its
+        // pop-in got (new_terminals_pop_in_then_settle checks the animation itself).
+        opened.1.update(cx, |ws, _| ws.appearing.clear());
+        opened
     }
 
     fn click(window: &mut Window, cx: &mut gpui_kit::App, at: (f32, f32), count: usize) {
@@ -1713,8 +1717,6 @@ mod tests {
     fn focus_does_not_shift_the_terminal(cx: &mut TestAppContext) {
         let (handle, ws) = open(cx);
         let id = first_id(&ws, cx);
-        // Measure the block at rest, not while it pops in.
-        ws.update(cx, |ws, _| ws.appearing.clear());
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             let focused = window.find(("body", id.0 as usize)).bounds();
