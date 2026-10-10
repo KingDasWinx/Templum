@@ -24,6 +24,7 @@ use crate::block;
 use crate::config::{self, ThemeNames};
 use crate::grid::{CellMetrics, hsla};
 use crate::theme::{self, CANVAS_ALPHA, Entry, Theme};
+use crate::theme_picker::{self, Picker};
 use crate::title_bar;
 
 actions!(
@@ -121,6 +122,8 @@ pub struct Workspace {
     /// True until the user first moves the camera or touches a block: meanwhile the startup
     /// terminal stays centered, since tiling compositors resize the window after it opens.
     pub(crate) pristine: bool,
+    /// Where config.toml and the themes folder live (None: defaults only, nothing saved).
+    config_dir: Option<PathBuf>,
     pub(crate) themes: Vec<Entry>,
     theme_names: ThemeNames,
     /// The system's appearance.
@@ -131,6 +134,8 @@ pub struct Workspace {
     translucent: bool,
     /// The block under the pointer: it shows its close button and resize grip.
     pub(crate) hovered: Option<BlockId>,
+    /// The open theme picker.
+    pub(crate) picker: Option<Picker>,
     _wake: Task<()>,
 }
 
@@ -185,12 +190,14 @@ impl Workspace {
             scroll_acc: 0.0,
             command,
             pristine: true,
+            config_dir,
             themes,
             theme_names,
             dark,
             theme,
             translucent: theme::system_translucent(),
             hovered: None,
+            picker: None,
             _wake: wake,
         };
         // Startup: one terminal, centered.
@@ -262,6 +269,8 @@ impl Workspace {
 
     /// The system switched between light and dark: use that mode's theme.
     pub(crate) fn set_dark(&mut self, dark: bool, cx: &mut Context<Self>) {
+        // A preview from the other mode must not survive (Esc would restore the wrong theme).
+        self.picker = None;
         self.dark = dark;
         let theme = theme::pick(
             &self.themes,
@@ -269,6 +278,83 @@ impl Workspace {
             theme::default_name(dark),
         );
         self.apply(theme, cx);
+    }
+
+    /// Opens the theme picker (re-reading the user's themes folder), or closes it like Esc.
+    pub(crate) fn toggle_theme_picker(&mut self, cx: &mut Context<Self>) {
+        if self.picker.is_some() {
+            self.cancel_theme(cx);
+            return;
+        }
+        self.themes = theme::load(self.config_dir.as_deref());
+        let selected = self
+            .themes
+            .iter()
+            .position(|e| e.theme.name == self.theme.name);
+        self.picker = Some(Picker {
+            before: self.theme.clone(),
+            selected,
+            error: None,
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn preview_theme(&mut self, i: usize, cx: &mut Context<Self>) {
+        let Some(theme) = self.themes.get(i).map(|e| e.theme.clone()) else {
+            return;
+        };
+        if let Some(picker) = &mut self.picker {
+            picker.selected = Some(i);
+        }
+        self.apply(theme, cx);
+    }
+
+    /// ↑/↓ in the picker, wrapping around.
+    fn move_theme(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let n = self.themes.len() as i32;
+        if n == 0 {
+            return;
+        }
+        let at = self
+            .picker
+            .as_ref()
+            .and_then(|p| p.selected)
+            .map_or(if delta > 0 { -1 } else { 0 }, |i| i as i32);
+        self.preview_theme((at + delta).rem_euclid(n) as usize, cx);
+    }
+
+    /// Keeps theme `i` for the current mode and saves it. If saving fails, the choice still
+    /// applies and the picker stays open to say why.
+    pub(crate) fn choose_theme(&mut self, i: usize, cx: &mut Context<Self>) {
+        self.preview_theme(i, cx);
+        let name = self.theme.name.clone();
+        if self.dark {
+            self.theme_names.dark = name.clone();
+        } else {
+            self.theme_names.light = name.clone();
+        }
+        let saved = match &self.config_dir {
+            Some(dir) => config::save_theme(dir, self.dark, &name),
+            None => Err(config::SaveError::NoDir),
+        };
+        match saved {
+            Ok(()) => self.picker = None,
+            Err(err) => {
+                eprintln!("templum: couldn't save the theme: {err}");
+                if let Some(picker) = &mut self.picker {
+                    picker.before = self.theme.clone();
+                    picker.error = Some(format!("Not saved: {err}"));
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Esc or a click outside: back to the theme from before the picker opened.
+    pub(crate) fn cancel_theme(&mut self, cx: &mut Context<Self>) {
+        if let Some(picker) = self.picker.take() {
+            self.apply(picker.before, cx);
+        }
     }
 
     pub(crate) fn focus_block(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
@@ -444,6 +530,22 @@ impl Workspace {
     }
 
     fn on_key_down(&mut self, e: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.picker.is_some() {
+            match e.keystroke.key.as_str() {
+                "up" => self.move_theme(-1, cx),
+                "down" => self.move_theme(1, cx),
+                "enter" => {
+                    if let Some(i) = self.picker.as_ref().and_then(|p| p.selected) {
+                        self.choose_theme(i, cx);
+                    }
+                }
+                "escape" => self.cancel_theme(cx),
+                _ => {}
+            }
+            // While the picker is open, typing doesn't reach the terminal.
+            cx.stop_propagation();
+            return;
+        }
         let Some(pane) = self.focused.and_then(|id| self.terminals.get(&id)) else {
             return;
         };
@@ -691,6 +793,10 @@ impl Render for Workspace {
                 )
             });
         let alpha = if self.translucent { CANVAS_ALPHA } else { 1.0 };
+        let picker = self
+            .picker
+            .as_ref()
+            .map(|p| theme_picker::render(self, p, cx));
         div()
             .id("window")
             .size_full()
@@ -699,6 +805,7 @@ impl Render for Workspace {
             .bg(hsla(self.theme.ui.canvas, alpha))
             .child(title_bar::render(self, cx))
             .child(area)
+            .children(picker)
     }
 }
 
@@ -1349,6 +1456,114 @@ mod tests {
             assert!(window.try_find(("handle", id.0 as usize)).is_some());
         })
         .unwrap();
+    }
+
+    fn builtin_index(name: &str) -> usize {
+        crate::theme::BUILTIN
+            .iter()
+            .position(|b| b.name == name)
+            .unwrap()
+    }
+
+    #[gpui_kit::test]
+    fn theme_picker_previews_cancels_and_saves(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("theme-button", cx);
+            window.render_frame(cx);
+            window.hover(("theme-item", builtin_index("One Dark")), cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.theme.name, "One Dark", "hover previews")
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("escape", cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.theme.name, "Catppuccin Latte", "Esc puts it back");
+            assert!(ws.picker.is_none());
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("theme-button", cx);
+            window.render_frame(cx);
+            window.press("down", cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.theme.name, "Catppuccin Frappé");
+            assert!(ws.picker.is_none());
+        });
+        let saved = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(saved.contains("light = \"Catppuccin Frappé\""), "{saved}");
+    }
+
+    #[gpui_kit::test]
+    fn clicking_outside_the_picker_cancels(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("theme-button", cx);
+            window.render_frame(cx);
+            window.hover(("theme-item", builtin_index("Apple Light")), cx);
+            window.render_frame(cx);
+            window.click("picker-backdrop", cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.theme.name, "Catppuccin Latte");
+            assert!(ws.picker.is_none());
+            assert_eq!(
+                ws.canvas.blocks().len(),
+                1,
+                "the click didn't reach the canvas"
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_broken_config_is_not_overwritten(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[theme\n").unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("theme-button", cx);
+            window.render_frame(cx);
+            window.click(("theme-item", builtin_index("One Dark")), cx);
+            window.render_frame(cx);
+            assert!(window.try_find("picker-error").is_some());
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.theme.name, "One Dark", "the choice applies anyway");
+            assert!(ws.picker.is_some(), "the picker stays open to show why");
+        });
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[theme\n");
+    }
+
+    #[gpui_kit::test]
+    fn appearance_change_closes_the_picker(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("theme-button", cx);
+            window.render_frame(cx);
+            window.hover(("theme-item", builtin_index("One Light")), cx);
+        })
+        .unwrap();
+        ws.update(cx, |ws, cx| ws.set_dark(true, cx));
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.picker.is_none());
+            assert_eq!(ws.theme.name, "Catppuccin Mocha");
+        });
     }
 
     #[test]

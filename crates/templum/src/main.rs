@@ -3,6 +3,7 @@ mod block;
 mod config;
 mod grid;
 mod theme;
+mod theme_picker;
 mod title_bar;
 mod workspace;
 

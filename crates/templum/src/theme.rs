@@ -229,8 +229,6 @@ pub(crate) fn default_name(dark: bool) -> &'static str {
 
 /// One line of the picker.
 pub(crate) struct Entry {
-    // Read by the theme picker, which comes next; remove this allow with it.
-    #[allow(dead_code)]
     pub group: &'static str,
     pub theme: Rc<Theme>,
 }
