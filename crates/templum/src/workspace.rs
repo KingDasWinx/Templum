@@ -269,6 +269,10 @@ impl Workspace {
 
     /// The system switched between light and dark: use that mode's theme.
     pub(crate) fn set_dark(&mut self, dark: bool, cx: &mut Context<Self>) {
+        // GPUI also reports appearance on Wayland decoration and window-control changes.
+        if dark == self.dark {
+            return;
+        }
         // A preview from the other mode must not survive (Esc would restore the wrong theme).
         self.picker = None;
         self.dark = dark;
@@ -1563,6 +1567,24 @@ mod tests {
         ws.read_with(cx, |ws, _| {
             assert!(ws.picker.is_none());
             assert_eq!(ws.theme.name, "Catppuccin Mocha");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn appearance_event_without_a_mode_change_keeps_the_picker(cx: &mut TestAppContext) {
+        // GPUI also reports appearance on Wayland decoration and window-control changes.
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("theme-button", cx);
+            window.render_frame(cx);
+            window.hover(("theme-item", builtin_index("One Dark")), cx);
+        })
+        .unwrap();
+        ws.update(cx, |ws, cx| ws.set_dark(false, cx));
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.picker.is_some(), "still light: the picker stays open");
+            assert_eq!(ws.theme.name, "One Dark", "and the preview stays");
         });
     }
 
