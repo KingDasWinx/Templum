@@ -37,19 +37,27 @@ impl Agent {
 /// The agent a process is, from its name and arguments (`args[0]` is the program). An agent
 /// installed with npm runs as `node` with its script (the package's, or the bin link) first.
 pub fn agent_of(name: &str, args: &[&str]) -> Option<Agent> {
-    match stem(name).as_str() {
-        "node" => {
-            let script = args.iter().skip(1).find(|a| !a.starts_with('-'))?;
-            let script = script.replace('\\', "/");
-            if script.contains("@anthropic-ai/claude-code") {
-                Some(Agent::Claude)
-            } else if script.contains("@openai/codex") {
-                Some(Agent::Codex)
-            } else {
-                Agent::from_name(&stem(&script))
-            }
-        }
-        other => Agent::from_name(other),
+    let program = args.first().map_or_else(String::new, |a| stem(a));
+    // The name, or the first argument: on macOS an npm agent's `process.title` replaces it.
+    if let Some(agent) = Agent::from_name(&stem(name)).or_else(|| Agent::from_name(&program)) {
+        return Some(agent);
+    }
+    // Node 26 on Linux names the process after its main thread.
+    let node = matches!(stem(name).as_str(), "node" | "node-mainthread") || program == "node";
+    if !node {
+        return None;
+    }
+    let script = args.iter().skip(1).find(|a| !a.starts_with('-'))?;
+    let script = script.replace('\\', "/");
+    if script.contains("@anthropic-ai/claude-code") {
+        Some(Agent::Claude)
+    } else if script.contains("@openai/codex") {
+        Some(Agent::Codex)
+    } else if Path::new(&script).extension().is_none() {
+        // An npm bin link (`…/bin/claude`); a script of the user's has an extension.
+        Agent::from_name(&stem(&script))
+    } else {
+        None
     }
 }
 
@@ -102,6 +110,26 @@ mod tests {
                 &["node", "--no-warnings", "/usr/bin/codex"],
                 Some(Agent::Codex),
             ),
+            // Node 26 on Linux: the main thread names the process.
+            (
+                "node-MainThread",
+                &["node", "/x/node_modules/@openai/codex/bin/codex.js"],
+                Some(Agent::Codex),
+            ),
+            (
+                "node-MainThread",
+                &["node", "/usr/bin/claude"],
+                Some(Agent::Claude),
+            ),
+            // macOS: `process.title = "claude"` overwrites the arguments.
+            (
+                "node",
+                &["claude", "TERM=xterm-256color"],
+                Some(Agent::Claude),
+            ),
+            // The user's own scripts: npm bin links have no extension.
+            ("node", &["node", "claude.js"], None),
+            ("node-MainThread", &["node", "tools/codex.mjs"], None),
             ("node", &["node", "server.js", "codex"], None),
             ("node", &["node"], None),
             ("vim", &["vim", "claude.md"], None),

@@ -71,16 +71,18 @@ What doesn't come back: the text that was on screen, and programs other than the
 
   | The process | Agent |
   |---|---|
-  | Named `claude` (`claude.exe` on Windows) | Claude Code |
-  | Named `codex` (`codex.exe`) | Codex |
-  | `node` with an argument whose path has `@anthropic-ai/claude-code` | Claude Code (npm install) |
-  | `node` with an argument whose path has `@openai/codex` | Codex (npm install) |
-  | `node` whose script is named `claude` or `codex` (an npm bin link) | That agent |
-  | Anything else (`vim`, `node server.js`, the shell itself) | None |
+  | Named `claude` (`claude.exe` on Windows), or with `claude` as its first argument (npm's Claude Code sets its process title, which macOS shows there) | Claude Code |
+  | Named `codex` (`codex.exe`), or with `codex` as its first argument | Codex |
+  | `node` (`node-MainThread` on Linux with Node 26) whose script, its first argument that isn't an option, has `@anthropic-ai/claude-code` in its path | Claude Code (npm install) |
+  | `node` whose script has `@openai/codex` in its path | Codex (npm install) |
+  | `node` whose script is named `claude` or `codex` with no extension (an npm bin link) | That agent |
+  | Anything else (`vim`, `node server.js`, `node claude.js`, the shell itself) | None |
 
 - **The block's folder:** with an agent open, it is the agent process's folder. This matters on Windows, where
   PowerShell's `cd` doesn't move PowerShell's own folder, but the programs it starts do run in the new one.
-- **Restore:** right after the block's shell starts, Templum types the agent's resume command and Enter into it.
+- **Restore:** right after the block's shell starts, Templum types the agent's resume command and Enter into it,
+  only when the block starts in its saved folder. Anywhere else (a folder that's gone, or wasn't known) it would
+  resume another folder's conversation.
   - Claude Code: `claude --continue`, which continues the most recent conversation in the folder.
   - Codex: `codex resume --last`, which continues the most recent session in the folder.
 
@@ -162,7 +164,7 @@ What doesn't come back: the text that was on screen, and programs other than the
 |---|---|
 | `session.rs` (new) | The data folder (`dir()`, tested like `config::dir`), the file's serde types, `load(dir)` (with the `.bak` handling) and `save(dir, &Saved)`, and the conversion between a `Saved` and the canvas. |
 | `config.rs` | `write_whole` (temporary file, rename, read-only check) becomes `pub(crate)` and names its temporary file and error after the file it writes. |
-| `workspace.rs` | `Workspace::with` gets the data folder. It restores the canvas, starts the snapshot every 5 seconds (and runs it at once on quit), and holds the last written snapshot. `open` can start a block in a given folder and type an agent's command into it. |
+| `workspace.rs` | `Workspace::with` gets the data folder. It restores the canvas, starts the snapshot every 5 seconds (and runs it at once on quit), and holds the last written snapshot. Restoring starts each block in its folder and types an agent's resume command into it. |
 | `main.rs` | Passes `session::dir()`, or nothing for `--bench`. |
 | `templum-terminal` | `Terminal::processes()`, the block's process ids (`Send`), and `inspect(ids)`, which reads a block's folder and agent from any thread. `Agent` (`Claude`, `Codex`, with `resume_command()`) and the pure `agent_of(name, args)` that matches the table in [Agents](#agents). The folder is the agent's when one is open. |
 | `templum-canvas` | `Camera::set_zoom(f32)`, which snaps to the nearest step. |
@@ -189,7 +191,7 @@ Tests are written first, as always. Everything runs in CI on Linux, macOS and Wi
 
 **With a real process (`templum-terminal`):**
 
-- A copy of a harmless long-running program named `claude` (`sleep` on Unix, `ping.exe` on Windows), run in a
+- A copy of a harmless long-running program named `claude` (`sleep` on Unix, `cmd.exe` on Windows), run in a
   terminal, makes `inspect` say Claude Code and give its folder.
 
 **Headless UI** (`#[gpui_kit::test]`, temporary data folder):
