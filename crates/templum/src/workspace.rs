@@ -1044,6 +1044,7 @@ mod tests {
     }
 
     /// Presses `key`, then types "x" + Enter into `cat`, and returns the screen once "x" shows.
+    #[cfg(unix)]
     fn echo_after(
         key: &str,
         handle: AnyWindowHandle,
