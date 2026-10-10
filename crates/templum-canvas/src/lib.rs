@@ -4,8 +4,11 @@
 
 mod camera;
 mod canvas;
+pub mod chrome;
 mod geometry;
+mod gesture;
 
 pub use camera::{Camera, FIT_MARGIN, ZOOM_STEPS};
 pub use canvas::{Block, BlockId, CASCADE, Canvas};
 pub use geometry::{Point, Rect, Size};
+pub use gesture::Gesture;
