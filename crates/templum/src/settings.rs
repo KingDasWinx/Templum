@@ -17,7 +17,7 @@ use gpui_kit::component::{Disableable as _, Icon, Sizable as _, TITLE_BAR_HEIGHT
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, BoxShadow, ClickEvent, Context, Entity, SharedString, Subscription,
-    TestSupportExt, Window, div, point, px,
+    TestSupportExt, Window, div, font, point, px,
 };
 
 use crate::config::{self, Blur, Config, Edit, Mode, Shape, ThemeConfig, WindowConfig};
@@ -418,6 +418,114 @@ fn number(ws: &Entity<Workspace>, n: &'static Number) -> SettingField<SharedStri
     )
 }
 
+static FONT_SIZE: Number = Number {
+    table: "font",
+    key: "size",
+    min: 6.0,
+    max: 72.0,
+    step: 1.0,
+    get: |c| f64::from(c.font.size),
+    set: |c, v| c.font.size = v as f32,
+};
+
+/// Equal advances for "i" and "m": a monospaced font (GPUI doesn't say which fonts are).
+fn is_monospace(i: f32, m: f32) -> bool {
+    (i - m).abs() <= 0.01
+}
+
+/// The installed monospaced families, sorted. Measured when the panel opens: one advance pair
+/// per family.
+pub(crate) fn monospace_families(window: &Window) -> Vec<SharedString> {
+    let ts = window.text_system();
+    let mut names: Vec<SharedString> = ts
+        .all_font_names()
+        .into_iter()
+        .filter(|name| {
+            let id = ts.resolve_font(&font(name.clone()));
+            let advance = |c| ts.advance(id, px(14.0), c).map(|s| f32::from(s.width)).ok();
+            matches!((advance('i'), advance('m')), (Some(i), Some(m)) if m > 0.0 && is_monospace(i, m))
+        })
+        .map(SharedString::from)
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// `font.family`; "" is Default (the key is removed: the first installed font of the built-in list).
+pub(crate) fn set_family(ws: &mut Workspace, family: &str, cx: &mut Context<Workspace>) {
+    if family.is_empty() {
+        ws.edit(Edit::remove("font", "family"), |c| c.font.family = None, cx);
+    } else {
+        ws.edit(
+            Edit::set("font", "family", family),
+            |c| c.font.family = Some(family.to_string()),
+            cx,
+        );
+    }
+}
+
+fn font_family(ws: &Entity<Workspace>, fonts: &[SharedString]) -> SettingField<SharedString> {
+    let options = std::iter::once((
+        SharedString::default(),
+        SharedString::from("Default (built-in list)"),
+    ))
+    .chain(fonts.iter().map(|f| (f.clone(), f.clone())))
+    .collect();
+    let read = ws.clone();
+    let write = ws.clone();
+    let field = SettingField::scrollable_dropdown(
+        options,
+        move |cx| {
+            read.read(cx)
+                .config
+                .font
+                .family
+                .clone()
+                .unwrap_or_default()
+                .into()
+        },
+        move |family: SharedString, cx| write.update(cx, |ws, cx| set_family(ws, &family, cx)),
+    );
+    reset(
+        field,
+        ws,
+        "font",
+        "family",
+        |c| c.font.family.is_none(),
+        |c| c.font.family = None,
+    )
+}
+
+/// A few lines of terminal output in the chosen font, size and theme.
+fn preview(ws: &Workspace) -> SettingItem {
+    let family = ws.cell.font.family.clone();
+    let size = ws.config.font.size;
+    let p = ws.theme.palette;
+    SettingItem::render(move |_: &RenderOptions, _: &mut Window, _: &mut App| {
+        let line =
+            |parts: &[(&str, templum_terminal::Rgb)]| {
+                div().flex().children(parts.iter().map(|(text, color)| {
+                    div().text_color(hsla(*color, 1.0)).child(text.to_string())
+                }))
+            };
+        div()
+            .w_full()
+            .p(px(10.0))
+            .rounded(px(6.0))
+            .bg(hsla(p.background, 1.0))
+            .font_family(family.clone())
+            .text_size(px(size))
+            .child(line(&[("~/templum", p.ansi[4])]))
+            .child(line(&[("❯ ", p.ansi[2]), ("cargo test", p.foreground)]))
+            .child(line(&[
+                ("test result: ", p.foreground),
+                ("ok", p.ansi[2]),
+                (". 135 passed", p.foreground),
+            ]))
+    })
+}
+
 /// `theme.light` or `theme.dark`: the built-in themes and the user's themes folder.
 fn theme(
     ws: &Entity<Workspace>,
@@ -572,6 +680,16 @@ pub(crate) fn pages(ws: &Workspace, entity: &Entity<Workspace>) -> Vec<SettingPa
                     .disabled(!ws.translucent),
             ]),
         ),
+        SettingPage::new("Font").group(
+            SettingGroup::new().items([
+                SettingItem::new("Family", font_family(entity, &ws.fonts))
+                    .description("Installed monospaced fonts")
+                    .keywords(["typeface"]),
+                SettingItem::new("Size", number(entity, &FONT_SIZE))
+                    .description("Points at 100% zoom"),
+                preview(ws),
+            ]),
+        ),
         SettingPage::new("Terminal").group(
             SettingGroup::new().items([
                 SettingItem::new("Cursor", dropdown(entity, &CURSOR)),
@@ -609,8 +727,8 @@ mod tests {
 
     #[test]
     fn numbers_read_back_what_they_write() {
-        for n in [&SCROLLBACK] {
-            for v in [n.min, n.step, n.max] {
+        for n in [&SCROLLBACK, &FONT_SIZE] {
+            for v in [n.min, n.min + n.step, n.max] {
                 let mut c = Config::default();
                 (n.set)(&mut c, v);
                 assert_eq!((n.get)(&c), v, "{}.{}", n.table, n.key);
@@ -635,5 +753,12 @@ mod tests {
             let c = config::parse(&text).unwrap();
             assert_eq!((c.window.opacity * 100.0).round(), p, "{text}");
         }
+    }
+
+    #[test]
+    fn equal_advances_are_monospaced() {
+        assert!(is_monospace(8.4, 8.4));
+        assert!(is_monospace(8.4, 8.405));
+        assert!(!is_monospace(3.9, 12.6));
     }
 }

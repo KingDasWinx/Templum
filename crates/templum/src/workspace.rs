@@ -16,8 +16,8 @@ use gpui_kit::{
     Anchor, App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler,
     EntityInputHandler, FocusHandle, Hsla, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PinchEvent, Pixels, Point as PixelPoint, ScrollDelta,
-    ScrollWheelEvent, Subscription, Task, UTF16Selection, Window, WindowAppearance, canvas, div,
-    fill, point, px, size,
+    ScrollWheelEvent, SharedString, Subscription, Task, UTF16Selection, Window, WindowAppearance,
+    canvas, div, fill, point, px, size,
 };
 use templum_canvas::{
     Block, BlockId, Camera, Canvas, Gesture, Point, Rect, Size, chrome, dot_grid,
@@ -130,6 +130,8 @@ pub struct Workspace {
     pub(crate) save_error: Option<String>,
     /// Write `unsaved` when the window closes or the app quits.
     _flush: Vec<Subscription>,
+    /// Installed monospaced families, measured when the settings panel opens.
+    pub(crate) fonts: Vec<SharedString>,
     /// The settings panel, open or sliding out.
     pub(crate) settings: Option<Panel>,
     /// The panel's keyboard focus: Esc and the settings shortcut close it from there.
@@ -269,6 +271,7 @@ impl Workspace {
             _save: Task::ready(()),
             save_error: None,
             _flush: flush,
+            fonts: Vec::new(),
             settings: None,
             settings_focus: cx.focus_handle(),
             hovered: None,
@@ -653,6 +656,7 @@ impl Workspace {
             return;
         }
         self.themes = theme::load(self.config_dir.as_deref());
+        self.fonts = settings::monospace_families(window);
         self.settings = Some(Panel {
             since: Instant::now(),
             closing: false,
@@ -2801,5 +2805,29 @@ mod tests {
             text.contains("blink = true") && text.contains("shape = \"bar\""),
             "{text}"
         );
+    }
+
+    #[gpui_kit::test]
+    fn the_default_font_removes_the_family(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        ws.update(cx, |ws, cx| {
+            crate::settings::set_family(ws, "Some Mono", cx)
+        });
+        frame(handle, cx);
+        ws.update(cx, |ws, _| ws.save());
+        let path = dir.path().join("config.toml");
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("family = \"Some Mono\"")
+        );
+        ws.update(cx, |ws, cx| crate::settings::set_family(ws, "", cx));
+        frame(handle, cx);
+        ws.update(cx, |ws, _| {
+            assert_eq!(ws.config.font.family, None);
+            ws.save();
+        });
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("family"));
     }
 }
