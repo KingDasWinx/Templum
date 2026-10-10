@@ -420,20 +420,24 @@ pub(crate) fn save_edits(dir: &Path, edits: &[Edit]) -> Result<(), SaveError> {
     for edit in edits {
         match &edit.value {
             Some(value) => {
-                doc.entry(edit.table)
+                let table = doc
+                    .entry(edit.table)
                     .or_insert(toml_edit::table())
                     .as_table_like_mut()
-                    .ok_or(SaveError::NotATable(edit.table))?
-                    .insert(edit.key, toml_edit::Item::Value(value.clone()));
-            }
-            None => {
-                if let Some(table) = doc.get_mut(edit.table) {
-                    table
-                        .as_table_like_mut()
-                        .ok_or(SaveError::NotATable(edit.table))?
-                        .remove(edit.key);
+                    .ok_or(SaveError::NotATable(edit.table))?;
+                // A new value in place keeps the key's comment lines and its `# …` on the line.
+                match table.get_mut(edit.key).and_then(|item| item.as_value_mut()) {
+                    Some(old) => {
+                        let mut value = value.clone();
+                        *value.decor_mut() = old.decor().clone();
+                        *old = value;
+                    }
+                    None => {
+                        table.insert(edit.key, toml_edit::Item::Value(value.clone()));
+                    }
                 }
             }
+            None => remove_key(&mut doc, edit.table, edit.key)?,
         }
     }
     // toml_edit writes LF and drops a byte-order mark: put the file's own back.
@@ -446,6 +450,60 @@ pub(crate) fn save_edits(dir: &Path, edits: &[Edit]) -> Result<(), SaveError> {
     }
     std::fs::create_dir_all(dir).map_err(SaveError::Io)?;
     std::fs::write(&path, out).map_err(SaveError::Io)
+}
+
+/// Removes `table.key`. The comment lines above a key belong to it in toml_edit: they move to
+/// whatever follows (the next key, the next table's header, or the end of the file).
+fn remove_key(doc: &mut DocumentMut, table: &'static str, key: &str) -> Result<(), SaveError> {
+    let Some(item) = doc.get_mut(table) else {
+        return Ok(());
+    };
+    let t = item
+        .as_table_like_mut()
+        .ok_or(SaveError::NotATable(table))?;
+    let comments = t
+        .key(key)
+        .and_then(|k| k.leaf_decor().prefix())
+        .and_then(|p| p.as_str())
+        .filter(|p| p.contains('#'))
+        .map(str::to_owned);
+    let next = t
+        .iter()
+        .map(|(k, _)| k.to_owned())
+        .skip_while(|k| k != key)
+        .nth(1);
+    t.remove(key);
+    let Some(comments) = comments else {
+        return Ok(());
+    };
+    if let Some(mut next) = next.and_then(|k| t.key_mut(&k)) {
+        let decor = next.leaf_decor_mut();
+        let rest = decor.prefix().and_then(|p| p.as_str()).unwrap_or("");
+        decor.set_prefix(format!("{comments}{rest}"));
+        return Ok(());
+    }
+    // The last key of its table: before the next table's header, or at the end.
+    let at = doc
+        .get(table)
+        .and_then(|i| i.as_table())
+        .and_then(|t| t.position());
+    let next_table = doc
+        .iter_mut()
+        .filter_map(|(_, item)| item.as_table_mut())
+        .filter(|t| t.position() > at)
+        .min_by_key(|t| t.position());
+    match next_table {
+        Some(next) => {
+            let decor = next.decor_mut();
+            let rest = decor.prefix().and_then(|p| p.as_str()).unwrap_or("");
+            decor.set_prefix(format!("{comments}{rest}"));
+        }
+        None => {
+            let rest = doc.trailing().as_str().unwrap_or("").to_owned();
+            doc.set_trailing(format!("{comments}{rest}"));
+        }
+    }
+    Ok(())
 }
 
 /// Sets `theme.dark` or `theme.light` (the theme picker's choice).
@@ -911,5 +969,47 @@ scrollback = 500
             std::fs::read_to_string(d.path().join(FILE)).unwrap(),
             "font = 3\n"
         );
+    }
+
+    #[test]
+    fn edits_keep_the_comments_around_a_key() {
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            concat!(
+                "[window]\n",
+                "# blur = \"auto\"   # \"auto\" | true | false\n",
+                "opacity = 0.6   # the canvas when translucent, 0 to 1\n",
+                "\n",
+                "[theme]\n",
+                "# mode = \"system\"\n",
+                "light = \"One Light\"   # sunny\n",
+            ),
+        );
+        save_edits(d.path(), &[Edit::set("window", "opacity", 0.5)]).unwrap();
+        let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
+        assert!(
+            text.contains(concat!(
+                "# blur = \"auto\"   # \"auto\" | true | false\n",
+                "opacity = 0.5   # the canvas when translucent, 0 to 1\n",
+            )),
+            "{text}"
+        );
+        save_edits(
+            d.path(),
+            &[
+                Edit::remove("window", "opacity"),
+                Edit::remove("theme", "light"),
+            ],
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
+        assert!(text.contains("# blur = \"auto\""), "{text}");
+        assert!(text.contains("# mode = \"system\""), "{text}");
+        assert!(
+            !text.contains("opacity") && !text.contains("light"),
+            "{text}"
+        );
+        assert_eq!(load(Some(d.path())).unwrap(), Config::default());
     }
 }
