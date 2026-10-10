@@ -10,4 +10,7 @@ pub use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Rgb};
 pub use input::{KeyInput, encode_key, paste_bytes};
 pub use palette::Palette;
 pub use snapshot::{Cursor, Row, Run, Snapshot, Span};
-pub use terminal::{Notify, SelectionKind, SharedTerm, SpawnOptions, TermOptions, Terminal};
+pub use terminal::{
+    Inspection, Notify, Processes, SelectionKind, SharedTerm, SpawnOptions, TermOptions, Terminal,
+    inspect,
+};

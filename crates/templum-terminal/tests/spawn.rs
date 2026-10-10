@@ -3,7 +3,9 @@
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use templum_terminal::{Notify, Palette, Snapshot, SpawnOptions, TermOptions, Terminal};
+use templum_terminal::{
+    Notify, Palette, Processes, Snapshot, SpawnOptions, TermOptions, Terminal, inspect,
+};
 
 #[test]
 fn runs_a_command_and_reports_its_exit() {
@@ -166,4 +168,50 @@ fn cwd_follows_the_shell_in_the_foreground() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// A long-lived process in `dir`, so it's still there to ask.
+fn long_lived(dir: &std::path::Path) -> Terminal {
+    #[cfg(unix)]
+    let command = (
+        "sh".to_string(),
+        vec!["-c".to_string(), "sleep 20".to_string()],
+    );
+    #[cfg(windows)]
+    let command = ("cmd".to_string(), vec!["/K".to_string()]);
+    Terminal::spawn(
+        SpawnOptions {
+            cols: 40,
+            rows: 5,
+            cell_px: (8, 16),
+            command: Some(command),
+            palette: Palette::default(),
+            options: TermOptions::default(),
+            working_directory: Some(dir.to_path_buf()),
+        },
+        Arc::new(|| {}),
+    )
+    .expect("spawn")
+}
+
+#[test]
+fn inspect_reads_several_terminals_at_once() {
+    // Plain paths to start in (cmd.exe can't start in a canonical \\?\ path), compared canonicalized.
+    let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let terms = [long_lived(a.path()), long_lived(b.path())];
+    let want = [a.path(), b.path()].map(|p| p.canonicalize().unwrap());
+    let processes: Vec<Processes> = terms.iter().map(Terminal::processes).collect();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let found: Vec<_> = inspect(&processes)
+            .into_iter()
+            .map(|i| i.folder.and_then(|f| f.canonicalize().ok()))
+            .collect();
+        if found == want.iter().cloned().map(Some).collect::<Vec<_>>() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "found {found:?}, want {want:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(inspect(&[]).is_empty());
 }

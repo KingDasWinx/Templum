@@ -200,6 +200,52 @@ fn grid_point(term: &Term<Listener>, row: usize, col: usize) -> GridPoint {
     )
 }
 
+/// A terminal's processes, to read from any thread with [`inspect`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Processes {
+    /// The process Templum started.
+    pub shell: Option<u32>,
+    /// The PTY's foreground process (Unix): the shell, or the program it runs.
+    pub foreground: Option<u32>,
+}
+
+/// What a terminal's processes tell about it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Inspection {
+    /// The current folder of the program in the foreground (see [`Terminal::cwd`]).
+    pub folder: Option<PathBuf>,
+}
+
+/// Reads several terminals' processes in one pass over the OS's process table: slow enough to
+/// keep off the UI thread when there are many terminals.
+pub fn inspect(terminals: &[Processes]) -> Vec<Inspection> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let pids: Vec<Pid> = terminals
+        .iter()
+        .flat_map(|p| [p.foreground, p.shell])
+        .flatten()
+        .map(Pid::from_u32)
+        .collect();
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&pids),
+        ProcessRefreshKind::new().with_cwd(UpdateKind::Always),
+    );
+    let cwd = |pid: u32| {
+        system
+            .process(Pid::from_u32(pid))?
+            .cwd()
+            .filter(|cwd| !cwd.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+    };
+    terminals
+        .iter()
+        .map(|p| Inspection {
+            folder: p.foreground.and_then(cwd).or_else(|| p.shell.and_then(cwd)),
+        })
+        .collect()
+}
+
 pub struct SpawnOptions {
     pub cols: u16,
     pub rows: u16,
@@ -316,9 +362,15 @@ impl Terminal {
     /// into, even under macOS's `login` or in a nested shell. Falls back to the process Templum
     /// started; None when the OS won't say (another user, already gone).
     pub fn cwd(&self) -> Option<PathBuf> {
-        self.foreground()
-            .and_then(process_cwd)
-            .or_else(|| self.pid.and_then(process_cwd))
+        inspect(&[self.processes()]).pop().and_then(|i| i.folder)
+    }
+
+    /// The shell's and the foreground's process ids: cheap, for [`inspect`] elsewhere.
+    pub fn processes(&self) -> Processes {
+        Processes {
+            shell: self.pid,
+            foreground: self.foreground(),
+        }
     }
 
     /// The PTY's foreground process group: its leader is the shell (or the program it runs).
@@ -416,22 +468,6 @@ impl Drop for Terminal {
         // Ends the event loop, which drops the PTY and kills the shell.
         let _ = self.pty.send(Msg::Shutdown);
     }
-}
-
-/// A process's current folder, from the OS.
-fn process_cwd(pid: u32) -> Option<PathBuf> {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-    let pid = Pid::from_u32(pid);
-    let mut system = System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[pid]),
-        ProcessRefreshKind::new().with_cwd(UpdateKind::Always),
-    );
-    system
-        .process(pid)?
-        .cwd()
-        .filter(|cwd| !cwd.as_os_str().is_empty())
-        .map(Path::to_path_buf)
 }
 
 fn window_size(cols: u16, rows: u16, (cell_width, cell_height): (u16, u16)) -> WindowSize {
