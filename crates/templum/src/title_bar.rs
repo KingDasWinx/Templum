@@ -9,7 +9,7 @@ use gpui_kit::{
 };
 
 use crate::theme::Ui;
-use crate::workspace::{NewTerminal, Workspace, ZoomReset};
+use crate::workspace::Workspace;
 
 pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
     let ui = ws.theme.ui;
@@ -35,9 +35,9 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
                 .child(
                     button("zoom-level", ui)
                         .child(zoom)
-                        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| {
-                            ws.zoom_reset(&ZoomReset, window, cx)
-                        }))
+                        .on_click(
+                            cx.listener(|ws, _: &ClickEvent, window, cx| ws.zoom_reset(window, cx)),
+                        )
                         .test_support(),
                 )
                 .child(
@@ -59,9 +59,11 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
                                 .size(px(14.0))
                                 .text_color(ui.title),
                         )
-                        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| {
-                            ws.new_terminal(&NewTerminal, window, cx)
-                        }))
+                        .on_click(
+                            cx.listener(|ws, _: &ClickEvent, window, cx| {
+                                ws.new_terminal(window, cx)
+                            }),
+                        )
                         .test_support(),
                 ),
         )

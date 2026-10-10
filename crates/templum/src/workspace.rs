@@ -16,8 +16,8 @@ use gpui_kit::{
     Anchor, App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler,
     EntityInputHandler, FocusHandle, Hsla, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PinchEvent, Pixels, Point as PixelPoint, ScrollDelta,
-    ScrollWheelEvent, Task, UTF16Selection, Window, WindowAppearance, actions, canvas, div, fill,
-    point, px, size,
+    ScrollWheelEvent, Task, UTF16Selection, Window, WindowAppearance, canvas, div, fill, point, px,
+    size,
 };
 use templum_canvas::{
     Block, BlockId, Camera, Canvas, Gesture, Point, Rect, Size, chrome, dot_grid,
@@ -27,33 +27,16 @@ use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOpt
 use crate::block;
 use crate::config::{self, Config, ThemeConfig, WorkingDirectory};
 use crate::grid::{CellMetrics, hsla};
+use crate::keys::{self, Command, Keymap};
 use crate::motion;
 use crate::theme::{self, Entry, Theme};
 use crate::theme_picker::{self, Picker};
 use crate::title_bar;
 
-actions!(
-    templum,
-    [
-        NewTerminal,
-        CloseTerminal,
-        CopySelection,
-        PasteClipboard,
-        ZoomIn,
-        ZoomOut,
-        ZoomReset,
-        FitAll
-    ]
-);
-
 pub(crate) const DEFAULT_COLS: u16 = 80;
 pub(crate) const DEFAULT_ROWS: u16 = 24;
 /// Cursor blink half-period.
 const BLINK: Duration = Duration::from_millis(500);
-#[cfg(target_os = "macos")]
-const HINT: &str = "Double-click or press Cmd+T to open a terminal";
-#[cfg(not(target_os = "macos"))]
-const HINT: &str = "Double-click or press Ctrl+Shift+T to open a terminal";
 
 pub fn bind_keys(cx: &mut App) {
     // gpui-kit's Root binds tab/shift-tab to focus navigation: give them back to the shell.
@@ -61,34 +44,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("tab", gpui_kit::NoAction {}, Some("Root")),
         KeyBinding::new("shift-tab", gpui_kit::NoAction {}, Some("Root")),
     ]);
-    #[cfg(target_os = "macos")]
-    cx.bind_keys([
-        KeyBinding::new("cmd-t", NewTerminal, None),
-        KeyBinding::new("cmd-w", CloseTerminal, None),
-        KeyBinding::new("cmd-c", CopySelection, None),
-        KeyBinding::new("cmd-v", PasteClipboard, None),
-        KeyBinding::new("cmd-=", ZoomIn, None),
-        KeyBinding::new("cmd-+", ZoomIn, None),
-        KeyBinding::new("cmd--", ZoomOut, None),
-        KeyBinding::new("cmd-0", ZoomReset, None),
-        // Shift+1 is reported as "!" on some layouts: bind both.
-        KeyBinding::new("cmd-shift-1", FitAll, None),
-        KeyBinding::new("cmd-!", FitAll, None),
-    ]);
-    #[cfg(not(target_os = "macos"))]
-    cx.bind_keys([
-        KeyBinding::new("ctrl-shift-t", NewTerminal, None),
-        KeyBinding::new("ctrl-shift-w", CloseTerminal, None),
-        KeyBinding::new("ctrl-shift-c", CopySelection, None),
-        KeyBinding::new("ctrl-shift-v", PasteClipboard, None),
-        KeyBinding::new("ctrl-=", ZoomIn, None),
-        KeyBinding::new("ctrl-+", ZoomIn, None),
-        KeyBinding::new("ctrl--", ZoomOut, None),
-        KeyBinding::new("ctrl-0", ZoomReset, None),
-        // Shift+1 is reported as "!" on some layouts: bind both.
-        KeyBinding::new("ctrl-shift-1", FitAll, None),
-        KeyBinding::new("ctrl-!", FitAll, None),
-    ]);
+    // Templum's own shortcuts are matched by the workspace's keymap, so config.toml can change
+    // them.
 }
 
 pub(crate) struct Pane {
@@ -147,6 +104,8 @@ pub struct Workspace {
     translucent: bool,
     /// The active config.toml: the last valid one.
     pub(crate) config: Config,
+    /// Its shortcuts.
+    keymap: Keymap,
     /// What config.toml looked like at the last read, for polling.
     config_stamp: config::Stamp,
     /// The last read failed: the next good one says so.
@@ -219,6 +178,12 @@ impl Workspace {
             eprintln!("templum: {warning}");
             show_notification(window, cx, Notification::warning(warning));
         }
+        let (keymap, key_warnings) = Keymap::new(&config.keys, cfg!(target_os = "macos"))
+            .expect("config::parse validated the shortcuts");
+        for warning in key_warnings {
+            eprintln!("templum: {warning}");
+            show_notification(window, cx, Notification::warning(warning));
+        }
         let poll = cx.spawn_in(window, async move |ws, cx| {
             loop {
                 cx.background_executor().timer(config::POLL).await;
@@ -276,6 +241,7 @@ impl Workspace {
             blink_on: true,
             _blink: blink,
             config,
+            keymap,
             _wake: wake,
         };
         // Startup: one terminal, centered.
@@ -439,6 +405,15 @@ impl Workspace {
             let options = self.config.term_options();
             for pane in self.terminals.values() {
                 pane.term.shared().set_options(options);
+            }
+        }
+        if self.config.keys != old.keys {
+            let (keymap, warnings) = Keymap::new(&self.config.keys, cfg!(target_os = "macos"))
+                .expect("config::parse validated the shortcuts");
+            self.keymap = keymap;
+            for warning in warnings {
+                eprintln!("templum: {warning}");
+                show_notification(window, cx, Notification::warning(warning));
             }
         }
         cx.notify();
@@ -670,7 +645,7 @@ impl Workspace {
         self.drag = Some(Drag::Select(id));
     }
 
-    fn copy_selection(&mut self, _: &CopySelection, _: &mut Window, cx: &mut Context<Self>) {
+    fn copy_selection(&mut self, cx: &mut Context<Self>) {
         let text = self
             .focused
             .and_then(|id| self.terminals.get(&id))
@@ -685,36 +660,31 @@ impl Workspace {
         Point::new(vp.w / 2.0, vp.h / 2.0)
     }
 
-    fn zoom_in(&mut self, _: &ZoomIn, window: &mut Window, cx: &mut Context<Self>) {
+    fn zoom_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pristine = false;
         self.canvas.camera.zoom_step(1, Self::center(window));
         cx.notify();
     }
 
-    fn zoom_out(&mut self, _: &ZoomOut, window: &mut Window, cx: &mut Context<Self>) {
+    fn zoom_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pristine = false;
         self.canvas.camera.zoom_step(-1, Self::center(window));
         cx.notify();
     }
 
-    pub(crate) fn zoom_reset(
-        &mut self,
-        _: &ZoomReset,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn zoom_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pristine = false;
         self.canvas.camera.zoom_reset(Self::center(window));
         cx.notify();
     }
 
-    fn fit_all(&mut self, _: &FitAll, window: &mut Window, cx: &mut Context<Self>) {
+    fn fit_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pristine = false;
         self.canvas.fit_all(viewport(window));
         cx.notify();
     }
 
-    fn paste_clipboard(&mut self, _: &PasteClipboard, _: &mut Window, cx: &mut Context<Self>) {
+    fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
@@ -727,12 +697,7 @@ impl Workspace {
         self.drag = None;
     }
 
-    pub(crate) fn new_terminal(
-        &mut self,
-        _: &NewTerminal,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pristine = false;
         let vp = viewport(window);
         let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
@@ -745,28 +710,85 @@ impl Workspace {
         self.open(rect, window, cx);
     }
 
-    fn close_terminal(&mut self, _: &CloseTerminal, _: &mut Window, cx: &mut Context<Self>) {
+    fn close_terminal(&mut self, cx: &mut Context<Self>) {
         if let Some(id) = self.focused {
             self.close(id, cx);
         }
     }
 
-    fn on_key_down(&mut self, e: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn run(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
+        match command {
+            Command::NewTerminal => self.new_terminal(window, cx),
+            Command::CloseTerminal => self.close_terminal(cx),
+            Command::Copy => self.copy_selection(cx),
+            Command::Paste => self.paste_clipboard(cx),
+            Command::ZoomIn => self.zoom_in(window, cx),
+            Command::ZoomOut => self.zoom_out(window, cx),
+            Command::ZoomReset => self.zoom_reset(window, cx),
+            Command::FitAll => self.fit_all(window, cx),
+            Command::ThemePicker => self.toggle_theme_picker(cx),
+            Command::OpenConfig => self.open_config(window, cx),
+        }
+    }
+
+    /// Opens config.toml in the system's editor, writing the commented template first if needed.
+    fn open_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dir) = self.config_dir.clone() else {
+            let message = "No config folder: neither HOME nor APPDATA is set".to_string();
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::error(message));
+            return;
+        };
+        match config::ensure_file(&dir) {
+            Ok(path) => cx.open_with_system(&path),
+            Err(err) => {
+                let message = format!(
+                    "Couldn't create {}: {err}",
+                    dir.join(config::FILE).display()
+                );
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::error(message));
+            }
+        }
+    }
+
+    /// The empty-canvas hint, with the new_terminal shortcut in effect.
+    fn hint(&self) -> String {
+        match self.keymap.first(Command::NewTerminal) {
+            Some(shortcut) => format!(
+                "Double-click or press {} to open a terminal",
+                keys::display(shortcut)
+            ),
+            None => "Double-click to open a terminal".to_string(),
+        }
+    }
+
+    fn on_key_down(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         // The cursor shows again on any key.
         self.blink_on = true;
+        let command = self.keymap.command(&e.keystroke);
         if self.picker.is_some() {
-            match e.keystroke.key.as_str() {
-                "up" => self.move_theme(-1, cx),
-                "down" => self.move_theme(1, cx),
-                "enter" => {
-                    if let Some(i) = self.picker.as_ref().and_then(|p| p.selected) {
-                        self.choose_theme(i, cx);
+            if command == Some(Command::ThemePicker) {
+                self.cancel_theme(cx);
+            } else {
+                match e.keystroke.key.as_str() {
+                    "up" => self.move_theme(-1, cx),
+                    "down" => self.move_theme(1, cx),
+                    "enter" => {
+                        if let Some(i) = self.picker.as_ref().and_then(|p| p.selected) {
+                            self.choose_theme(i, cx);
+                        }
                     }
+                    "escape" => self.cancel_theme(cx),
+                    _ => {}
                 }
-                "escape" => self.cancel_theme(cx),
-                _ => {}
             }
-            // While the picker is open, typing doesn't reach the terminal.
+            // While the picker is open, typing and shortcuts don't reach the terminal.
+            cx.stop_propagation();
+            return;
+        }
+        if let Some(command) = command {
+            self.run(command, window, cx);
             cx.stop_propagation();
             return;
         }
@@ -1036,14 +1058,6 @@ impl Render for Workspace {
             .flex_1()
             .overflow_hidden()
             .track_focus(&self.focus_handle)
-            .on_action(cx.listener(Self::new_terminal))
-            .on_action(cx.listener(Self::close_terminal))
-            .on_action(cx.listener(Self::copy_selection))
-            .on_action(cx.listener(Self::paste_clipboard))
-            .on_action(cx.listener(Self::zoom_in))
-            .on_action(cx.listener(Self::zoom_out))
-            .on_action(cx.listener(Self::zoom_reset))
-            .on_action(cx.listener(Self::fit_all))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_background_down))
             .on_scroll_wheel(cx.listener(Self::on_background_scroll))
@@ -1059,7 +1073,7 @@ impl Render for Workspace {
                         .items_center()
                         .justify_center()
                         .text_color(self.theme.ui.hint)
-                        .child(HINT),
+                        .child(self.hint()),
                 )
             });
         let alpha = self.canvas_alpha();
@@ -2100,6 +2114,55 @@ mod tests {
         reload(handle, &ws, cx);
         ws.read_with(cx, |ws, _| assert_eq!(ws.theme.name, "Catppuccin Latte"));
         assert_eq!(notification_count(handle, cx), 1, "the warning");
+    }
+
+    #[cfg(target_os = "macos")]
+    const PICKER: &str = "cmd-shift-p";
+    #[cfg(not(target_os = "macos"))]
+    const PICKER: &str = "ctrl-shift-p";
+
+    #[gpui_kit::test]
+    fn remapped_shortcuts_apply_on_reload(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        write_config(dir.path(), "[keys]\nnew_terminal = \"ctrl-alt-n\"\n");
+        reload(handle, &ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(NEW, cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.canvas.blocks().len(), 1, "the old shortcut is gone")
+        });
+        cx.update_window(handle, |_, window, cx| window.press("ctrl-alt-n", cx))
+            .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.canvas.blocks().len(), 2, "the new one works")
+        });
+    }
+
+    #[gpui_kit::test]
+    fn the_picker_shortcut_toggles_and_others_wait(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(PICKER, cx);
+            window.render_frame(cx);
+            window.press(NEW, cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.picker.is_some());
+            assert_eq!(
+                ws.canvas.blocks().len(),
+                1,
+                "no new terminal under the picker"
+            );
+        });
+        cx.update_window(handle, |_, window, cx| window.press(PICKER, cx))
+            .unwrap();
+        ws.read_with(cx, |ws, _| assert!(ws.picker.is_none(), "closed like Esc"));
     }
 
     #[test]

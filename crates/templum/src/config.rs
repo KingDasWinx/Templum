@@ -397,6 +397,59 @@ pub(crate) fn save_theme(dir: &Path, dark: bool, name: &str) -> Result<(), SaveE
     std::fs::write(&path, doc.to_string()).map_err(SaveError::Io)
 }
 
+/// The commented config.toml that `open_config` writes when there is none. Uncommented, every
+/// `# key = value` line is the default; prose lines start with "##".
+pub(crate) fn template(macos: bool) -> String {
+    use crate::keys::Command;
+    let mut t = String::from(concat!(
+        "## Templum's configuration. Uncomment a line (remove \"# \") and save: it applies at once.\n",
+        "## All options: https://github.com/KingDasWinx/Templum#configuration\n\n",
+        "[font]\n",
+        "## family = \"JetBrains Mono\"   (default: the first installed font of a built-in list)\n",
+        "# size = 14   # 6 to 72\n\n",
+        "[window]\n",
+        "# blur = \"auto\"   # \"auto\" | true | false\n",
+        "# opacity = 0.72   # the canvas when translucent, 0 to 1\n\n",
+        "[theme]\n",
+        "# mode = \"system\"   # \"system\" | \"light\" | \"dark\"\n",
+        "# light = \"Catppuccin Latte\"\n",
+        "# dark = \"Catppuccin Mocha\"\n\n",
+        "[shell]\n",
+        "## program = \"fish\"   (default: $SHELL, or PowerShell on Windows)\n",
+        "## args = [\"--login\"]\n",
+        "# working_directory = \"inherit\"   # \"inherit\" | \"~\" | a path\n\n",
+        "[cursor]\n",
+        "# shape = \"block\"   # \"block\" | \"bar\" | \"underline\"\n",
+        "# blink = false\n\n",
+        "[terminal]\n",
+        "# scrollback = 10000   # 0 to 100000\n\n",
+        "[keys]\n",
+    ));
+    for command in Command::ALL {
+        let quoted: Vec<String> = command
+            .defaults(macos)
+            .iter()
+            .map(|k| format!("\"{k}\""))
+            .collect();
+        let value = match quoted.as_slice() {
+            [one] => one.clone(),
+            many => format!("[{}]", many.join(", ")),
+        };
+        t.push_str(&format!("# {} = {value}\n", command.name()));
+    }
+    t
+}
+
+/// `<dir>/config.toml`, written from the template first when it doesn't exist.
+pub(crate) fn ensure_file(dir: &Path) -> io::Result<PathBuf> {
+    let path = dir.join(FILE);
+    if !path.exists() {
+        std::fs::create_dir_all(dir)?;
+        std::fs::write(&path, template(cfg!(target_os = "macos")))?;
+    }
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,5 +717,48 @@ scrollback = 500
         assert!(err.contains("new_terminal"), "{err}");
         let err = parse("[keys]\nnew_tab = \"ctrl-t\"\n").unwrap_err();
         assert!(err.contains("new_tab"), "unknown action: {err}");
+    }
+
+    /// The template with every `# key = value` line uncommented (prose lines start with "##").
+    fn uncomment(text: &str) -> String {
+        text.lines()
+            .map(|l| l.strip_prefix("# ").unwrap_or(l))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_template_is_the_defaults_commented_or_not() {
+        for macos in [false, true] {
+            let t = template(macos);
+            assert_eq!(parse(&t).unwrap(), Config::default(), "all commented");
+            let mut c = parse(&uncomment(&t)).unwrap();
+            let keys = std::mem::take(&mut c.keys);
+            assert_eq!(c, Config::default(), "uncommented");
+            let (from_template, _) = Keymap::new(&keys, macos).unwrap();
+            let defaults = Keymap::new(&KeysConfig::default(), macos).unwrap().0;
+            for command in crate::keys::Command::ALL {
+                assert_eq!(from_template.first(command), defaults.first(command));
+            }
+        }
+    }
+
+    #[test]
+    fn ensure_file_writes_the_template_once() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("templum");
+        let path = ensure_file(&dir).unwrap();
+        assert_eq!(path, dir.join(FILE));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            template(cfg!(target_os = "macos"))
+        );
+        std::fs::write(&path, "[font]\nsize = 20\n").unwrap();
+        ensure_file(&dir).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[font]\nsize = 20\n",
+            "kept"
+        );
     }
 }
