@@ -51,6 +51,23 @@ impl Command {
         }
     }
 
+    /// As the settings panel and its messages name it.
+    pub fn title(self) -> &'static str {
+        match self {
+            Command::NewTerminal => "New terminal",
+            Command::CloseTerminal => "Close terminal",
+            Command::Copy => "Copy",
+            Command::Paste => "Paste",
+            Command::ZoomIn => "Zoom in",
+            Command::ZoomOut => "Zoom out",
+            Command::ZoomReset => "Zoom 100%",
+            Command::FitAll => "Fit all blocks",
+            Command::ThemePicker => "Theme picker",
+            Command::OpenConfig => "Edit config.toml",
+            Command::Settings => "Settings",
+        }
+    }
+
     /// Shift+1 is reported as "!" on some layouts: fit_all binds both.
     pub fn defaults(self, macos: bool) -> &'static [&'static str] {
         match (self, macos) {
@@ -105,7 +122,7 @@ pub(crate) struct KeysConfig {
 }
 
 impl KeysConfig {
-    fn get(&self, command: Command) -> Option<&Keys> {
+    pub fn get(&self, command: Command) -> Option<&Keys> {
         match command {
             Command::NewTerminal => self.new_terminal.as_ref(),
             Command::CloseTerminal => self.close_terminal.as_ref(),
@@ -119,6 +136,23 @@ impl KeysConfig {
             Command::OpenConfig => self.open_config.as_ref(),
             Command::Settings => self.settings.as_ref(),
         }
+    }
+
+    pub fn set(&mut self, command: Command, keys: Option<Keys>) {
+        let slot = match command {
+            Command::NewTerminal => &mut self.new_terminal,
+            Command::CloseTerminal => &mut self.close_terminal,
+            Command::Copy => &mut self.copy,
+            Command::Paste => &mut self.paste,
+            Command::ZoomIn => &mut self.zoom_in,
+            Command::ZoomOut => &mut self.zoom_out,
+            Command::ZoomReset => &mut self.zoom_reset,
+            Command::FitAll => &mut self.fit_all,
+            Command::ThemePicker => &mut self.theme_picker,
+            Command::OpenConfig => &mut self.open_config,
+            Command::Settings => &mut self.settings,
+        };
+        *slot = keys;
     }
 }
 
@@ -181,6 +215,15 @@ impl Keymap {
             .iter()
             .find(|b| typed.should_match(&b.target))
             .map(|b| b.command)
+    }
+
+    /// Every shortcut of `command`, in the order written.
+    pub fn keystrokes(&self, command: Command) -> Vec<Keystroke> {
+        self.bindings
+            .iter()
+            .filter(|b| b.command == command)
+            .map(|b| b.keystroke.clone())
+            .collect()
     }
 
     /// The first shortcut of `command`, as written.
@@ -328,5 +371,43 @@ mod tests {
         for macos in [false, true] {
             assert_eq!(defaults(macos).first(Command::OpenConfig), None);
         }
+    }
+
+    #[test]
+    fn a_recorded_shortcut_parses_back() {
+        for text in [
+            "ctrl-shift-t",
+            "cmd-,",
+            "alt-f4",
+            "ctrl--",
+            "ctrl-shift-1",
+            "f5",
+        ] {
+            let pressed = typed(text);
+            assert_eq!(typed(&pressed.unparse()), pressed, "{text}");
+        }
+    }
+
+    #[test]
+    fn keys_config_sets_one_command() {
+        let mut keys = KeysConfig::default();
+        keys.set(Command::Settings, Some(Keys::One("ctrl-alt-s".into())));
+        assert_eq!(
+            keys.get(Command::Settings),
+            Some(&Keys::One("ctrl-alt-s".into()))
+        );
+        assert_eq!(keys.get(Command::Copy), None);
+        keys.set(Command::Settings, None);
+        assert_eq!(keys, KeysConfig::default());
+    }
+
+    #[test]
+    fn keystrokes_lists_every_shortcut_of_a_command() {
+        let keymap = defaults(false);
+        assert_eq!(
+            keymap.keystrokes(Command::ZoomIn),
+            [typed("ctrl-="), typed("ctrl-+")]
+        );
+        assert!(keymap.keystrokes(Command::OpenConfig).is_empty());
     }
 }

@@ -10,6 +10,7 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{
     InputEvent, InputState, NumberInput, NumberInputEvent, StepAction,
 };
+use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::setting::{
     RenderOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
@@ -17,7 +18,7 @@ use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _, TITLE_BAR_HEIGHT};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, BoxShadow, ClickEvent, Context, Entity, SharedString, Subscription,
+    AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, Entity, SharedString, Subscription,
     TestSupportExt, Window, div, font, point, px,
 };
 
@@ -25,6 +26,7 @@ use crate::config::{
     self, Blur, Config, Edit, Mode, Shape, ThemeConfig, WindowConfig, WorkingDirectory,
 };
 use crate::grid::{self, hsla};
+use crate::keys::Command;
 use crate::motion;
 use crate::workspace::Workspace;
 
@@ -778,6 +780,59 @@ fn args(ws: &Entity<Workspace>) -> SettingField<SharedString> {
     )
 }
 
+/// One command's shortcuts as keys; a click starts recording. "Reset to default" removes
+/// `keys.<command>` (the OS defaults again).
+fn shortcut(
+    ws: &Workspace,
+    entity: &Entity<Workspace>,
+    command: Command,
+) -> SettingField<SharedString> {
+    let recording = ws.recording == Some(command);
+    let strokes = ws.keymap.keystrokes(command);
+    let handle = entity.clone();
+    let field = SettingField::render(move |_: &RenderOptions, _: &mut Window, _: &mut App| {
+        let ws = handle.clone();
+        div()
+            .id(ElementId::Name(
+                format!("shortcut-{}", command.name()).into(),
+            ))
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .px(px(6.0))
+            .py(px(2.0))
+            .rounded(px(6.0))
+            .cursor_pointer()
+            .map(|el| {
+                if recording {
+                    el.child("Press a shortcut…")
+                } else if strokes.is_empty() {
+                    el.child("None")
+                } else {
+                    el.children(strokes.iter().cloned().map(Kbd::new))
+                }
+            })
+            .on_click(move |_: &ClickEvent, window, cx| {
+                ws.update(cx, |ws, cx| ws.record(command, window, cx))
+            })
+            .test_support()
+    });
+    let read = entity.clone();
+    let write = entity.clone();
+    field.on_reset(
+        move |cx| read.read(cx).config.keys.get(command).is_some(),
+        move |_, cx| {
+            write.update(cx, |ws, cx| {
+                ws.edit(
+                    Edit::remove("keys", command.name()),
+                    |c| c.keys.set(command, None),
+                    cx,
+                )
+            })
+        },
+    )
+}
+
 /// `theme.light` or `theme.dark`: the built-in themes and the user's themes folder.
 fn theme(
     ws: &Entity<Workspace>,
@@ -977,6 +1032,19 @@ pub(crate) fn pages(ws: &Workspace, entity: &Entity<Workspace>) -> Vec<SettingPa
                     ),
                 ),
             ),
+        SettingPage::new("Shortcuts").group(SettingGroup::new().items(Command::ALL.map(
+            |command| {
+                let item = SettingItem::new(command.title(), shortcut(ws, entity, command))
+                    .keywords(["keys", "keyboard", "binding"]);
+                match &ws.key_note {
+                    Some(note) if ws.recording == Some(command) => item.description(note.clone()),
+                    _ if ws.recording == Some(command) => {
+                        item.description("Esc cancels; Backspace leaves it without a shortcut")
+                    }
+                    _ => item,
+                }
+            },
+        ))),
     ]
 }
 
