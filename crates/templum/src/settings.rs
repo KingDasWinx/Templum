@@ -595,10 +595,13 @@ pub(crate) fn join_args(args: &[String]) -> String {
         .map(|a| {
             if !a.is_empty() && !a.contains(|c: char| c.is_whitespace() || c == '"' || c == '\'') {
                 a.clone()
-            } else if a.contains('"') {
+            } else if !a.contains('"') {
+                format!("\"{a}\"")
+            } else if !a.contains('\'') {
                 format!("'{a}'")
             } else {
-                format!("\"{a}\"")
+                // Both quotes: "…", each " written as "'"'" (adjacent quoted parts join up).
+                format!("\"{}\"", a.replace('"', "\"'\"'\""))
             }
         })
         .collect::<Vec<_>>()
@@ -1049,9 +1052,17 @@ mod tests {
 
     #[test]
     fn joined_args_split_back() {
-        let args: Vec<String> = ["--login", "a b", "it's", "say \"hi\"", ""]
-            .map(String::from)
-            .to_vec();
+        let args: Vec<String> = [
+            "--login",
+            "a b",
+            "it's",
+            "say \"hi\"",
+            "",
+            "printf '%s' \"x\"",
+            "echo \"it's\"",
+        ]
+        .map(String::from)
+        .to_vec();
         assert_eq!(split_args(&join_args(&args)).unwrap(), args);
         assert_eq!(join_args(&["--login".into(), "-i".into()]), "--login -i");
     }
