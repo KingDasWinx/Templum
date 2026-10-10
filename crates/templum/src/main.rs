@@ -4,6 +4,7 @@ mod config;
 mod grid;
 mod keys;
 mod motion;
+mod settings;
 mod theme;
 mod theme_picker;
 mod title_bar;
