@@ -18,6 +18,9 @@ templum-terminal = { path = "../templum-terminal" }
 futures = "0.3"
 # Already in the tree: reads theme files and edits config.toml without losing the user's comments.
 toml_edit = "0.25"
+# Already in the tree: config.toml into typed settings, with line and column in errors.
+serde = { version = "1", features = ["derive"] }
+toml = "1"
 
 [dev-dependencies]
 gpui-kit = { version = "=0.7.1", features = ["test-support"] }
