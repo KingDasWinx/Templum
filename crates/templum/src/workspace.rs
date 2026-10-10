@@ -6,6 +6,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use futures::StreamExt;
 use gpui_kit::component::notification::Notification;
@@ -17,12 +18,15 @@ use gpui_kit::{
     MouseUpEvent, PinchEvent, Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent, Task,
     UTF16Selection, Window, WindowAppearance, actions, canvas, div, fill, point, px, size,
 };
-use templum_canvas::{BlockId, Camera, Canvas, Gesture, Point, Rect, Size, chrome, dot_grid};
+use templum_canvas::{
+    Block, BlockId, Camera, Canvas, Gesture, Point, Rect, Size, chrome, dot_grid,
+};
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
 use crate::block;
 use crate::config::{self, ThemeNames};
 use crate::grid::{CellMetrics, hsla};
+use crate::motion;
 use crate::theme::{self, CANVAS_ALPHA, Entry, Theme};
 use crate::theme_picker::{self, Picker};
 use crate::title_bar;
@@ -89,6 +93,13 @@ pub(crate) struct Pane {
     pub snapshot: Rc<RefCell<Snapshot>>,
 }
 
+/// A closed block, still drawn while it fades out. Its terminal lives until then.
+pub(crate) struct Ghost {
+    pub block: Block,
+    pub pane: Pane,
+    since: Instant,
+}
+
 #[derive(Clone, Copy)]
 enum Drag {
     Canvas(Gesture),
@@ -136,6 +147,10 @@ pub struct Workspace {
     pub(crate) hovered: Option<BlockId>,
     /// The open theme picker.
     pub(crate) picker: Option<Picker>,
+    /// Blocks still popping in, since when.
+    pub(crate) appearing: HashMap<BlockId, Instant>,
+    /// Closed blocks still fading out.
+    pub(crate) ghosts: Vec<Ghost>,
     _wake: Task<()>,
 }
 
@@ -198,6 +213,8 @@ impl Workspace {
             translucent: theme::system_translucent(),
             hovered: None,
             picker: None,
+            appearing: HashMap::new(),
+            ghosts: Vec::new(),
             _wake: wake,
         };
         // Startup: one terminal, centered.
@@ -229,6 +246,7 @@ impl Workspace {
                     },
                 );
                 self.focused = Some(id);
+                self.appearing.insert(id, Instant::now());
             }
             Err(err) => {
                 eprintln!("templum: couldn't start a shell: {err}");
@@ -243,9 +261,18 @@ impl Workspace {
     }
 
     /// Removes a block and kills its shell (dropping the Terminal shuts it down).
+    /// The block leaves the canvas at once; it stays on screen as a ghost while it fades out.
     pub(crate) fn close(&mut self, id: BlockId, cx: &mut Context<Self>) {
+        let block = self.canvas.get(id).copied();
         self.canvas.remove(id);
-        self.terminals.remove(&id);
+        self.appearing.remove(&id);
+        if let (Some(block), Some(pane)) = (block, self.terminals.remove(&id)) {
+            self.ghosts.push(Ghost {
+                block,
+                pane,
+                since: Instant::now(),
+            });
+        }
         if self.hovered == Some(id) {
             self.hovered = None;
         }
@@ -723,11 +750,33 @@ impl Render for Workspace {
                 b.y + b.h / 2.0 - vp.h / 2.0 / z,
             );
         }
+        // Animations: drop the finished ones, and keep frames coming while any runs.
+        let now = Instant::now();
+        self.appearing
+            .retain(|_, since| motion::progress(*since, now, motion::OPEN) < 1.0);
+        self.ghosts
+            .retain(|g| motion::progress(g.since, now, motion::CLOSE) < 1.0);
+        if !self.appearing.is_empty() || !self.ghosts.is_empty() {
+            window.request_animation_frame();
+        }
         let visible: Vec<_> = self.canvas.visible(vp).copied().collect();
-        let blocks: Vec<_> = visible
+        let mut blocks: Vec<_> = visible
             .into_iter()
-            .map(|b| block::render(self, b, cx))
+            .map(|b| {
+                let look = self
+                    .appearing
+                    .get(&b.id)
+                    .map_or(motion::Look::REST, |since| {
+                        motion::opening(motion::progress(*since, now, motion::OPEN))
+                    });
+                block::render(self, b, &self.terminals[&b.id], look, true, cx)
+            })
             .collect();
+        // Ghosts fade above the blocks, where they were.
+        blocks.extend(self.ghosts.iter().map(|g| {
+            let look = motion::closing(motion::progress(g.since, now, motion::CLOSE));
+            block::render(self, g.block, &g.pane, look, false, cx)
+        }));
 
         let entity = cx.entity();
         let focus = self.focus_handle.clone();
@@ -1433,6 +1482,8 @@ mod tests {
     fn focus_does_not_shift_the_terminal(cx: &mut TestAppContext) {
         let (handle, ws) = open(cx);
         let id = first_id(&ws, cx);
+        // Measure the block at rest, not while it pops in.
+        ws.update(cx, |ws, _| ws.appearing.clear());
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             let focused = window.find(("body", id.0 as usize)).bounds();
@@ -1586,6 +1637,55 @@ mod tests {
             assert!(ws.picker.is_some(), "still light: the picker stays open");
             assert_eq!(ws.theme.name, "One Dark", "and the preview stays");
         });
+    }
+
+    #[gpui_kit::test]
+    fn new_terminals_pop_in_then_settle(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(NEW, cx);
+            let ws = ws.read(cx);
+            let new = ws.canvas.top().unwrap();
+            assert!(
+                ws.appearing.contains_key(&new),
+                "the new block is animating"
+            );
+        })
+        .unwrap();
+        std::thread::sleep(crate::motion::OPEN + std::time::Duration::from_millis(50));
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        ws.read_with(cx, |ws, _| assert!(ws.appearing.is_empty(), "settled"));
+    }
+
+    #[gpui_kit::test]
+    fn a_closed_block_fades_as_a_ghost_that_ignores_clicks(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let n = first_id(&ws, cx).0 as usize;
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(CLOSE, cx);
+            window.render_frame(cx);
+            // A double click where the ghost is reaches the canvas: a terminal opens there.
+            let at = window.find(("ghost", n)).bounds().center();
+            let at = (f32::from(at.x), f32::from(at.y));
+            click(window, cx, at, 1);
+            click(window, cx, at, 2);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(
+                ws.canvas.blocks().len(),
+                1,
+                "the click went through the ghost"
+            );
+            assert_eq!(ws.ghosts.len(), 1);
+        });
+        std::thread::sleep(crate::motion::CLOSE + std::time::Duration::from_millis(50));
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        ws.read_with(cx, |ws, _| assert!(ws.ghosts.is_empty(), "faded away"));
     }
 
     #[test]
