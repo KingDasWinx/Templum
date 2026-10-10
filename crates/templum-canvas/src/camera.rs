@@ -35,6 +35,21 @@ impl Camera {
         self.zoom_idx
     }
 
+    /// A camera at `origin` with the zoom step nearest to `zoom` (a saved canvas). A zoom that
+    /// isn't a finite number gives 100%.
+    pub fn at(origin: Point, zoom: f32) -> Camera {
+        let zoom_idx = if zoom.is_finite() {
+            ZOOM_STEPS
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| (*a - zoom).abs().total_cmp(&(*b - zoom).abs()))
+                .map_or(ZOOM_1, |(i, _)| i)
+        } else {
+            ZOOM_1
+        };
+        Camera { origin, zoom_idx }
+    }
+
     pub fn to_world(&self, screen: Point) -> Point {
         Point::new(
             screen.x / self.zoom() + self.origin.x,
@@ -136,6 +151,19 @@ mod tests {
         cam.zoom_reset(anchor);
         assert_eq!(cam.zoom(), 1.0);
         assert!(close(cam.to_world(anchor), before));
+    }
+
+    #[test]
+    fn at_snaps_a_saved_zoom_to_the_nearest_step() {
+        let origin = Point::new(3.0, -4.0);
+        assert_eq!(Camera::at(origin, 1.0).zoom(), 1.0);
+        assert_eq!(Camera::at(origin, 1.04).zoom(), 1.0);
+        assert_eq!(Camera::at(origin, 1.2).zoom(), 1.25);
+        assert_eq!(Camera::at(origin, 10.0).zoom(), 3.0);
+        assert_eq!(Camera::at(origin, 0.0).zoom(), 0.25);
+        assert_eq!(Camera::at(origin, f32::NAN).zoom(), 1.0);
+        assert_eq!(Camera::at(origin, f32::INFINITY).zoom(), 1.0);
+        assert_eq!(Camera::at(origin, 1.5).origin, origin);
     }
 
     #[test]
