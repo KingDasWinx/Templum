@@ -1,4 +1,4 @@
-//! The theme picker: a list under the ◐ button. Hovering or arrowing previews a theme, Enter or
+//! The theme picker: a list under the palette button. Hovering or arrowing previews a theme, Enter or
 //! a click keeps it for the current mode (and saves it), Esc or a click outside puts the old one
 //! back.
 

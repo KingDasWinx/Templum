@@ -43,7 +43,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
                 .child(
                     button("theme-button", ui)
                         .child(
-                            Icon::new(IconName::Contrast)
+                            Icon::new(IconName::Palette)
                                 .size(px(14.0))
                                 .text_color(ui.title),
                         )
