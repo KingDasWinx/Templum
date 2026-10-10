@@ -29,6 +29,7 @@ use crate::config::{self, Config, Edit, ThemeConfig, WorkingDirectory};
 use crate::grid::{CellMetrics, hsla};
 use crate::keys::{self, Command, Keymap, Keys};
 use crate::motion;
+use crate::session;
 use crate::settings::{self, Panel};
 use crate::theme::{self, Entry, Theme};
 use crate::theme_picker::{self, Picker};
@@ -36,6 +37,9 @@ use crate::title_bar;
 
 pub(crate) const DEFAULT_COLS: u16 = 80;
 pub(crate) const DEFAULT_ROWS: u16 = 24;
+/// The largest block a saved canvas restores: a corrupt size mustn't allocate a giant grid.
+const MAX_COLS: u16 = 2000;
+const MAX_ROWS: u16 = 1000;
 /// A press that moves less than this (screen pixels) before release is a click, not a pan.
 const CLICK_SLOP: f32 = 4.0;
 /// Cursor blink half-period.
@@ -104,6 +108,10 @@ pub struct Workspace {
     pub(crate) pristine: bool,
     /// Where config.toml and the themes folder live (None: defaults only, nothing saved).
     pub(crate) config_dir: Option<PathBuf>,
+    /// Where the canvas is saved (None: it isn't kept).
+    pub(crate) data_dir: Option<PathBuf>,
+    /// The canvas as last read or written, to write only what changed.
+    saved: Option<session::Saved>,
     pub(crate) themes: Vec<Entry>,
     /// The system's appearance.
     dark: bool,
@@ -165,14 +173,16 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::with(None, config::dir(), window, cx)
+    /// `data_dir`: where the canvas is kept (None: it isn't, as for `--bench`).
+    pub fn new(data_dir: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::with(None, config::dir(), data_dir, window, cx)
     }
 
     /// `command`: program for new terminals instead of the login shell (tests).
     pub fn with(
         command: Option<(String, Vec<String>)>,
         config_dir: Option<PathBuf>,
+        data_dir: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -271,6 +281,8 @@ impl Workspace {
             command,
             pristine: true,
             config_dir,
+            data_dir,
+            saved: None,
             themes,
             dark,
             theme,
@@ -303,7 +315,30 @@ impl Workspace {
             keymap,
             _wake: wake,
         };
-        // Startup: one terminal, centered.
+        let loaded = ws.data_dir.as_deref().map(session::load);
+        if let Some(session::Loaded::Saved(saved)) = loaded {
+            ws.restore(saved, window, cx);
+            return ws;
+        }
+        match loaded {
+            Some(session::Loaded::Moved { to, why }) => {
+                let message = format!(
+                    "Couldn't read the saved canvas ({why}); it was kept as {}",
+                    to.display()
+                );
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::warning(message));
+            }
+            Some(session::Loaded::Unreadable(why)) => {
+                let message =
+                    format!("Couldn't read the saved canvas ({why}); this session won't be saved");
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::error(message));
+                ws.data_dir = None;
+            }
+            _ => {}
+        }
+        // A first run: one terminal, centered.
         let vp = viewport(window);
         let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, ws.cell.size);
         let rect = Rect::new((vp.w - size.w) / 2.0, (vp.h - size.h) / 2.0, size.w, size.h);
@@ -311,8 +346,21 @@ impl Workspace {
         ws
     }
 
-    /// Starts a terminal in a new focused block; on failure, a notification instead.
+    /// Starts a terminal in a new focused block, in the configured start folder.
     pub(crate) fn open(&mut self, rect: Rect, window: &mut Window, cx: &mut Context<Self>) {
+        let folder = self.start_dir(window, cx);
+        self.spawn_block(rect, folder, window, cx);
+    }
+
+    /// Starts a terminal in `folder` (None: the home folder) in a new focused block; on failure,
+    /// a notification instead.
+    fn spawn_block(
+        &mut self,
+        rect: Rect,
+        folder: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<BlockId> {
         let (cols, rows) = chrome::grid_size(chrome::content_rect(rect).size(), self.cell.size);
         let command = self.command.clone().or_else(|| {
             let shell = &self.config.shell;
@@ -321,7 +369,6 @@ impl Workspace {
                 .clone()
                 .map(|program| (program, shell.args.clone()))
         });
-        let working_directory = self.start_dir(window, cx);
         let opts = SpawnOptions {
             cols,
             rows,
@@ -329,9 +376,9 @@ impl Workspace {
             command,
             palette: self.theme.palette,
             options: self.config.term_options(),
-            working_directory,
+            working_directory: folder,
         };
-        match Terminal::spawn(opts, self.notify.clone()) {
+        let id = match Terminal::spawn(opts, self.notify.clone()) {
             Ok(term) => {
                 let id = self.canvas.add(rect);
                 self.terminals.insert(
@@ -343,14 +390,70 @@ impl Workspace {
                 );
                 self.focused = Some(id);
                 self.appearing.insert(id, Instant::now());
+                Some(id)
             }
             Err(err) => {
                 eprintln!("templum: couldn't start a shell: {err}");
                 let message = format!("Couldn't start a shell: {err}");
                 show_notification(window, cx, Notification::error(message));
+                None
             }
-        }
+        };
         cx.notify();
+        id
+    }
+
+    /// Puts a saved canvas back: the camera, then each block back to front, each in its folder.
+    fn restore(&mut self, saved: session::Saved, window: &mut Window, cx: &mut Context<Self>) {
+        self.pristine = false;
+        let c = saved.camera;
+        if c.x.is_finite() && c.y.is_finite() {
+            self.canvas.camera = Camera::at(Point::new(c.x, c.y), c.zoom);
+        }
+        let mut ids = Vec::new();
+        let mut gone = Vec::new();
+        for item in &saved.items {
+            let session::Item::Terminal(t) = item;
+            let Some(rect) = self.restorable(t.rect.into()) else {
+                ids.push(None);
+                continue;
+            };
+            let folder = match t.folder.as_ref().map(PathBuf::from) {
+                Some(f) if f.is_dir() => Some(f),
+                Some(f) => {
+                    gone.push(f.display().to_string());
+                    None
+                }
+                None => None,
+            };
+            ids.push(self.spawn_block(rect, folder, window, cx));
+        }
+        self.focused = saved.focused.and_then(|i| ids.get(i).copied().flatten());
+        if !gone.is_empty() {
+            let message = format!(
+                "Gone, so their terminals start in the home folder: {}",
+                gone.join(", ")
+            );
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::warning(message));
+        }
+        self.saved = Some(saved);
+    }
+
+    /// A saved rect made safe: None with a number that isn't finite; its size kept between the
+    /// smallest block and MAX_COLS x MAX_ROWS cells.
+    fn restorable(&self, r: Rect) -> Option<Rect> {
+        if ![r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()) {
+            return None;
+        }
+        let min = chrome::min_block_size(self.cell.size);
+        let max = chrome::block_size(MAX_COLS, MAX_ROWS, self.cell.size);
+        Some(Rect::new(
+            r.x,
+            r.y,
+            r.w.clamp(min.w, max.w),
+            r.h.clamp(min.h, max.h),
+        ))
     }
 
     /// Removes a block and kills its shell (dropping the Terminal shuts it down).
@@ -1625,6 +1728,15 @@ mod tests {
         cx: &mut TestAppContext,
         config_dir: Option<std::path::PathBuf>,
     ) -> (AnyWindowHandle, Entity<Workspace>) {
+        open_in(cx, config_dir, None)
+    }
+
+    /// Opens a workspace with a config folder and a data folder (None: nothing read or saved).
+    fn open_in(
+        cx: &mut TestAppContext,
+        config_dir: Option<std::path::PathBuf>,
+        data_dir: Option<std::path::PathBuf>,
+    ) -> (AnyWindowHandle, Entity<Workspace>) {
         // PTY threads wake the UI from outside the test scheduler.
         cx.executor().allow_parking();
         let opened = cx.update(|cx| {
@@ -1637,7 +1749,9 @@ mod tests {
                     ..Default::default()
                 },
                 cx,
-                |window, cx| cx.new(|cx| Workspace::with(Some(quiet()), config_dir, window, cx)),
+                |window, cx| {
+                    cx.new(|cx| Workspace::with(Some(quiet()), config_dir, data_dir, window, cx))
+                },
             )
             .expect("open window")
         });
@@ -3741,5 +3855,165 @@ mod tests {
         })
         .unwrap();
         ws.read_with(cx, |ws, _| assert!(ws.quit_armed.is_some()));
+    }
+
+    use super::{MAX_COLS, MAX_ROWS};
+    use templum_canvas::{BlockId, Camera, Point, Rect, chrome};
+
+    fn write_canvas(dir: &std::path::Path, text: &str) {
+        std::fs::create_dir_all(dir.join("workspaces")).unwrap();
+        std::fs::write(crate::session::path(dir), text).unwrap();
+    }
+
+    /// Waits for a terminal's shell to report its folder (canonicalized).
+    fn folder_of(
+        ws: &Entity<Workspace>,
+        id: BlockId,
+        cx: &mut TestAppContext,
+    ) -> std::path::PathBuf {
+        use std::time::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(cwd) = ws.read_with(cx, |ws, _| ws.terminals[&id].term.cwd()) {
+                return cwd.canonicalize().unwrap();
+            }
+            assert!(Instant::now() < deadline, "no cwd");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_saved_canvas_comes_back(cx: &mut TestAppContext) {
+        let data = tempfile::tempdir().unwrap();
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        // JSON strings: Windows backslashes doubled.
+        let json = |p: &std::path::Path| p.display().to_string().replace('\\', "\\\\");
+        write_canvas(
+            data.path(),
+            &format!(
+                r#"{{"version":1,"camera":{{"x":-100,"y":50,"zoom":1.1}},"focused":1,"items":[
+                  {{"kind":"terminal","rect":{{"x":0,"y":0,"w":700,"h":450}},"folder":"{}"}},
+                  {{"kind":"terminal","rect":{{"x":800,"y":20,"w":600,"h":400}},"folder":"{}"}}]}}"#,
+                json(a.path()),
+                json(b.path())
+            ),
+        );
+        let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        let (ids, rects, camera, focused) = ws.read_with(cx, |ws, _| {
+            let blocks = ws.canvas.blocks();
+            (
+                blocks.iter().map(|b| b.id).collect::<Vec<_>>(),
+                blocks.iter().map(|b| b.rect).collect::<Vec<_>>(),
+                ws.canvas.camera,
+                ws.focused,
+            )
+        });
+        assert_eq!(
+            rects,
+            [
+                Rect::new(0.0, 0.0, 700.0, 450.0),
+                Rect::new(800.0, 20.0, 600.0, 400.0)
+            ]
+        );
+        assert_eq!(camera.origin, Point::new(-100.0, 50.0));
+        assert_eq!(camera.zoom(), 1.1);
+        assert_eq!(focused, Some(ids[1]));
+        assert_eq!(folder_of(&ws, ids[0], cx), a.path().canonicalize().unwrap());
+        assert_eq!(folder_of(&ws, ids[1], cx), b.path().canonicalize().unwrap());
+    }
+
+    #[gpui_kit::test]
+    fn a_saved_canvas_with_no_blocks_opens_empty(cx: &mut TestAppContext) {
+        let data = tempfile::tempdir().unwrap();
+        write_canvas(
+            data.path(),
+            r#"{"version":1,"camera":{"x":0,"y":0,"zoom":1},"items":[]}"#,
+        );
+        let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.canvas.blocks().is_empty());
+            assert_eq!(ws.focused, None);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_folder_thats_gone_starts_at_home_and_says_so(cx: &mut TestAppContext) {
+        let data = tempfile::tempdir().unwrap();
+        let gone = data
+            .path()
+            .join("gone")
+            .display()
+            .to_string()
+            .replace('\\', "\\\\");
+        write_canvas(
+            data.path(),
+            &format!(
+                r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
+                  {{"kind":"terminal","rect":{{"x":0,"y":0,"w":700,"h":450}},"folder":"{gone}"}}]}}"#
+            ),
+        );
+        let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        assert_eq!(notification_count(handle, cx), 1);
+        let id = first_id(&ws, cx);
+        let home = std::env::home_dir().unwrap().canonicalize().unwrap();
+        assert_eq!(folder_of(&ws, id, cx), home);
+    }
+
+    #[gpui_kit::test]
+    fn a_broken_canvas_file_is_set_aside(cx: &mut TestAppContext) {
+        let data = tempfile::tempdir().unwrap();
+        write_canvas(data.path(), "{nope");
+        let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        assert_eq!(notification_count(handle, cx), 1);
+        let bak = crate::session::path(data.path()).with_extension("json.bak");
+        assert_eq!(std::fs::read_to_string(bak).unwrap(), "{nope");
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.canvas.blocks().len(), 1, "as on a first run")
+        });
+    }
+
+    #[gpui_kit::test]
+    fn absurd_numbers_in_the_saved_canvas_are_made_safe(cx: &mut TestAppContext) {
+        let data = tempfile::tempdir().unwrap();
+        write_canvas(
+            data.path(),
+            r#"{"version":1,"camera":{"x":1e40,"y":0,"zoom":1e40},"focused":7,"items":[
+              {"kind":"terminal","rect":{"x":1e40,"y":0,"w":700,"h":450}},
+              {"kind":"terminal","rect":{"x":10,"y":10,"w":-5,"h":1e30}}]}"#,
+        );
+        let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        ws.read_with(cx, |ws, _| {
+            let blocks = ws.canvas.blocks();
+            assert_eq!(blocks.len(), 1, "the infinite one is skipped");
+            let min = chrome::min_block_size(ws.cell.size);
+            let max = chrome::block_size(MAX_COLS, MAX_ROWS, ws.cell.size);
+            assert_eq!(blocks[0].rect, Rect::new(10.0, 10.0, min.w, max.h));
+            assert_eq!(ws.focused, None, "index 7 doesn't exist");
+            assert_eq!(
+                ws.canvas.camera,
+                Camera::default(),
+                "an infinite camera isn't used"
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    #[gpui_kit::test]
+    fn an_unreadable_canvas_file_is_never_written_over(cx: &mut TestAppContext) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let data = tempfile::tempdir().unwrap();
+        write_canvas(
+            data.path(),
+            r#"{"version":1,"camera":{"x":0,"y":0,"zoom":1},"items":[]}"#,
+        );
+        let path = crate::session::path(data.path());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        assert_eq!(notification_count(handle, cx), 1);
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.data_dir, None, "this session won't be saved");
+            assert_eq!(ws.canvas.blocks().len(), 1, "as on a first run");
+        });
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
 }

@@ -52,8 +52,10 @@ fn main() {
                 },
                 ..TitleBar::window_options()
             };
+            // The bench starts from one terminal and must not touch the user's saved canvas.
+            let data_dir = if bench { None } else { session::dir() };
             let (window, ws) = gpui_kit::open_window(options, cx, |window, cx| {
-                cx.new(|cx| Workspace::new(window, cx))
+                cx.new(|cx| Workspace::new(data_dir, window, cx))
             })
             .expect("failed to open window");
             if bench {
