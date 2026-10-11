@@ -20,13 +20,13 @@ use gpui_kit::{
     WindowAppearance, canvas, div, fill, point, px, size,
 };
 use templum_canvas::{
-    Block, BlockId, Camera, Canvas, Gesture, Point, Rect, Size, chrome, dot_grid,
+    Block, BlockId, Camera, Canvas, Gesture, Point, Rect, Size, chrome, dot_grid, dot_size,
 };
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
 use crate::block;
 use crate::config::{self, Config, Edit, ThemeConfig, WorkingDirectory};
-use crate::grid::{CellMetrics, hsla};
+use crate::grid::CellMetrics;
 use crate::keys::{self, Command, Keymap, Keys};
 use crate::motion;
 use crate::session;
@@ -1537,18 +1537,24 @@ fn viewport(window: &Window) -> Size {
     )
 }
 
-/// The dot grid under the blocks; dots are 1 px on screen at any zoom.
+/// The dot grid under the blocks: round dots centered on the world lattice.
 fn paint_dots(camera: &Camera, color: Hsla, bounds: Bounds<Pixels>, window: &mut Window) {
     let grid = dot_grid(camera);
     let step = grid.spacing * camera.zoom();
+    let d = dot_size(camera.zoom());
     let start = camera.to_screen(grid.first);
     let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
     let mut y = start.y;
-    while y < h {
+    while y < h + d {
         let mut x = start.x;
-        while x < w {
-            let at = point(bounds.origin.x + px(x), bounds.origin.y + px(y));
-            window.paint_quad(fill(Bounds::new(at, size(px(1.0), px(1.0))), color));
+        while x < w + d {
+            let at = point(
+                bounds.origin.x + px(x - d / 2.0),
+                bounds.origin.y + px(y - d / 2.0),
+            );
+            window.paint_quad(
+                fill(Bounds::new(at, size(px(d), px(d))), color).corner_radii(px(d / 2.0)),
+            );
             x += step;
         }
         y += step;
@@ -1718,7 +1724,7 @@ impl Render for Workspace {
             .flex_col()
             // The settings panel slides in from beyond the right edge.
             .overflow_hidden()
-            .bg(hsla(self.theme.ui.canvas, 1.0))
+            .bg(self.theme.ui.canvas)
             .child(title_bar::render(self, cx))
             .child(area)
             .children(panel)
@@ -2333,7 +2339,7 @@ mod tests {
         ws.read_with(cx, |ws, cx| {
             assert_eq!(
                 gpui_kit::component::Theme::global(cx).background,
-                crate::grid::hsla(ws.theme.ui.canvas, 1.0),
+                ws.theme.ui.canvas,
                 "gpui-kit's root paints the opaque canvas"
             );
         });

@@ -28,8 +28,10 @@ pub(crate) struct Theme {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Ui {
     /// Under the blocks, opaque.
-    pub canvas: Rgb,
+    pub canvas: Hsla,
     pub dot: Hsla,
+    /// Cards on the canvas: blocks, the settings panel, the theme picker. Opaque.
+    pub surface: Hsla,
     pub hairline: Hsla,
     /// Block titles: the focused one, the others.
     pub title: Hsla,
@@ -53,8 +55,13 @@ impl Theme {
         let fg = palette.foreground;
         let blue = palette.ansi[4];
         let ui = Ui {
-            canvas: mix(palette.background, BLACK, if is_dark { 0.30 } else { 0.04 }),
-            dot: hsla(fg, 0.12),
+            canvas: hsla(
+                mix(palette.background, BLACK, if is_dark { 0.30 } else { 0.04 }),
+                1.0,
+            ),
+            // Strong enough to find your way by; lighter on light themes, where gray reads darker.
+            dot: hsla(fg, if is_dark { 0.30 } else { 0.22 }),
+            surface: hsla(palette.background, 1.0),
             hairline: hsla(fg, 0.10),
             title: hsla(fg, 0.60),
             title_dim: hsla(fg, 0.40),
@@ -320,7 +327,7 @@ pub(crate) fn apply_to_kit(theme: &Theme, cx: &mut App) {
     Kit::update(cx, |kit| {
         // gpui-kit's root paints `background` under the whole window: the opaque canvas. The title
         // bar is drawn on it.
-        kit.background = hsla(ui.canvas, 1.0);
+        kit.background = ui.canvas;
         kit.title_bar = gpui_kit::transparent_black();
         kit.popover = background;
         kit.foreground = foreground;
@@ -438,14 +445,20 @@ white = "#aaaaaa"
     fn derived_colors() {
         let mocha = parse("Catppuccin Mocha", MOCHA).unwrap();
         assert_eq!(mocha.ui.accent, hsla(rgb(0x89b4fa), 1.0));
-        assert_eq!(mocha.ui.canvas, rgb(0x151520));
-        assert_eq!(mocha.ui.dot, hsla(rgb(0xcdd6f4), 0.12));
+        assert_eq!(mocha.ui.canvas, hsla(rgb(0x151520), 1.0));
+        assert_eq!(mocha.ui.dot, hsla(rgb(0xcdd6f4), 0.30));
+        assert_eq!(mocha.ui.surface, hsla(rgb(0x1e1e2e), 1.0));
         assert_eq!(mocha.ui.selection, hsla(rgb(0xf5e0dc), 0.35));
         assert_eq!(mocha.ui.cursor, hsla(rgb(0xf5e0dc), 1.0));
         assert_eq!(mocha.ui.shadow, hsla(rgb(0), 0.45));
         let latte = parse("Catppuccin Latte", LATTE).unwrap();
         assert!(!latte.is_dark);
-        assert_eq!(latte.ui.canvas, rgb(0xe5e7eb));
+        assert_eq!(latte.ui.canvas, hsla(rgb(0xe5e7eb), 1.0));
+        assert_eq!(
+            latte.ui.dot,
+            hsla(rgb(0x4c4f69), 0.22),
+            "lighter dots on light themes"
+        );
         assert_eq!(latte.ui.shadow, hsla(rgb(0), 0.15));
         let minimal = parse("Minimal", MINIMAL).unwrap();
         assert_eq!(

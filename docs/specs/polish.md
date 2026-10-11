@@ -55,7 +55,7 @@ foreground, and `c @ a` is color `c` with alpha `a`.
 | Token | Value | Used by |
 |---|---|---|
 | `canvas` | unchanged formula, now an opaque color | the window fill |
-| `dot` | `fg @ 0.26` for dark themes, `fg @ 0.18` for light ones (was 0.12) | the dot grid |
+| `dot` | `fg @ 0.30` for dark themes, `fg @ 0.22` for light ones (was 0.12) | the dot grid |
 | `surface` | the theme background, opaque | block cards, settings panel, theme picker |
 | `ring` | `accent @ 0.40` | the focused block's outer ring |
 | `hover_border` | `fg @ 0.22` | a hovered block's border |

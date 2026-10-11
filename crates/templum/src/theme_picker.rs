@@ -81,7 +81,7 @@ pub(crate) fn render(ws: &Workspace, picker: &Picker, cx: &mut Context<Workspace
         .w(px(240.0))
         .flex()
         .flex_col()
-        .bg(hsla(ws.theme.palette.background, 1.0))
+        .bg(ws.theme.ui.surface)
         .text_color(foreground)
         .border_1()
         .border_color(ui.hairline)

@@ -157,7 +157,7 @@ pub(crate) fn render(
         .w(px(width))
         .flex()
         .flex_col()
-        .bg(hsla(ws.theme.palette.background, 1.0))
+        .bg(ws.theme.ui.surface)
         .text_color(hsla(ws.theme.palette.foreground, 1.0))
         .border_l_1()
         .border_color(ui.hairline)

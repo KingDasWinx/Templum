@@ -13,7 +13,7 @@ use gpui_kit::{
 };
 use templum_canvas::{Block, Rect, chrome};
 
-use crate::grid::{self, hsla};
+use crate::grid;
 use crate::motion::Look;
 use crate::workspace::{Pane, Workspace};
 
@@ -175,7 +175,7 @@ pub(crate) fn render(
         // Always 1 px, so focusing never moves the grid.
         .border_1()
         .border_color(if focused { ui.accent } else { ui.hairline })
-        .bg(hsla(ws.theme.palette.background, 1.0))
+        .bg(ws.theme.ui.surface)
         .shadow(vec![shadow(ui.shadow, focused, z)])
         .overflow_hidden()
         .when(live, |el| {

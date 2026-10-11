@@ -7,6 +7,11 @@ pub const DOT_SPACING: f32 = 24.0;
 /// Dots closer than this on screen are thinned out, 4× at a time.
 pub const MIN_DOT_GAP: f32 = 16.0;
 
+/// A dot's diameter on screen: it grows with the zoom, within 1.5 and 3 px.
+pub fn dot_size(zoom: f32) -> f32 {
+    (2.0 * zoom).clamp(1.5, 3.0)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DotGrid {
     /// World units between dots.
@@ -62,6 +67,17 @@ mod tests {
             96.0,
             "zoom 0.25"
         );
+    }
+
+    #[test]
+    fn dot_size_follows_the_zoom_between_a_floor_and_a_cap() {
+        assert_eq!(dot_size(1.0), 2.0);
+        assert_eq!(dot_size(0.25), 1.5);
+        assert_eq!(dot_size(3.0), 3.0);
+        // Never more than a quarter of the smallest gap: dots never run together.
+        for zoom in ZOOM_STEPS {
+            assert!(dot_size(zoom) <= MIN_DOT_GAP / 4.0, "zoom {zoom}");
+        }
     }
 
     #[test]
