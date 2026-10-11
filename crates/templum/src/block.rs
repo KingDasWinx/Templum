@@ -2,25 +2,26 @@
 //! resize grip, in screen space. Every size is multiplied by the zoom, so text is laid out at
 //! its real size. The close button and the grip show only while the pointer is over the block.
 
-use std::time::Duration;
-
 use gpui_kit::assets::IconName;
+use gpui_kit::base::animation::Lerp as _;
+use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, BoxShadow, ClickEvent, Context, ElementId, Hsla,
-    MouseButton, MouseDownEvent, ScrollWheelEvent, TestSupportExt, div, point, px,
+    MouseButton, MouseDownEvent, ScrollWheelEvent, TestSupportExt, Window, div, point, px,
 };
 use templum_canvas::{Block, Rect, chrome};
 
 use crate::grid;
-use crate::motion::Look;
+use crate::motion::{self, Look};
 use crate::workspace::{Pane, Workspace};
 
 /// World units, like everything in a block.
 const TITLE_FONT: f32 = 12.0;
 const RADIUS: f32 = 10.0;
-const FADE_IN: Duration = Duration::from_millis(120);
+/// The focused block's ring, outside its border.
+const RING: f32 = 2.0;
 
 /// `look` scales the block around its center (it is drawn at zoom × scale) and fades it.
 /// A block that isn't `live` is a ghost fading out: no controls, and clicks go through it.
@@ -30,6 +31,7 @@ pub(crate) fn render(
     pane: &Pane,
     look: Look,
     live: bool,
+    window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let id = block.id;
@@ -45,6 +47,24 @@ pub(crate) fn render(
     let focused = live && ws.focused == Some(id);
     let hovered = live && ws.hovered == Some(id);
     let ui = ws.theme.ui;
+    // 0 at rest, 1 hovered; eased both ways.
+    let lift = transition(
+        ElementId::from(("lift", n)),
+        if hovered { 1.0_f32 } else { 0.0 },
+        Transition::new(motion::HOVER),
+        window,
+        cx,
+    );
+    let mut shadows = vec![shadow(ui.shadow, focused, lift, z)];
+    if focused {
+        shadows.push(BoxShadow {
+            color: ui.ring,
+            offset: point(px(0.0), px(0.0)),
+            blur_radius: px(0.0),
+            spread_radius: px(RING * z),
+            inset: false,
+        });
+    }
 
     let title = div()
         .id(("title", n))
@@ -174,9 +194,13 @@ pub(crate) fn render(
         .rounded(px(RADIUS * z))
         // Always 1 px, so focusing never moves the grid.
         .border_1()
-        .border_color(if focused { ui.accent } else { ui.hairline })
+        .border_color(if focused {
+            ui.accent
+        } else {
+            ui.hairline.lerp(&ui.hover_border, lift)
+        })
         .bg(ws.theme.ui.surface)
-        .shadow(vec![shadow(ui.shadow, focused, z)])
+        .shadow(shadows)
         .overflow_hidden()
         .when(live, |el| {
             // Nothing behind a block reacts to its clicks; wheel events still bubble
@@ -206,21 +230,40 @@ pub(crate) fn render(
 /// Hover-only controls fade in; they disappear at once. The wrapper covers its parent, since
 /// absolute children are placed relative to their direct parent.
 fn fade_in(el: impl IntoElement + 'static, id: impl Into<ElementId>) -> impl IntoElement {
-    div()
-        .absolute()
-        .inset_0()
-        .child(el)
-        .with_animation(id, Animation::new(FADE_IN), |el, t| el.opacity(t))
+    div().absolute().inset_0().child(el).with_animation(
+        id,
+        Animation::new(motion::HOVER),
+        |el, t| el.opacity(t),
+    )
 }
 
-/// The focused block floats higher.
-fn shadow(color: Hsla, focused: bool, z: f32) -> BoxShadow {
+/// The drop shadow's offset and blur (world units): the focused block floats higher, and a
+/// hovered one (`lift` 1) rises a little more.
+fn lift_metrics(focused: bool, lift: f32) -> (f32, f32) {
     let (y, blur) = if focused { (10.0, 30.0) } else { (4.0, 12.0) };
+    (y + 3.0 * lift, blur + 8.0 * lift)
+}
+
+fn shadow(color: Hsla, focused: bool, lift: f32, z: f32) -> BoxShadow {
+    let (y, blur) = lift_metrics(focused, lift);
     BoxShadow {
         color,
         offset: point(px(0.0), px(y * z)),
         blur_radius: px(blur * z),
         spread_radius: px(0.0),
         inset: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hovered_block_lifts() {
+        assert_eq!(lift_metrics(false, 0.0), (4.0, 12.0));
+        assert_eq!(lift_metrics(false, 1.0), (7.0, 20.0));
+        assert_eq!(lift_metrics(true, 0.0), (10.0, 30.0));
+        assert_eq!(lift_metrics(true, 1.0), (13.0, 38.0));
     }
 }

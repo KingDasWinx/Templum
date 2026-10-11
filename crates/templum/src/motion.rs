@@ -7,6 +7,8 @@ pub(crate) const OPEN: Duration = Duration::from_millis(280);
 pub(crate) const CLOSE: Duration = Duration::from_millis(180);
 /// The settings panel slides in or out.
 pub(crate) const SLIDE: Duration = Duration::from_millis(200);
+/// A hovered block lifts, and its hover-only controls fade in.
+pub(crate) const HOVER: Duration = Duration::from_millis(120);
 /// The camera glides to a new zoom (or a fit); eased with `slide`.
 pub(crate) const FLIGHT: Duration = Duration::from_millis(150);
 /// Blocks are scaled by redrawing them at zoom × scale, which rasterizes text at that size:

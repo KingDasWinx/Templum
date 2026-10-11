@@ -9,15 +9,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
+use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{TITLE_BAR_HEIGHT, WindowExt, window_paddings};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Anchor, App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler,
-    EntityInputHandler, FocusHandle, Hsla, KeyBinding, KeyDownEvent, Keystroke, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PinchEvent, Pixels, Point as PixelPoint,
-    ScrollDelta, ScrollWheelEvent, SharedString, Subscription, Task, UTF16Selection, Window,
-    WindowAppearance, canvas, div, fill, point, px, size,
+    Anchor, AnyElement, App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler,
+    EntityInputHandler, FocusHandle, FontWeight, Hsla, KeyBinding, KeyDownEvent, Keystroke,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PinchEvent, Pixels,
+    Point as PixelPoint, ScrollDelta, ScrollWheelEvent, SharedString, Subscription, Task,
+    TestSupportExt, UTF16Selection, Window, WindowAppearance, canvas, div, fill, point, px, size,
 };
 use templum_canvas::{
     Block, BlockId, Camera, CameraFlight, Canvas, Gesture, Point, Rect, Size, chrome, dot_grid,
@@ -1375,15 +1376,60 @@ impl Workspace {
         }
     }
 
-    /// The empty-canvas hint, with the new_terminal shortcut in effect.
-    fn hint(&self) -> String {
-        match self.keymap.first(Command::NewTerminal) {
-            Some(shortcut) => format!(
-                "Double-click or press {} to open a terminal",
-                keys::display(shortcut)
-            ),
-            None => "Double-click to open a terminal".to_string(),
-        }
+    /// The empty canvas: the name, a line about it, and how to start, with the shortcuts in
+    /// effect.
+    fn hint(&self) -> impl IntoElement {
+        let ui = self.theme.ui;
+        let pill = move |text: &'static str| chip(div(), ui).child(text);
+        let row = |keys: AnyElement, label: &'static str| {
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(24.0))
+                .w(px(280.0))
+                .child(div().text_color(ui.title).child(label))
+                .child(keys)
+        };
+        let [new, settings] = hint_keys(&self.keymap);
+        let keys = |stroke: Option<Keystroke>| match stroke {
+            Some(stroke) => chip(Kbd::new(stroke), ui).into_any_element(),
+            None => pill("No shortcut").into_any_element(),
+        };
+        div()
+            .id("empty-hint")
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(6.0))
+            .child(
+                div()
+                    .text_size(px(28.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(crate::grid::hsla(self.theme.palette.foreground, 1.0))
+                    .child("Templum"),
+            )
+            .child(
+                div()
+                    .text_size(px(14.0))
+                    .text_color(ui.hint)
+                    .child("An infinite canvas of terminals"),
+            )
+            .child(
+                div()
+                    .mt(px(20.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.0))
+                    .text_size(px(13.0))
+                    .child(row(keys(new), "New terminal"))
+                    .child(row(
+                        pill("Double-click").into_any_element(),
+                        "Open one where you click",
+                    ))
+                    .child(row(keys(settings), "Settings")),
+            )
+            .test_support()
     }
 
     fn on_key_down(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -1559,10 +1605,29 @@ fn missing_themes(themes: &[Entry], config: &ThemeConfig) -> Vec<String> {
 /// Shows a notification at the bottom right, clear of the title bar's buttons. Deferred: at
 /// startup the window's notification layer doesn't exist yet.
 fn show_notification(window: &mut Window, cx: &mut App, notification: Notification) {
-    let notification = notification.placement(Anchor::BottomRight);
+    let notification = notification
+        .placement(Anchor::BottomRight)
+        .rounded(px(10.0));
     window.defer(cx, move |window, cx| {
         window.push_notification(notification, cx)
     });
+}
+
+/// A key or a word in a small outlined pill (the empty-canvas hint).
+fn chip<E: Styled>(el: E, ui: theme::Ui) -> E {
+    el.px(px(6.0))
+        .py(px(2.0))
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(ui.hairline)
+        .bg(ui.card)
+        .text_color(ui.title)
+        .text_size(px(11.0))
+}
+
+/// The first shortcut of the commands the empty canvas shows: new terminal, then settings.
+fn hint_keys(keymap: &Keymap) -> [Option<Keystroke>; 2] {
+    [Command::NewTerminal, Command::Settings].map(|c| keymap.keystrokes(c).into_iter().next())
 }
 
 /// The canvas area: the window minus the title bar and, on Linux, the client-side shadow.
@@ -1693,13 +1758,13 @@ impl Render for Workspace {
                     .map_or(motion::Look::REST, |since| {
                         motion::opening(motion::progress(*since, now, motion::OPEN))
                     });
-                block::render(self, b, &self.terminals[&b.id], look, true, cx)
+                block::render(self, b, &self.terminals[&b.id], look, true, window, cx)
             })
             .collect();
         // Ghosts fade above the blocks, where they were.
         blocks.extend(self.ghosts.iter().map(|g| {
             let look = motion::closing(motion::progress(g.since, now, motion::CLOSE));
-            block::render(self, g.block, &g.pane, look, false, cx)
+            block::render(self, g.block, &g.pane, look, false, window, cx)
         }));
 
         let entity = cx.entity();
@@ -1757,7 +1822,6 @@ impl Render for Workspace {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .text_color(self.theme.ui.hint)
                         .child(self.hint()),
                 )
             });
@@ -1877,6 +1941,24 @@ mod tests {
     };
 
     use super::{Workspace, bind_keys};
+
+    #[test]
+    fn the_hint_shows_the_shortcuts_in_effect() {
+        use crate::keys::{Keymap, Keys, KeysConfig};
+        let (keymap, _) = Keymap::new(&KeysConfig::default(), false).unwrap();
+        let rows = super::hint_keys(&keymap);
+        assert_eq!(rows[0].as_ref().map(|k| k.key.as_str()), Some("t"));
+        assert_eq!(rows[1].as_ref().map(|k| k.key.as_str()), Some(","));
+        let keys = KeysConfig {
+            new_terminal: Some(Keys::Many(vec![])),
+            ..KeysConfig::default()
+        };
+        let (keymap, _) = Keymap::new(&keys, false).unwrap();
+        assert!(
+            super::hint_keys(&keymap)[0].is_none(),
+            "no shortcut, no keys"
+        );
+    }
 
     #[cfg(target_os = "macos")]
     const NEW: &str = "cmd-t";

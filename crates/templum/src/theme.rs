@@ -38,8 +38,16 @@ pub(crate) struct Ui {
     pub title_dim: Hsla,
     pub hint: Hsla,
     pub hover: Hsla,
-    /// Focus ring, picker selection.
+    /// A hovered block's border.
+    pub hover_border: Hsla,
+    /// Behind a button while it is pressed.
+    pub pressed: Hsla,
+    /// A faint fill: settings cards, tabs, key pills.
+    pub card: Hsla,
+    /// Focused block border, picker selection.
     pub accent: Hsla,
+    /// The soft ring around the focused block.
+    pub ring: Hsla,
     /// Drawn over selected cells; the text keeps its color.
     pub selection: Hsla,
     pub cursor: Hsla,
@@ -67,7 +75,11 @@ impl Theme {
             title_dim: hsla(fg, 0.40),
             hint: hsla(fg, 0.40),
             hover: hsla(fg, 0.08),
+            hover_border: hsla(fg, 0.22),
+            pressed: hsla(fg, 0.14),
+            card: hsla(fg, 0.04),
             accent: hsla(blue, 1.0),
+            ring: hsla(blue, 0.40),
             selection: hsla(selection.unwrap_or(blue), 0.35),
             cursor: hsla(cursor.unwrap_or(fg), 1.0),
             marked: hsla(palette.ansi[3], 1.0),
@@ -448,6 +460,10 @@ white = "#aaaaaa"
         assert_eq!(mocha.ui.canvas, hsla(rgb(0x151520), 1.0));
         assert_eq!(mocha.ui.dot, hsla(rgb(0xcdd6f4), 0.30));
         assert_eq!(mocha.ui.surface, hsla(rgb(0x1e1e2e), 1.0));
+        assert_eq!(mocha.ui.ring, hsla(rgb(0x89b4fa), 0.40));
+        assert_eq!(mocha.ui.hover_border, hsla(rgb(0xcdd6f4), 0.22));
+        assert_eq!(mocha.ui.pressed, hsla(rgb(0xcdd6f4), 0.14));
+        assert_eq!(mocha.ui.card, hsla(rgb(0xcdd6f4), 0.04));
         assert_eq!(mocha.ui.selection, hsla(rgb(0xf5e0dc), 0.35));
         assert_eq!(mocha.ui.cursor, hsla(rgb(0xf5e0dc), 1.0));
         assert_eq!(mocha.ui.shadow, hsla(rgb(0), 0.45));
