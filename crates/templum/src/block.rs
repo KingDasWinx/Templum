@@ -46,7 +46,7 @@ pub(crate) fn render(
     );
     let focused = live && ws.focused == Some(id);
     let hovered = live && ws.hovered == Some(id);
-    let ui = ws.theme.ui;
+    let ui = ws.ui;
     // 0 at rest, 1 hovered; eased both ways.
     let lift = transition(
         ElementId::from(("lift", n)),
@@ -199,7 +199,7 @@ pub(crate) fn render(
         } else {
             ui.hairline.lerp(&ui.hover_border, lift)
         })
-        .bg(ws.theme.ui.surface)
+        .bg(ws.ui.surface)
         .shadow(shadows)
         .overflow_hidden()
         .when(live, |el| {

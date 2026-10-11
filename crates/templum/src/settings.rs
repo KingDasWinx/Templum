@@ -66,7 +66,7 @@ pub(crate) fn render(
     canvas_w: f32,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
-    let ui = ws.theme.ui;
+    let ui = ws.ui;
     let width = WIDTH.min(canvas_w * 0.6);
     let shown = panel.shown(now);
     let entity = cx.entity();
@@ -157,7 +157,7 @@ pub(crate) fn render(
         .w(px(width))
         .flex()
         .flex_col()
-        .bg(ws.theme.ui.surface)
+        .bg(ws.ui.surface)
         .text_color(hsla(ws.theme.palette.foreground, 1.0))
         .border_l_1()
         .border_color(ui.hairline)
@@ -811,7 +811,7 @@ fn shortcut(
 ) -> SettingField<SharedString> {
     let recording = ws.recording == Some(command);
     let strokes = ws.keymap.keystrokes(command);
-    let ui = ws.theme.ui;
+    let ui = ws.ui;
     let handle = entity.clone();
     let field = SettingField::render(move |_: &RenderOptions, _: &mut Window, _: &mut App| {
         let ws = handle.clone();

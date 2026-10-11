@@ -13,7 +13,7 @@ use crate::theme::Ui;
 use crate::workspace::Workspace;
 
 pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
-    let ui = ws.theme.ui;
+    let ui = ws.ui;
     let zoom = format!("{}%", (ws.canvas.camera.zoom() * 100.0).round());
     TitleBar::new()
         .bg(transparent_black())

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
+use gpui_kit::base::motion::{MotionStatus, Transition, transition_with_status};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{TITLE_BAR_HEIGHT, WindowExt, window_paddings};
@@ -33,7 +34,7 @@ use crate::keys::{self, Command, Keymap, Keys};
 use crate::motion;
 use crate::session;
 use crate::settings::{self, Panel};
-use crate::theme::{self, Entry, Theme};
+use crate::theme::{self, Entry, Theme, Ui};
 use crate::theme_picker::{self, Picker};
 use crate::title_bar;
 
@@ -126,6 +127,9 @@ pub struct Workspace {
     dark: bool,
     /// What everything is drawn with.
     pub(crate) theme: Rc<Theme>,
+    /// The chrome's colors this frame: the theme's, or on their way to them after a change.
+    /// Terminal text and gpui-kit's widgets use the theme's at once.
+    pub(crate) ui: Ui,
     /// The active config.toml: the last valid one.
     pub(crate) config: Config,
     /// Its shortcuts.
@@ -312,6 +316,7 @@ impl Workspace {
             _snapshots: snapshots,
             themes,
             dark,
+            ui: theme.ui,
             theme,
             config_failed: config_error.is_some(),
             config_stamp,
@@ -1379,7 +1384,7 @@ impl Workspace {
     /// The empty canvas: the name, a line about it, and how to start, with the shortcuts in
     /// effect.
     fn hint(&self) -> impl IntoElement {
-        let ui = self.theme.ui;
+        let ui = self.ui;
         let pill = move |text: &'static str| chip(div(), ui).child(text);
         let row = |keys: AnyElement, label: &'static str| {
             div()
@@ -1614,7 +1619,7 @@ fn show_notification(window: &mut Window, cx: &mut App, notification: Notificati
 }
 
 /// A key or a word in a small outlined pill (the empty-canvas hint).
-fn chip<E: Styled>(el: E, ui: theme::Ui) -> E {
+fn chip<E: Styled>(el: E, ui: Ui) -> E {
     el.px(px(6.0))
         .py(px(2.0))
         .rounded(px(6.0))
@@ -1687,6 +1692,18 @@ impl Render for Workspace {
                     .ok();
             });
         }
+        let fade = transition_with_status(
+            "theme-ui",
+            self.theme.ui,
+            Transition::new(motion::THEME),
+            window,
+            cx,
+        );
+        // Blending ends a rounding error away from the theme: take the theme's own colors.
+        self.ui = match fade.status {
+            MotionStatus::Running | MotionStatus::Delayed => fade.value,
+            MotionStatus::Idle | MotionStatus::Finished => self.theme.ui,
+        };
         // The focused terminal's painting sets it again this frame, if its cursor blinks.
         self.cursor_blinks = false;
         let exited: Vec<BlockId> = self
@@ -1770,7 +1787,7 @@ impl Render for Workspace {
         let entity = cx.entity();
         let focus = self.focus_handle.clone();
         let camera = self.view;
-        let dot = self.theme.ui.dot;
+        let dot = self.ui.dot;
         // A full-size layer under the blocks: the IME handler, the workspace origin, and
         // window-wide drag listeners (drags keep working outside the window).
         let layer = canvas(
@@ -1844,7 +1861,7 @@ impl Render for Workspace {
             .flex_col()
             // The settings panel slides in from beyond the right edge.
             .overflow_hidden()
-            .bg(self.theme.ui.canvas)
+            .bg(self.ui.canvas)
             .child(title_bar::render(self, cx))
             .child(area)
             .children(panel)
@@ -2379,6 +2396,33 @@ mod tests {
             assert_eq!(ws.read(cx).canvas.visible(vp).count(), 2);
         })
         .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_theme_change_crossfades_the_chrome(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let light = ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.ui, ws.theme.ui, "the first theme shows at once");
+            ws.theme.ui
+        });
+        ws.update(cx, |ws, cx| ws.set_dark(true, cx));
+        // The fade starts on the first frame that draws the new theme.
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        cx.executor().advance_clock(crate::motion::THEME / 2);
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_ne!(ws.ui, ws.theme.ui, "fading");
+            assert_ne!(ws.ui, light, "fading");
+        });
+        cx.executor()
+            .advance_clock(crate::motion::THEME + std::time::Duration::from_millis(10));
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.ui, ws.theme.ui, "settled"));
     }
 
     #[gpui_kit::test]

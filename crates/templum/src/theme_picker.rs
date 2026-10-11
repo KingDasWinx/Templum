@@ -25,7 +25,7 @@ pub(crate) struct Picker {
 }
 
 pub(crate) fn render(ws: &Workspace, picker: &Picker, cx: &mut Context<Workspace>) -> AnyElement {
-    let ui = ws.theme.ui;
+    let ui = ws.ui;
     let foreground = hsla(ws.theme.palette.foreground, 1.0);
     let mut list = div()
         .id("theme-list")
@@ -81,7 +81,7 @@ pub(crate) fn render(ws: &Workspace, picker: &Picker, cx: &mut Context<Workspace
         .w(px(240.0))
         .flex()
         .flex_col()
-        .bg(ws.theme.ui.surface)
+        .bg(ws.ui.surface)
         .text_color(foreground)
         .border_1()
         .border_color(ui.hairline)

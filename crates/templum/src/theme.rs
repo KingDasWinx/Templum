@@ -56,6 +56,31 @@ pub(crate) struct Ui {
     pub shadow: Hsla,
 }
 
+/// Blends every token (in HSL channels) for the crossfade between two themes.
+impl gpui_kit::base::animation::Lerp for Ui {
+    fn lerp(&self, to: &Self, t: f32) -> Self {
+        Ui {
+            canvas: self.canvas.lerp(&to.canvas, t),
+            dot: self.dot.lerp(&to.dot, t),
+            surface: self.surface.lerp(&to.surface, t),
+            hairline: self.hairline.lerp(&to.hairline, t),
+            title: self.title.lerp(&to.title, t),
+            title_dim: self.title_dim.lerp(&to.title_dim, t),
+            hint: self.hint.lerp(&to.hint, t),
+            hover: self.hover.lerp(&to.hover, t),
+            hover_border: self.hover_border.lerp(&to.hover_border, t),
+            pressed: self.pressed.lerp(&to.pressed, t),
+            card: self.card.lerp(&to.card, t),
+            accent: self.accent.lerp(&to.accent, t),
+            ring: self.ring.lerp(&to.ring, t),
+            selection: self.selection.lerp(&to.selection, t),
+            cursor: self.cursor.lerp(&to.cursor, t),
+            marked: self.marked.lerp(&to.marked, t),
+            shadow: self.shadow.lerp(&to.shadow, t),
+        }
+    }
+}
+
 impl Theme {
     pub fn new(name: &str, palette: Palette, cursor: Option<Rgb>, selection: Option<Rgb>) -> Self {
         // About CIE L* 50.
@@ -489,6 +514,18 @@ white = "#aaaaaa"
         );
         assert_eq!(minimal.ui.marked, hsla(rgb(0xaaaa00), 1.0));
     }
+    #[test]
+    fn ui_colors_blend_token_by_token() {
+        use gpui_kit::base::animation::Lerp as _;
+        let mocha = parse("Catppuccin Mocha", MOCHA).unwrap().ui;
+        let latte = parse("Catppuccin Latte", LATTE).unwrap().ui;
+        assert_eq!(mocha.lerp(&latte, 0.0), mocha);
+        assert_eq!(mocha.lerp(&latte, 1.0), latte);
+        let half = mocha.lerp(&latte, 0.5);
+        assert!((half.canvas.l - (mocha.canvas.l + latte.canvas.l) / 2.0).abs() < 1e-6);
+        assert!((half.dot.a - 0.26).abs() < 1e-6, "alphas blend too");
+    }
+
     #[test]
     fn all_builtins_load_in_order() {
         let all = load(None);
