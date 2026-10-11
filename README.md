@@ -71,7 +71,7 @@ dark = "Catppuccin Mocha"
 ## Settings
 
 Press **Ctrl+,** (**Cmd+,** on macOS), or the ⚙ in the title bar, to open the settings panel on the right. It has
-Appearance (light/dark mode, themes, glass and canvas opacity), Font (with a preview), Terminal (cursor and
+Appearance (light/dark mode and themes), Font (with a preview), Terminal (cursor and
 scrollback), Shell (for new terminals) and Shortcuts. The terminals stay usable next to it, so you see each change
 as you make it.
 
@@ -108,10 +108,6 @@ out. Uncomment a line and save, and it applies at once.
 [font]
 family = "JetBrains Mono"
 size = 14
-
-[window]
-blur = "auto"     # "auto" | true | false
-opacity = 0.72    # the canvas, 0 to 1
 
 [theme]
 mode = "system"   # "system" | "light" | "dark"

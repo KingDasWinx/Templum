@@ -124,8 +124,6 @@ pub struct Workspace {
     dark: bool,
     /// What everything is drawn with.
     pub(crate) theme: Rc<Theme>,
-    /// The window shows the blurred desktop: the canvas is drawn at window.opacity.
-    pub(crate) translucent: bool,
     /// The active config.toml: the last valid one.
     pub(crate) config: Config,
     /// Its shortcuts.
@@ -259,7 +257,6 @@ impl Workspace {
                 }
             }
         });
-        let translucent = config.window.translucent();
         cx.observe_window_appearance(window, |ws, window, cx| {
             ws.set_dark(is_dark(window.appearance()), cx)
         })
@@ -310,7 +307,6 @@ impl Workspace {
             themes,
             dark,
             theme,
-            translucent,
             config_failed: config_error.is_some(),
             config_stamp,
             system_dark,
@@ -693,10 +689,6 @@ impl Workspace {
         if self.config.font != old.font {
             self.set_font(window, cx);
         }
-        if self.config.window != old.window {
-            self.translucent = self.config.window.translucent();
-            window.set_background_appearance(self.config.window.background());
-        }
         if self.config.theme != old.theme {
             self.picker = None;
             // A theme file may have been added since startup.
@@ -825,15 +817,6 @@ impl Workspace {
                 show_notification(window, cx, Notification::warning(message));
                 None
             }
-        }
-    }
-
-    /// The canvas's alpha: window.opacity when the window is translucent, else opaque.
-    pub(crate) fn canvas_alpha(&self) -> f32 {
-        if self.translucent {
-            self.config.window.opacity
-        } else {
-            1.0
         }
     }
 
@@ -1716,7 +1699,6 @@ impl Render for Workspace {
                         .child(self.hint()),
                 )
             });
-        let alpha = self.canvas_alpha();
         let picker = self
             .picker
             .as_ref()
@@ -1736,7 +1718,7 @@ impl Render for Workspace {
             .flex_col()
             // The settings panel slides in from beyond the right edge.
             .overflow_hidden()
-            .bg(hsla(self.theme.ui.canvas, alpha))
+            .bg(hsla(self.theme.ui.canvas, 1.0))
             .child(title_bar::render(self, cx))
             .child(area)
             .children(panel)
@@ -2347,10 +2329,12 @@ mod tests {
         cx.update(|cx| {
             let kit = gpui_kit::component::Theme::global(cx);
             assert!(kit.mode.is_dark());
+        });
+        ws.read_with(cx, |ws, cx| {
             assert_eq!(
-                kit.background,
-                gpui_kit::transparent_black(),
-                "the glass stays clear"
+                gpui_kit::component::Theme::global(cx).background,
+                crate::grid::hsla(ws.theme.ui.canvas, 1.0),
+                "gpui-kit's root paints the opaque canvas"
             );
         });
     }
@@ -2654,7 +2638,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn window_and_theme_mode_apply_on_reload(cx: &mut TestAppContext) {
+    fn theme_mode_applies_on_reload_and_an_old_window_table_is_ignored(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
         write_config(
@@ -2663,7 +2647,7 @@ mod tests {
         );
         reload(handle, &ws, cx);
         ws.read_with(cx, |ws, _| {
-            assert_eq!(ws.canvas_alpha(), 1.0, "opaque");
+            assert!(!ws.config_failed, "the old [window] table loads");
             assert_eq!(
                 ws.theme.name, "Catppuccin Mocha",
                 "dark pinned on a light system"

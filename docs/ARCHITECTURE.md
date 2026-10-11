@@ -46,8 +46,8 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
 
 ## Look and themes
 
-- The window is translucent where the system blurs what is behind it (macOS, Windows, and KDE and Hyprland on
-  Wayland) and opaque elsewhere. Blocks are always opaque.
+- The window is opaque: a solid canvas with a dot grid fixed to the world, and blocks drawn as cards on it
+  ([specs/polish.md](specs/polish.md)).
 - A theme is a file in Alacritty's color format. `crates/templum/src/theme.rs` derives every interface color
   from the terminal colors, so any Alacritty theme works. The built-ins live in `crates/templum/themes/`, with
   their credits.

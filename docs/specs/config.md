@@ -2,6 +2,7 @@
 
 - **Date:** 2026-10-10
 - **Status:** Implemented
+- **Superseded in part by:** [polish.md](polish.md), which removed the glass (the window is always opaque).
 - **Builds on:** [design-system.md](design-system.md), which created `config.toml` with `[theme]` only, and
   [walking-skeleton.md](walking-skeleton.md)
 

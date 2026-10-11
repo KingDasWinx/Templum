@@ -2,6 +2,7 @@
 
 - **Date:** 2026-10-10
 - **Status:** Implemented
+- **Superseded in part by:** [polish.md](polish.md), which removed the glass (the window is always opaque).
 - **Builds on:** [config.md](config.md) (part 1: every option in `config.toml`, applied live) and
   [design-system.md](design-system.md)
 

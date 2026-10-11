@@ -14,7 +14,6 @@ use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::setting::{
     RenderOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
-use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _, TITLE_BAR_HEIGHT};
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -22,9 +21,7 @@ use gpui_kit::{
     SharedString, Subscription, TestSupportExt, Window, div, font, point, px,
 };
 
-use crate::config::{
-    self, Blur, Config, Edit, Mode, Shape, ThemeConfig, WindowConfig, WorkingDirectory,
-};
+use crate::config::{self, Config, Edit, Mode, Shape, ThemeConfig, WorkingDirectory};
 use crate::grid::{self, hsla};
 use crate::keys::Command;
 use crate::motion;
@@ -225,30 +222,6 @@ static MODE: Choice = Choice {
         }
     },
     toml: |v| v.into(),
-};
-
-static GLASS: Choice = Choice {
-    table: "window",
-    key: "blur",
-    options: &[("auto", "Auto"), ("on", "On"), ("off", "Off")],
-    get: |c| match c.window.blur {
-        Blur::Auto => "auto",
-        Blur::On => "on",
-        Blur::Off => "off",
-    },
-    set: |c, v| {
-        c.window.blur = match v {
-            "on" => Blur::On,
-            "off" => Blur::Off,
-            _ => Blur::Auto,
-        }
-    },
-    // config.toml spells them "auto", true and false.
-    toml: |v| match v {
-        "on" => true.into(),
-        "off" => false.into(),
-        _ => "auto".into(),
-    },
 };
 
 static CURSOR: Choice = Choice {
@@ -947,70 +920,6 @@ fn blink(ws: &Entity<Workspace>) -> SettingField<bool> {
     )
 }
 
-/// What the file gets for an opacity of `percent`%: 72 → 0.72.
-fn opacity_value(percent: f32) -> f64 {
-    f64::from(percent.round()) / 100.0
-}
-
-/// The slider's state lives in the window, keyed by the field.
-struct OpacitySlider {
-    slider: Entity<SliderState>,
-    _change: Subscription,
-}
-
-fn opacity(ws: &Entity<Workspace>) -> SettingField<SharedString> {
-    let handle = ws.clone();
-    let field = SettingField::render(
-        move |options: &RenderOptions, window: &mut Window, cx: &mut App| {
-            let percent = (handle.read(cx).config.window.opacity * 100.0).round();
-            let ws = handle.clone();
-            let state = window.use_keyed_state("opacity-slider", cx, move |_, cx| {
-                let slider = cx.new(|_| {
-                    SliderState::new()
-                        .min(0.0)
-                        .max(100.0)
-                        .step(1.0)
-                        .default_value(percent)
-                });
-                let _change = cx.subscribe(&slider, move |_, _, event: &SliderEvent, cx| {
-                    if let SliderEvent::Change(value) = event {
-                        set_opacity(&ws, value.start(), cx);
-                    }
-                });
-                OpacitySlider { slider, _change }
-            });
-            let slider = state.read(cx).slider.clone();
-            // A hand edit of the file, or "reset to default", moves the thumb.
-            if slider.read(cx).value().start() != percent {
-                slider.update(cx, |s, cx| s.set_value(percent, window, cx));
-            }
-            Slider::new(&slider)
-                .disabled(options.is_disabled())
-                .w(px(160.0))
-        },
-    );
-    let default = WindowConfig::default().opacity;
-    reset(
-        field,
-        ws,
-        "window",
-        "opacity",
-        move |c| c.window.opacity == default,
-        move |c| c.window.opacity = default,
-    )
-}
-
-fn set_opacity(ws: &Entity<Workspace>, percent: f32, cx: &mut App) {
-    let value = opacity_value(percent);
-    ws.update(cx, |ws, cx| {
-        ws.edit(
-            Edit::set("window", "opacity", value),
-            |c| c.window.opacity = value as f32,
-            cx,
-        )
-    });
-}
-
 /// The panel's sections, built every frame from the workspace's state.
 pub(crate) fn pages(ws: &Workspace, entity: &Entity<Workspace>) -> Vec<SettingPage> {
     let names: Vec<SharedString> = ws
@@ -1027,13 +936,6 @@ pub(crate) fn pages(ws: &Workspace, entity: &Entity<Workspace>) -> Vec<SettingPa
                     .keywords(["color", "colour"]),
                 SettingItem::new("Dark theme", theme(entity, names, true))
                     .keywords(["color", "colour"]),
-                SettingItem::new("Glass", dropdown(entity, &GLASS))
-                    .description("Blur the desktop behind the canvas")
-                    .keywords(["blur", "transparent"]),
-                SettingItem::new("Canvas opacity", opacity(entity))
-                    .description("How much the canvas covers the glass")
-                    .keywords(["transparency", "alpha"])
-                    .disabled(!ws.translucent),
             ]),
         ),
         SettingPage::new("Font").group(
@@ -1105,7 +1007,7 @@ mod tests {
 
     #[test]
     fn every_choice_reads_back_what_it_writes() {
-        for choice in [&MODE, &GLASS, &CURSOR] {
+        for choice in [&MODE, &CURSOR] {
             for (value, _) in choice.options {
                 let mut c = Config::default();
                 (choice.set)(&mut c, value);
@@ -1132,23 +1034,6 @@ mod tests {
                 let text = format!("[{}]\n{} = {}\n", n.table, n.key, v as i64);
                 assert_eq!((n.get)(&config::parse(&text).unwrap()), v, "{text}");
             }
-        }
-    }
-
-    #[test]
-    fn opacity_percent_reads_back_from_the_file() {
-        assert_eq!(
-            toml_edit::Value::from(opacity_value(72.0)).to_string(),
-            "0.72"
-        );
-        for p in 0..=100 {
-            let p = p as f32;
-            let text = format!(
-                "[window]\nopacity = {}\n",
-                toml_edit::Value::from(opacity_value(p))
-            );
-            let c = config::parse(&text).unwrap();
-            assert_eq!((c.window.opacity * 100.0).round(), p, "{text}");
         }
     }
 

@@ -6,14 +6,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use gpui_kit::WindowBackgroundAppearance;
 use serde::Deserialize;
 use templum_terminal::{CursorShape, CursorStyle, TermOptions};
 
 use toml_edit::{DocumentMut, TomlError};
 
 use crate::keys::{Keymap, KeysConfig};
-use crate::theme::{self, DEFAULT_DARK, DEFAULT_LIGHT};
+use crate::theme::{DEFAULT_DARK, DEFAULT_LIGHT};
 
 pub(crate) const FILE: &str = "config.toml";
 
@@ -26,7 +25,9 @@ pub(crate) const POLL: Duration = Duration::from_millis(500);
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Config {
     pub font: Font,
-    pub window: WindowConfig,
+    /// `[window]` held the glass options, now removed: a file that still has it loads.
+    #[serde(rename = "window")]
+    pub _window: serde::de::IgnoredAny,
     pub theme: ThemeConfig,
     pub shell: Shell,
     pub cursor: Cursor,
@@ -48,69 +49,6 @@ impl Default for Font {
         Self {
             family: None,
             size: 14.0,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
-#[serde(default, deny_unknown_fields)]
-pub(crate) struct WindowConfig {
-    pub blur: Blur,
-    /// The canvas's alpha when the window is translucent.
-    pub opacity: f32,
-}
-
-impl Default for WindowConfig {
-    fn default() -> Self {
-        Self {
-            blur: Blur::Auto,
-            opacity: 0.72,
-        }
-    }
-}
-
-impl WindowConfig {
-    pub fn translucent(&self) -> bool {
-        match self.blur {
-            Blur::Auto => theme::system_translucent(),
-            Blur::On => true,
-            Blur::Off => false,
-        }
-    }
-
-    pub fn background(&self) -> WindowBackgroundAppearance {
-        if self.translucent() {
-            WindowBackgroundAppearance::Blurred
-        } else {
-            WindowBackgroundAppearance::Opaque
-        }
-    }
-}
-
-/// `"auto"` (blur where the system does), `true` or `false`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) enum Blur {
-    #[default]
-    Auto,
-    On,
-    Off,
-}
-
-impl<'de> Deserialize<'de> for Blur {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Raw {
-            Flag(bool),
-            Word(String),
-        }
-        match Raw::deserialize(d)? {
-            Raw::Flag(true) => Ok(Blur::On),
-            Raw::Flag(false) => Ok(Blur::Off),
-            Raw::Word(w) if w == "auto" => Ok(Blur::Auto),
-            Raw::Word(w) => Err(serde::de::Error::custom(format!(
-                "expected \"auto\", true or false, found \"{w}\""
-            ))),
         }
     }
 }
@@ -266,13 +204,6 @@ pub(crate) fn parse(text: &str) -> Result<Config, String> {
         (6.0..=72.0).contains(&size),
         "6 and 72",
         size.to_string(),
-    )?;
-    let opacity = config.window.opacity;
-    range(
-        "window.opacity",
-        (0.0..=1.0).contains(&opacity),
-        "0 and 1",
-        opacity.to_string(),
     )?;
     let scrollback = config.terminal.scrollback;
     range(
@@ -568,9 +499,6 @@ pub(crate) fn template(macos: bool) -> String {
         "## Default: the first installed font of a built-in list. For example:\n",
         "## family = \"JetBrains Mono\"\n",
         "# size = 14   # 6 to 72\n\n",
-        "[window]\n",
-        "# blur = \"auto\"   # \"auto\" | true | false\n",
-        "# opacity = 0.72   # the canvas when translucent, 0 to 1\n\n",
         "[theme]\n",
         "# mode = \"system\"   # \"system\" | \"light\" | \"dark\"\n",
         "# light = \"Catppuccin Latte\"\n",
@@ -786,8 +714,6 @@ mod tests {
         let c = parse("").unwrap();
         assert_eq!(c, Config::default());
         assert_eq!(c.font.size, 14.0);
-        assert_eq!(c.window.opacity, 0.72);
-        assert_eq!(c.window.blur, Blur::Auto);
         assert_eq!(c.theme.mode, Mode::System);
         assert_eq!(c.theme.name(false), "Catppuccin Latte");
         assert_eq!(c.theme.name(true), "Catppuccin Mocha");
@@ -803,9 +729,6 @@ mod tests {
 [font]
 family = "JetBrains Mono"
 size = 16
-[window]
-blur = false
-opacity = 0.9
 [theme]
 mode = "dark"
 light = "One Light"
@@ -824,8 +747,6 @@ scrollback = 500
         .unwrap();
         assert_eq!(c.font.family.as_deref(), Some("JetBrains Mono"));
         assert_eq!(c.font.size, 16.0);
-        assert_eq!((c.window.blur, c.window.opacity), (Blur::Off, 0.9));
-        assert!(!c.window.translucent());
         assert!(c.theme.mode.dark(false), "dark is pinned");
         assert_eq!(c.theme.name(true), "One Dark");
         assert_eq!(c.shell.program.as_deref(), Some("fish"));
@@ -843,18 +764,13 @@ scrollback = 500
     }
 
     #[test]
-    fn blur_takes_auto_true_or_false() {
+    fn a_window_table_is_ignored() {
+        // It held the glass options, now removed: a file written before still loads.
         assert_eq!(
-            parse("[window]\nblur = \"auto\"").unwrap().window.blur,
-            Blur::Auto
+            parse("[window]\nblur = false\nopacity = 0.9\n").unwrap(),
+            Config::default()
         );
-        assert_eq!(
-            parse("[window]\nblur = true").unwrap().window.blur,
-            Blur::On
-        );
-        assert!(parse("[window]\nblur = true").unwrap().window.translucent());
-        let err = parse("[window]\nblur = \"maybe\"").unwrap_err();
-        assert!(err.contains("maybe"), "{err}");
+        assert!(parse("[window]\nanything = \"else\"\n").is_ok());
     }
 
     #[test]
@@ -899,11 +815,6 @@ scrollback = 500
         let err = parse("[font]\nsize = 100").unwrap_err();
         assert!(
             err.contains("font.size") && err.contains("6 and 72"),
-            "{err}"
-        );
-        let err = parse("[window]\nopacity = 1.5").unwrap_err();
-        assert!(
-            err.contains("window.opacity") && err.contains("0 and 1"),
             "{err}"
         );
         let err = parse("[terminal]\nscrollback = 200000").unwrap_err();
@@ -1095,39 +1006,33 @@ scrollback = 500
         write(
             d.path(),
             concat!(
-                "[window]\n",
-                "# blur = \"auto\"   # \"auto\" | true | false\n",
-                "opacity = 0.6   # the canvas when translucent, 0 to 1\n",
+                "[font]\n",
+                "# family = \"JetBrains Mono\"\n",
+                "size = 16   # 6 to 72\n",
                 "\n",
                 "[theme]\n",
                 "# mode = \"system\"\n",
                 "light = \"One Light\"   # sunny\n",
             ),
         );
-        save_edits(d.path(), &[Edit::set("window", "opacity", 0.5)]).unwrap();
+        save_edits(d.path(), &[Edit::set("font", "size", 18_i64)]).unwrap();
         let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
         assert!(
             text.contains(concat!(
-                "# blur = \"auto\"   # \"auto\" | true | false\n",
-                "opacity = 0.5   # the canvas when translucent, 0 to 1\n",
+                "# family = \"JetBrains Mono\"\n",
+                "size = 18   # 6 to 72\n",
             )),
             "{text}"
         );
         save_edits(
             d.path(),
-            &[
-                Edit::remove("window", "opacity"),
-                Edit::remove("theme", "light"),
-            ],
+            &[Edit::remove("font", "size"), Edit::remove("theme", "light")],
         )
         .unwrap();
         let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
-        assert!(text.contains("# blur = \"auto\""), "{text}");
+        assert!(text.contains("# family = \"JetBrains Mono\""), "{text}");
         assert!(text.contains("# mode = \"system\""), "{text}");
-        assert!(
-            !text.contains("opacity") && !text.contains("light"),
-            "{text}"
-        );
+        assert!(!text.contains("size") && !text.contains("light"), "{text}");
         assert_eq!(load(Some(d.path())).unwrap(), Config::default());
     }
 }
