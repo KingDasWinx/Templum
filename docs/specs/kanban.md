@@ -30,12 +30,13 @@ same board stay in sync.
   (Ctrl+Shift+K, Cmd+Shift+K on macOS). It opens at the viewport's center, 900 × 540, and pops in like a terminal.
 - **The card around it** is a terminal's: the header with the title, ✕ and the resize grip, moving, resizing,
   focus, hover lift and the pop-in and fade-out. It can't be smaller than 420 × 280.
-- **Its title** is the board's name, with a ▾ after it. Clicking the title shows the board list in the block.
+- **Its title** is the board's name. The title stays the handle for moving the block; a ⇅ button at the left of
+  the header shows the board list in the block (and goes back to the board).
 - **Everything inside scales with the zoom**, like a terminal's text.
 
 ### The board list
 
-Shown by a new block, by a click on its title, and when its board was deleted.
+Shown by a new block, by the ⇅ button, and when its board was deleted.
 
 - One row per board: the name, and how many cards it has. Clicking a row shows that board in the block.
 - **+ New board** creates "Board *n*" with three columns, To do, Doing and Done, and shows it.
@@ -148,5 +149,6 @@ column.
 
 - **Drag and drop on a zoomed canvas:** the dragged card is drawn at the canvas's zoom, and drop targets come from
   the element tree, so they follow the zoom by themselves.
-- **Wheel events:** a column or the row of columns that can scroll takes the wheel; elsewhere it pans the canvas,
-  as over a terminal.
+- **Wheel events** over a kanban block stay in it, as over a terminal: a vertical wheel scrolls a column's cards,
+  a sideways one the row of columns, and Ctrl+wheel zooms the canvas. GPUI measures a scroll container's range
+  from its own children, so the columns are the row's children, with no wrapper in between.

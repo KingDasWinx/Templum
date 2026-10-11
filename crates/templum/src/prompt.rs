@@ -4,12 +4,12 @@ use std::rc::Rc;
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::dialog::DialogButtonProps;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, SharedString, Window};
 
-/// A text field holding `initial`, selected. Enter or `ok` calls `apply` with the text; the
-/// dialog closes when it returns true.
+/// A text field holding `initial`, selected. Enter or `ok` calls `apply` with the text (Enter
+/// confirms the dialog by itself); the dialog closes when it returns true.
 pub(crate) fn ask_text<V: 'static>(
     title: impl Into<SharedString>,
     ok: &'static str,
@@ -27,31 +27,20 @@ pub(crate) fn ask_text<V: 'static>(
             apply(text, window, cx)
         },
     );
-    let on_enter = apply.clone();
-    cx.subscribe_in(
-        &input,
-        window,
-        move |_, input, event: &InputEvent, window, cx| {
-            if let InputEvent::PressEnter { .. } = event
-                && on_enter(input, window, cx)
-            {
-                window.close_dialog(cx);
-            }
-        },
-    )
-    .detach();
-    input.update(cx, |input, cx| {
-        input.focus(window, cx);
-        input.select_all(window, cx);
-    });
+    let field = input.clone();
     window.open_alert_dialog(cx, move |alert, _, _| {
-        let (apply, field) = (apply.clone(), input.clone());
+        let (apply, field) = (apply.clone(), field.clone());
         alert
             .confirm()
             .title(title.clone())
             .button_props(DialogButtonProps::default().ok_text(ok))
-            .child(Input::new(&input))
+            .child(Input::new(&field))
             .on_ok(move |_, window, cx| apply(&field, window, cx))
+    });
+    // After opening: the dialog takes the focus when it opens.
+    input.update(cx, |input, cx| {
+        input.focus(window, cx);
+        input.select_all(window, cx);
     });
 }
 

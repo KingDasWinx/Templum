@@ -106,6 +106,9 @@ pub(crate) struct Space {
     pub pristine: bool,
     /// The canvas as last read or written, to write only what changed.
     pub saved: Option<session::Saved>,
+    /// Its file is kept as it is this session: it couldn't be read, or its terminals couldn't
+    /// all start, and writing would lose what it holds.
+    pub frozen: bool,
     /// The block under the pointer: it shows its close button and resize grip.
     pub hovered: Option<BlockId>,
     /// The camera drawn this frame: `canvas.camera` (where it is going), or a frame of `flight`.
@@ -166,6 +169,9 @@ pub struct Workspace {
     pub(crate) boards: Boards,
     /// The boards as last read or written, to write only what changed.
     boards_saved: Option<Boards>,
+    /// `boards.json`, or the workspace list, couldn't be read: kept as it is this session.
+    boards_frozen: bool,
+    index_frozen: bool,
     /// The sidebar is shown.
     pub(crate) sidebar: bool,
     pub(crate) cell: CellMetrics,
@@ -360,6 +366,8 @@ impl Workspace {
             active: 0,
             boards: Boards::default(),
             boards_saved: None,
+            boards_frozen: false,
+            index_frozen: false,
             sidebar: true,
             cell,
             marked: None,
@@ -432,10 +440,10 @@ impl Workspace {
             }
             Some(Loaded::Unreadable(why)) => {
                 let message =
-                    format!("Couldn't read the boards ({why}); this session won't be saved");
+                    format!("Couldn't read the boards ({why}); they won't be saved this session");
                 eprintln!("templum: {message}");
                 show_notification(window, cx, Notification::error(message));
-                self.data_dir = None;
+                self.boards_frozen = true;
             }
             Some(Loaded::Nothing) | None => {}
         }
@@ -452,11 +460,11 @@ impl Workspace {
             }
             Some(Loaded::Unreadable(why)) => {
                 let message = format!(
-                    "Couldn't read the workspace list ({why}); this session won't be saved"
+                    "Couldn't read the workspace list ({why}); it won't be saved this session"
                 );
                 eprintln!("templum: {message}");
                 show_notification(window, cx, Notification::error(message));
-                self.data_dir = None;
+                self.index_frozen = true;
                 (session::Index::first_run(), true)
             }
             Some(Loaded::Nothing) | None => (session::Index::first_run(), true),
@@ -488,11 +496,11 @@ impl Workspace {
                 }
                 Some(Loaded::Unreadable(why)) => {
                     let message = format!(
-                        "Couldn't read the saved canvas ({why}); this session won't be saved"
+                        "Couldn't read the saved canvas ({why}); it won't be saved this session"
                     );
                     eprintln!("templum: {message}");
                     show_notification(window, cx, Notification::error(message));
-                    self.data_dir = None;
+                    self.space.frozen = true;
                 }
                 Some(Loaded::Nothing) | None => {}
             }
@@ -639,7 +647,7 @@ impl Workspace {
 
     /// Writes the index at once: it changes only on a user's action.
     fn write_index(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(dir) = &self.data_dir else {
+        let Some(dir) = self.data_dir.as_ref().filter(|_| !self.index_frozen) else {
             return;
         };
         if let Err(err) = session::save_index(dir, &self.index()) {
@@ -827,10 +835,11 @@ impl Workspace {
         if failed {
             // A shell setting with a typo: fixing it must bring the canvas back, so it isn't
             // written over with the blocks that couldn't start.
-            self.data_dir = None;
-            let message = "Some terminals couldn't start, so this session won't save the canvas: \
+            self.space.frozen = true;
+            let message =
+                "Some terminals couldn't start, so this session won't save their canvas: \
                            the saved one stays for the next start"
-                .to_string();
+                    .to_string();
             eprintln!("templum: {message}");
             show_notification(window, cx, Notification::warning(message));
         }
@@ -877,10 +886,11 @@ impl Workspace {
         let generation = self.generation;
         let jobs: Vec<_> = self
             .spaces()
+            .filter(|s| !s.frozen)
             .map(|s| (s.id.clone(), s.layout(), s.saved.clone()))
             .collect();
-        let boards =
-            (self.boards_saved.as_ref() != Some(&self.boards)).then(|| self.boards.clone());
+        let boards = (!self.boards_frozen && self.boards_saved.as_ref() != Some(&self.boards))
+            .then(|| self.boards.clone());
         cx.spawn_in(window, async move |ws, cx| {
             let (done, boards) = cx
                 .background_executor()
@@ -895,7 +905,7 @@ impl Workspace {
                         })
                         .collect::<Vec<_>>();
                     let boards = boards.map(|b| {
-                        let written = board::save(&dir, &b);
+                        let written = board::save(&dir, &b, generation);
                         (b, written)
                     });
                     (done, boards)
@@ -964,13 +974,16 @@ impl Workspace {
         };
         self.generation += 1;
         let generation = self.generation;
-        if self.boards_saved.as_ref() != Some(&self.boards) {
-            match board::save(&dir, &self.boards) {
+        if !self.boards_frozen && self.boards_saved.as_ref() != Some(&self.boards) {
+            match board::save(&dir, &self.boards, generation) {
                 Ok(()) => self.boards_saved = Some(self.boards.clone()),
                 Err(err) => eprintln!("templum: couldn't save the boards: {err}"),
             }
         }
         for space in std::iter::once(&mut self.space).chain(&mut self.others) {
+            if space.frozen {
+                continue;
+            }
             let saved = space.layout().snapshot();
             if space.saved.as_ref() == Some(&saved) {
                 continue;
@@ -5011,10 +5024,26 @@ mod tests {
         let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
         assert_eq!(notification_count(handle, cx), 1);
         ws.read_with(cx, |ws, _| {
-            assert_eq!(ws.data_dir, None, "this session won't be saved");
+            assert!(ws.space.frozen, "its canvas won't be saved");
             assert_eq!(ws.space.canvas.blocks().len(), 1, "as on a first run");
         });
+        // The rest still saves: the boards, a new workspace.
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.boards.add_board();
+                ws.new_space(window, cx);
+            })
+        })
+        .unwrap();
+        tick(cx);
+        assert!(crate::board::path(data.path()).exists(), "boards saved");
+        assert!(crate::session::path(data.path(), "w2").exists(), "w2 saved");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"version":1,"camera":{"x":0,"y":0,"zoom":1},"items":[]}"#,
+            "never written over"
+        );
     }
 
     /// One snapshot period, with the background read-and-write finished.
@@ -5277,6 +5306,34 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn enter_applies_a_typed_name(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            let target = ws.clone();
+            ws.update(cx, |_, cx| {
+                crate::prompt::ask_text(
+                    "Rename workspace",
+                    "Rename",
+                    "Main",
+                    move |text, window, cx| {
+                        target
+                            .update(cx, |ws, cx| ws.rename_space("default", &text, window, cx))
+                            .is_ok()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            window.render_frame(cx);
+            window.input("Work", cx);
+            window.press("enter", cx);
+            window.render_frame(cx);
+            assert_eq!(ws.read(cx).space.name, "Work");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     fn an_open_card_toggles_labels_and_can_be_deleted(cx: &mut TestAppContext) {
         use crate::board::Label;
         let (handle, ws) = open(cx);
@@ -5297,11 +5354,24 @@ mod tests {
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             let id = gpui_kit::ElementId::Name(format!("card-{}-{card}", block.0).into());
-            window.click(id, cx);
+            assert!(window.try_find(id).is_some());
+            ws.update(cx, |ws, cx| {
+                let current = ws.boards.card(board, card).cloned().unwrap();
+                crate::kanban::open_card(board, current, false, window, cx)
+            });
             window.render_frame(cx);
-            // The dialog slides in for 0.25 s first.
+            // The dialog slides in for 0.25 s first: presses meanwhile are lost.
             std::thread::sleep(std::time::Duration::from_millis(300));
             window.render_frame(cx);
+            // The title has the keyboard when the card opens.
+            window.input("!", cx);
+        })
+        .unwrap();
+        // Subscribers hear the typing once that update ends.
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let title = ws.read(cx).boards.card(board, card).unwrap().title.clone();
+            assert!(title.contains('!'), "typing applies at once: {title:?}");
             window.click("label-green", cx);
             window.render_frame(cx);
             let labels = ws.read(cx).boards.card(board, card).unwrap().labels.clone();
@@ -5315,6 +5385,74 @@ mod tests {
             );
         })
         .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_wheel_over_a_kanban_block_stays_in_it_and_ctrl_zooms(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let (block, doing) = cx
+            .update_window(handle, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.new_kanban(window, cx);
+                    let block = ws.space.canvas.top().unwrap();
+                    ws.new_board(block, cx);
+                    ws.space.appearing.clear();
+                    let board = ws.space.kanbans[&block].board.unwrap();
+                    (block, ws.boards.board(board).unwrap().columns[1].id)
+                })
+            })
+            .unwrap();
+        let column = gpui_kit::ElementId::Name(format!("column-{}-{doing}", block.0).into());
+        // As a pointer does: over the column first, then the wheel.
+        let wheel_over = |window: &mut Window, cx: &mut gpui_kit::App, delta, control| {
+            window.hover(column.clone(), cx);
+            let at = window.find(column.clone()).bounds().center();
+            wheel(
+                window,
+                cx,
+                (f32::from(at.x), f32::from(at.y)),
+                delta,
+                control,
+            );
+            window.render_frame(cx);
+        };
+        let before = ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let x = window.find(column.clone()).bounds().origin.x;
+            wheel_over(
+                window,
+                cx,
+                ScrollDelta::Pixels(point(px(0.), px(-200.))),
+                false,
+            );
+            assert_eq!(
+                window.find(column.clone()).bounds().origin.x,
+                x,
+                "a vertical wheel doesn't slide the columns"
+            );
+            wheel_over(
+                window,
+                cx,
+                ScrollDelta::Pixels(point(px(-200.), px(0.))),
+                false,
+            );
+            assert!(
+                window.find(column.clone()).bounds().origin.x < x,
+                "a sideways one does"
+            );
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.canvas.camera, before, "no pan")
+        });
+        cx.update_window(handle, |_, window, cx| {
+            wheel_over(window, cx, ScrollDelta::Lines(point(0.0, 1.0)), true);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.canvas.camera.zoom(), 1.1, "Ctrl zooms")
+        });
     }
 
     #[gpui_kit::test]

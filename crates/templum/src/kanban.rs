@@ -10,7 +10,7 @@ use gpui_kit::component::{Icon, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, Entity, FontWeight, Render,
-    SharedString, TestSupportExt, Window, div, point, px,
+    ScrollWheelEvent, SharedString, TestSupportExt, Window, div, point, px,
 };
 use templum_canvas::{BlockId, Size};
 
@@ -106,10 +106,20 @@ pub(crate) fn body(
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
-    match kanban.shown(ws) {
+    let view = match kanban.shown(ws) {
         Some(board) => board_view(ws, block, board, z, cx),
         None => list_view(ws, block, z, cx),
-    }
+    };
+    // The wheel scrolls what is in the block, and stops there; with Ctrl it zooms the canvas.
+    div()
+        .size_full()
+        .on_scroll_wheel(|e: &ScrollWheelEvent, _, cx| {
+            if !e.modifiers.control {
+                cx.stop_propagation();
+            }
+        })
+        .child(view)
+        .into_any_element()
 }
 
 fn list_view(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) -> AnyElement {
@@ -302,20 +312,18 @@ fn board_view(
             cx.notify();
         }))
         .test_support();
+    // The columns are the scroll container's own children: GPUI measures what there is to
+    // scroll from them.
     div()
         .id(("columns", n))
         .size_full()
+        .flex()
+        .items_start()
+        .gap(px(10.0 * z))
+        .p(px(4.0 * z))
         .overflow_x_scroll()
-        .child(
-            div()
-                .h_full()
-                .flex()
-                .items_start()
-                .gap(px(10.0 * z))
-                .p(px(4.0 * z))
-                .children(columns)
-                .child(add),
-        )
+        .children(columns)
+        .child(add)
         .test_support()
         .into_any_element()
 }
@@ -478,6 +486,13 @@ fn column_view(
             ws.boards.move_column(drag.board, drag.column, col);
             cx.notify();
         }))
+        // A vertical wheel scrolls the cards, never the columns sideways.
+        .on_scroll_wheel(|e: &ScrollWheelEvent, _, cx| {
+            let d = e.delta.pixel_delta(px(16.0));
+            if !e.modifiers.control && d.y.abs() >= d.x.abs() {
+                cx.stop_propagation();
+            }
+        })
         .child(header)
         .child(
             div()
@@ -583,7 +598,7 @@ fn card_view(
 
 /// The open card: title, description and labels apply as they change. `new`: the title is
 /// selected, to type over "New card".
-fn open_card(
+pub(crate) fn open_card(
     board: u64,
     current: Card,
     new: bool,
@@ -593,33 +608,30 @@ fn open_card(
     let card = current.id;
     let ws = cx.entity();
     let title = cx.new(|cx| InputState::new(window, cx).default_value(current.title));
+    let title_focus = title.clone();
     let description = cx.new(|cx| {
         TextareaState::new(window, cx)
             .rows(5)
             .default_value(current.description)
     });
+    // Subscribed through the app: the workspace these update isn't leased, and they need no
+    // window. Enter in the title confirms the dialog by itself.
     {
         let ws = ws.clone();
-        cx.subscribe_in(
-            &title,
-            window,
-            move |_, input, event: &InputEvent, window, cx| match event {
-                InputEvent::Change => {
-                    let text = input.read(cx).value().to_string();
-                    ws.update(cx, |ws, cx| {
-                        ws.boards.edit_card(board, card, |c| c.title = text);
-                        cx.notify();
-                    })
-                }
-                InputEvent::PressEnter { .. } => window.close_dialog(cx),
-                _ => {}
-            },
-        )
+        App::subscribe(cx, &title, move |input, event: &InputEvent, cx| {
+            if let InputEvent::Change = event {
+                let text = input.read(cx).value().to_string();
+                ws.update(cx, |ws, cx| {
+                    ws.boards.edit_card(board, card, |c| c.title = text);
+                    cx.notify();
+                })
+            }
+        })
         .detach();
     }
     {
         let ws = ws.clone();
-        cx.subscribe(&description, move |_, input, event: &InputEvent, cx| {
+        App::subscribe(cx, &description, move |input, event: &InputEvent, cx| {
             if let InputEvent::Change = event {
                 let text = input.read(cx).value().to_string();
                 ws.update(cx, |ws, cx| {
@@ -630,12 +642,6 @@ fn open_card(
         })
         .detach();
     }
-    title.update(cx, |input, cx| {
-        input.focus(window, cx);
-        if new {
-            input.select_all(window, cx);
-        }
-    });
     window.open_alert_dialog(cx, move |alert, _, cx| {
         let ws_now = ws.read(cx);
         let ui = ws_now.ui;
@@ -709,12 +715,24 @@ fn open_card(
                     .flex_col()
                     .gap(px(8.0))
                     .child(field("Title"))
-                    .child(Input::new(&title))
+                    .child(
+                        div()
+                            .id("card-title")
+                            .child(Input::new(&title))
+                            .test_support(),
+                    )
                     .child(field("Description"))
                     .child(Textarea::new(&description))
                     .child(field("Labels"))
                     .child(div().flex().gap(px(6.0)).children(toggles))
                     .child(div().flex().justify_end().child(delete)),
             )
+    });
+    // After opening: the dialog takes the focus when it opens.
+    title_focus.update(cx, |input, cx| {
+        input.focus(window, cx);
+        if new {
+            input.select_all(window, cx);
+        }
     });
 }

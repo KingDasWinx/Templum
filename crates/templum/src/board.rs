@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::config;
 use crate::session::{self, Loaded};
 
 /// The file format's version: raised only when an older Templum couldn't read the new files.
@@ -305,10 +304,10 @@ pub(crate) fn load(dir: &Path) -> Loaded<Boards> {
     }
 }
 
-pub(crate) fn save(dir: &Path, boards: &Boards) -> io::Result<()> {
+/// Writes the boards; like canvases, a write older than the last one done is dropped.
+pub(crate) fn save(dir: &Path, boards: &Boards, generation: u64) -> io::Result<()> {
     let text = serde_json::to_string_pretty(boards).map_err(io::Error::other)?;
-    std::fs::create_dir_all(dir)?;
-    config::write_whole(&path(dir), &text)
+    session::write_newest(&path(dir), &text, generation)
 }
 
 #[cfg(test)]
@@ -439,11 +438,22 @@ mod tests {
     }
 
     #[test]
+    fn an_older_write_never_replaces_a_newer_one() {
+        let d = tempfile::tempdir().unwrap();
+        let (older, _, _, _) = abc();
+        let mut newer = older.clone();
+        newer.add_board();
+        save(d.path(), &newer, 7).unwrap();
+        save(d.path(), &older, 6).unwrap();
+        assert_eq!(load(d.path()), Loaded::Saved(newer));
+    }
+
+    #[test]
     fn boards_read_back_equal_and_unknown_labels_go() {
         let (mut boards, board, _, cards) = abc();
         boards.toggle_label(board, cards[0], Label::Cyan);
         let d = tempfile::tempdir().unwrap();
-        save(d.path(), &boards).unwrap();
+        save(d.path(), &boards, 1).unwrap();
         assert_eq!(load(d.path()), Loaded::Saved(boards));
         let text = r#"{"version":1,"boards":[{"id":1,"name":"B","columns":[{"id":2,"title":"T",
             "cards":[{"id":3,"title":"x","labels":["green","plaid"]}]}]}]}"#;

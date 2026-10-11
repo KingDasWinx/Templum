@@ -105,7 +105,8 @@ Terminals in the workspaces you aren't looking at keep running, so an agent keep
   - an index that doesn't parse, or has a newer version, is renamed to `index.json.bak`, and Templum starts as
     without an index;
   - an index entry whose file can't be read is handled as [persistence.md](persistence.md#errors) does for its
-    canvas;
+    canvas, except that only that file stops being written: the other workspaces, the index and the boards keep
+    saving (the same holds when a canvas's terminals can't all start, and for an unreadable index or boards file);
   - an entry with an id that isn't made of letters, digits, `-` and `_` is dropped, so an edited index can't name a
     file outside the folder.
 

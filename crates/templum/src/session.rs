@@ -355,19 +355,24 @@ pub(crate) fn read<T: DeserializeOwned>(path: &Path) -> Loaded<T> {
     }
 }
 
-/// Writes `saved`. Writes take turns, and one older than the last written to the same file is
-/// dropped: a background snapshot that finishes after the one taken on quit.
+/// Writes a workspace's canvas through [`write_newest`].
 pub(crate) fn save(dir: &Path, id: &str, saved: &Saved, generation: u64) -> io::Result<()> {
+    let text = serde_json::to_string_pretty(saved).map_err(io::Error::other)?;
+    write_newest(&path(dir, id), &text, generation)
+}
+
+/// Writes `text` to `path` (creating its folder). Writes take turns, and one older than the last
+/// written to the same file is dropped: a background snapshot that finishes after the one taken
+/// on quit.
+pub(crate) fn write_newest(path: &Path, text: &str, generation: u64) -> io::Result<()> {
     static WRITTEN: LazyLock<Mutex<HashMap<PathBuf, u64>>> = LazyLock::new(Default::default);
     let mut written = WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
-    let path = path(dir, id);
-    let last = written.entry(path.clone()).or_default();
+    let last = written.entry(path.to_path_buf()).or_default();
     if generation < *last {
         return Ok(());
     }
-    let text = serde_json::to_string_pretty(saved).map_err(io::Error::other)?;
-    std::fs::create_dir_all(path.parent().expect("a workspaces folder"))?;
-    config::write_whole(&path, &text)?;
+    std::fs::create_dir_all(path.parent().expect("a data folder"))?;
+    config::write_whole(path, text)?;
     *last = generation;
     Ok(())
 }
