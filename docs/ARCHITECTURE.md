@@ -35,6 +35,10 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
 - Each terminal owns a PTY (Unix PTY or Windows ConPTY) and a reader thread, both from `alacritty_terminal`.
   The thread parses output into a `Term` grid and wakes the UI, which coalesces redraws to the display refresh.
   Heavy output (`cat` of a huge file) is absorbed in Rust and only drawn at frame rate.
+- **Shell integration:** the reader thread reads the PTY through a scanner (`templum-terminal`'s `tap.rs`) that
+  hears the sequences vte drops: a command's start and end (OSC 133), the folder (OSC 7, 9;9), notifications (OSC 9,
+  777). It passes every byte on. The UI reads what it heard each frame; a command's end or a call for attention wakes
+  the UI even in a hidden workspace. See [specs/shell-integration.md](specs/shell-integration.md).
 - **Painting never waits on a terminal.** Each frame tries the lock and copies the visible cells into a snapshot;
   if the PTY thread holds the lock, the previous snapshot is drawn. Blocking here doubled frame times in the spike.
 - Only blocks inside the viewport are drawn.

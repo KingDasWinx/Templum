@@ -262,7 +262,7 @@ impl Layout {
             .blocks
             .iter()
             .filter_map(|b| match b {
-                LayoutBlock::Terminal(_, p) => Some(*p),
+                LayoutBlock::Terminal(_, p) => Some(p.clone()),
                 LayoutBlock::Kanban(..) => None,
             })
             .collect();

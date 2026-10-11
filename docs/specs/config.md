@@ -36,7 +36,7 @@ edits this same file. Persistence of the canvas comes after both.
 - Per-block settings (font, shell or theme per terminal).
 - Font fallback lists, ligatures, line height.
 - Mouse bindings.
-- Shell integration through OSC 7.
+- Shell integration through OSC 7 (since added: [shell-integration.md](shell-integration.md)).
 
 ## The file
 
@@ -285,7 +285,8 @@ Three pull requests, each green in CI and useful on its own:
   as another user (`sudo -s`) or one that already exited; the rule is then "home folder, no warning".
 - **PowerShell doesn't move its process's folder.** `Set-Location`/`cd` only changes PowerShell's own location, so
   `"inherit"` follows `cd` with cmd.exe but not with PowerShell, Windows's default shell; new terminals then start
-  where PowerShell started. Fixing it needs shell integration (OSC 7 or 9;9), which is out of scope.
+  where PowerShell started. Fixing it needs shell integration (OSC 7 or 9;9), which is out of scope. (Since fixed
+  by [shell-integration.md](shell-integration.md).)
 - **ConPTY's PID** on Windows is the shell's when it starts directly. Under a wrapper (`cmd /c` starting
   PowerShell) it would be the wrapper's folder; the default PowerShell starts directly.
 - **Fonts swapped at runtime** re-measure the cell and resize every terminal in one frame. With many terminals this

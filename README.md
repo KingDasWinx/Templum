@@ -87,7 +87,8 @@ dark = "Catppuccin Mocha"
 
 Press **Ctrl+,** (**Cmd+,** on macOS), or the ⚙ in the title bar, to open the settings panel on the right. It has
 Appearance (light/dark mode and themes), Font (with a preview), Terminal (cursor and
-scrollback), Shell (for new terminals: pick one of the shells found on your computer), Agents and Shortcuts. The terminals stay usable next to it, so you see each change
+scrollback, system notifications), Shell (for new terminals: pick one of the shells found on your computer, shell
+integration), Agents and Shortcuts. The terminals stay usable next to it, so you see each change
 as you make it.
 
 - Every change applies at once and is saved to `config.toml` a moment later, keeping your comments. Numbers apply
@@ -131,6 +132,22 @@ or a path you type. It opens a terminal there and starts the agent; agents you h
 command instead. **Settings ▸ Agents** changes any agent's command or resume command (↺ puts it back), hides
 the ones you don't use from the menu, and adds your own agents. The full list, with how each one resumes, is in [docs/specs/agents.md](docs/specs/agents.md).
 
+## Shell integration
+
+Templum loads a small script into bash, zsh, fish and PowerShell (Git Bash and Windows PowerShell included), as
+Ghostty, Kitty and VS Code do, so the shell tells it its folder and when each command starts and ends. Your shell and
+its files stay as they are: they are read as usual. With it:
+
+- the dot before a terminal's title shows a command running, and red when the last one failed;
+- a terminal you aren't looking at that ends a command of 5 seconds or more, or asks for attention (a bell, or an
+  agent's notification), gets a dot on its block and on its workspace's tile, and a notification; click it to go
+  there. With Templum in the background it's also a system notification (Settings ▸ Terminal ▸ System
+  notifications);
+- new terminals open in the focused one's folder in PowerShell too.
+
+Codex rings the bell when it needs you. For Claude Code, set `"preferredNotifChannel": "terminal_bell"` in its
+settings. Turn the integration off in Settings ▸ Shell. Details: [docs/specs/shell-integration.md](docs/specs/shell-integration.md).
+
 ## Configuration
 
 Everything is in `config.toml`, in the folder from [Themes](#themes) (`~/.config/templum/` on Linux and macOS,
@@ -151,6 +168,7 @@ mode = "system"   # "system" | "light" | "dark"
 program = "fish"
 args = ["--login"]
 working_directory = "inherit"   # "inherit" (the focused terminal's folder) | "~" | a path
+integration = true              # see Shell integration
 
 [cursor]
 shape = "block"   # "block" | "bar" | "underline"
@@ -158,6 +176,7 @@ blink = false
 
 [terminal]
 scrollback = 10000
+notifications = true   # system notifications while Templum is in the background
 
 [keys]
 new_terminal = "ctrl-shift-t"   # one shortcut, a list, or [] to disable
@@ -166,8 +185,7 @@ new_terminal = "ctrl-shift-t"   # one shortcut, a list, or [] to disable
 A mistake in the file (a typo, a value out of range) shows a notification saying where, and Templum keeps the
 last working settings. On Windows, new terminals run Git Bash when Git for Windows is installed, else PowerShell 7,
 else Windows PowerShell; Settings ▸ Shell lists every shell found (Git Bash, PowerShell 7, Windows PowerShell, WSL,
-Nushell, Command Prompt). On Windows, `"inherit"` follows `cd` in cmd.exe but not in PowerShell, which doesn't move its
-process's folder. The full list is in [docs/specs/config.md](docs/specs/config.md).
+Nushell, Command Prompt). The full list is in [docs/specs/config.md](docs/specs/config.md).
 
 ## Pre-built binaries
 

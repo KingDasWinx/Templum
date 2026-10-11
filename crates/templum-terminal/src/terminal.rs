@@ -21,6 +21,7 @@ use alacritty_terminal::vte::ansi::CursorStyle;
 use crate::agent::{Detect, agent_of};
 use crate::input::{KeyInput, encode_key, paste_bytes};
 use crate::palette::{self, Palette};
+use crate::tap::{Status, Tap};
 
 /// Called (coalesced) when a terminal has something new to show.
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -38,6 +39,10 @@ pub(crate) struct Shared {
     pty: OnceLock<EventLoopSender>,
     /// Answers color queries (OSC 4/10/11); the app updates it on theme changes.
     palette: Mutex<Palette>,
+    /// What the shell and its programs told about their commands (see [`crate::tap`]).
+    pub(crate) status: Mutex<Status>,
+    /// The folder the shell last reported (OSC 7 or 9;9).
+    pub(crate) folder: Mutex<Option<PathBuf>>,
 }
 
 impl Shared {
@@ -50,6 +55,8 @@ impl Shared {
             size: Mutex::new(size),
             pty: OnceLock::new(),
             palette: Mutex::new(palette),
+            status: Mutex::default(),
+            folder: Mutex::default(),
         }
     }
 
@@ -57,6 +64,21 @@ impl Shared {
         if !self.pending.swap(true, Ordering::AcqRel) {
             (self.notify)();
         }
+    }
+
+    /// Wakes the UI even before the next re-arm: a hidden workspace's terminals are never re-armed,
+    /// and a command's end or a call for attention must still reach the sidebar.
+    pub(crate) fn wake_now(&self) {
+        (self.notify)();
+    }
+
+    /// The terminal asks for attention: a bell (no message) or a notification.
+    pub(crate) fn attention(&self, message: Option<String>) {
+        let mut status = self.status.lock().unwrap();
+        status.attention += 1;
+        status.message = message;
+        drop(status);
+        self.wake_now();
     }
 
     fn reply(&self, text: String) {
@@ -104,7 +126,8 @@ impl EventListener for Listener {
                 s.wake();
             }
             Event::Wakeup => s.wake(),
-            // Later: bell, OSC 52 clipboard (needs a security review), cursor blinking.
+            Event::Bell => s.attention(None),
+            // Later: OSC 52 clipboard (needs a security review), cursor blinking.
             _ => {}
         }
     }
@@ -202,12 +225,14 @@ fn grid_point(term: &Term<Listener>, row: usize, col: usize) -> GridPoint {
 }
 
 /// A terminal's processes, to read from any thread with [`inspect`].
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Processes {
     /// The process Templum started.
     pub shell: Option<u32>,
     /// The PTY's foreground process (Unix): the shell, or the program it runs.
     pub foreground: Option<u32>,
+    /// The folder the shell last reported, with shell integration.
+    pub reported: Option<PathBuf>,
 }
 
 /// What a terminal's processes tell about it.
@@ -264,14 +289,22 @@ fn inspect_one(system: &sysinfo::System, p: &Processes, known: &[Detect]) -> Ins
             agent: Some(agent),
         },
         None => Inspection {
-            folder: p
-                .foreground
-                .map(Pid::from_u32)
-                .and_then(cwd)
+            folder: reported(p)
+                .or_else(|| p.foreground.map(Pid::from_u32).and_then(cwd))
                 .or_else(|| p.shell.map(Pid::from_u32).and_then(cwd)),
             agent: None,
         },
     }
+}
+
+/// The folder the shell reported, while it is in the foreground: its own word beats the OS's
+/// (PowerShell's `cd` doesn't move its process), but not a program's it runs (a nested shell,
+/// ssh). Without a foreground process (Windows), the shell is taken to be in front.
+fn reported(p: &Processes) -> Option<PathBuf> {
+    let in_front = p.foreground.is_none() || p.foreground == p.shell;
+    p.reported
+        .clone()
+        .filter(|dir| in_front && dir.is_absolute() && dir.is_dir())
 }
 
 fn agent_in(process: &sysinfo::Process, known: &[Detect]) -> Option<String> {
@@ -324,6 +357,8 @@ pub struct SpawnOptions {
     pub options: TermOptions,
     /// Where the shell starts; None: the home folder.
     pub working_directory: Option<PathBuf>,
+    /// The folder [`crate::install`] wrote the shell integration to; None: no integration.
+    pub integration: Option<PathBuf>,
 }
 
 pub struct Terminal {
@@ -346,7 +381,7 @@ impl Terminal {
     /// new output, title changes and exit.
     pub fn spawn(opts: SpawnOptions, notify: Notify) -> io::Result<Self> {
         let size = window_size(opts.cols, opts.rows, opts.cell_px);
-        let command = opts
+        let mut command = opts
             .command
             .clone()
             .or_else(|| crate::default_shell().map(|s| (s.program, s.args)));
@@ -354,20 +389,41 @@ impl Terminal {
             Some((program, _)) => file_stem(program),
             None => default_shell_name(),
         };
-        // Windows has one more field (escape_args): the update is only needless elsewhere.
-        #[allow(clippy::needless_update)]
+        let mut env = HashMap::from([
+            ("TERM".into(), "xterm-256color".into()),
+            ("COLORTERM".into(), "truecolor".into()),
+            // Not the terminal Templum was started from.
+            ("TERM_PROGRAM".into(), "templum".into()),
+        ]);
+        if let Some(dir) = &opts.integration {
+            // Without a command, alacritty runs $SHELL: as a login shell on macOS.
+            let (program, args) = command.clone().unwrap_or_else(|| {
+                let login = cfg!(target_os = "macos").then(|| "-l".to_string());
+                (
+                    std::env::var("SHELL").unwrap_or_default(),
+                    login.into_iter().collect(),
+                )
+            });
+            if let Some(injection) =
+                crate::integration::inject(&program, &args, dir, std::env::var_os("ZDOTDIR"))
+            {
+                env.extend(injection.env);
+                if let Some(args) = injection.args {
+                    command = Some((program, args));
+                }
+            }
+        }
         let options = tty::Options {
             shell: command.map(|(program, args)| tty::Shell::new(program, args)),
-            env: HashMap::from([
-                ("TERM".into(), "xterm-256color".into()),
-                ("COLORTERM".into(), "truecolor".into()),
-            ]),
+            env,
             // Like other GUI terminals: a launch from Finder or the Start menu doesn't leave
             // shells in / or the install folder.
             working_directory: opts.working_directory.clone().or_else(std::env::home_dir),
             // Show everything the shell printed before reporting its exit.
             drain_on_exit: true,
-            ..Default::default()
+            // Each argument stays one, spaces and all (a folder under C:\Users\Jane Doe).
+            #[cfg(windows)]
+            escape_args: true,
         };
         let shared = Arc::new(Shared::new(notify, size, opts.palette));
         let listener = Listener(shared.clone());
@@ -384,6 +440,7 @@ impl Terminal {
             &TermSize::new(opts.cols as usize, opts.rows as usize),
             listener.clone(),
         )));
+        let pty = Tap::new(pty, shared.clone());
         let event_loop = EventLoop::new(term.clone(), listener, pty, true, false)?;
         let pty = event_loop.channel();
         let _ = shared.pty.set(pty.clone());
@@ -441,7 +498,14 @@ impl Terminal {
         Processes {
             shell: self.pid,
             foreground: self.foreground(),
+            reported: self.shared.folder.lock().unwrap().clone(),
         }
+    }
+
+    /// What the shell (with shell integration) and its programs told about their commands, and
+    /// how often they asked for attention.
+    pub fn status(&self) -> Status {
+        self.shared.status.lock().unwrap().clone()
     }
 
     /// The PTY's foreground process group: its leader is the shell (or the program it runs).
@@ -627,6 +691,71 @@ mod tests {
         );
         listener.send_event(Event::Exit);
         assert!(shared.exited.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn a_bell_asks_for_attention_and_wakes_at_once() {
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = count.clone();
+        let shared = Arc::new(Shared::new(
+            Arc::new(move || {
+                c.fetch_add(1, Ordering::SeqCst);
+            }),
+            window_size(10, 2, (8, 16)),
+            Palette::default(),
+        ));
+        shared.wake();
+        Listener(shared.clone()).send_event(Event::Bell);
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            2,
+            "not held back by the coalescing"
+        );
+        assert_eq!(shared.status.lock().unwrap().attention, 1);
+        // As a program rings it.
+        let (term, shared) = headless(10, 2);
+        feed(&term, b"\x07");
+        assert_eq!(shared.status.lock().unwrap().attention, 1);
+        assert_eq!(shared.status.lock().unwrap().message, None);
+    }
+
+    #[test]
+    fn the_reported_folder_counts_while_the_shell_is_in_front() {
+        let reported = tempfile::tempdir().unwrap();
+        let folder = |p: Processes| inspect(&[p], &[]).pop().unwrap().folder;
+        let me = std::process::id();
+        let mine = std::env::current_dir().unwrap();
+        let p = Processes {
+            shell: Some(me),
+            foreground: None,
+            reported: Some(reported.path().to_path_buf()),
+        };
+        assert_eq!(
+            folder(p.clone()).as_deref(),
+            Some(reported.path()),
+            "no foreground (Windows)"
+        );
+        let front = Processes {
+            foreground: Some(me),
+            ..p.clone()
+        };
+        assert_eq!(
+            folder(front).as_deref(),
+            Some(reported.path()),
+            "the shell in front"
+        );
+        // Another program in front (ssh, a nested shell): what the OS says of it.
+        let other = Processes {
+            shell: Some(u32::MAX),
+            foreground: Some(me),
+            ..p.clone()
+        };
+        assert_eq!(folder(other), Some(mine.clone()));
+        let gone = Processes {
+            reported: Some(reported.path().join("gone")),
+            ..p
+        };
+        assert_eq!(folder(gone), Some(mine), "a folder that isn't there");
     }
 
     #[test]

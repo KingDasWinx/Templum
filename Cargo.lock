@@ -6801,6 +6801,7 @@ name = "templum-terminal"
 version = "0.0.0"
 dependencies = [
  "alacritty_terminal",
+ "polling",
  "rustix",
  "sysinfo",
  "tempfile",

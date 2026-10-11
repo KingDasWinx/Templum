@@ -63,7 +63,8 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         .child(plus)
 }
 
-/// One workspace: its initials, an accent bar when active, a dot while an agent runs in it.
+/// One workspace: its initials, an accent bar when active, a dot while an agent runs in it, and
+/// one when a terminal there has news.
 fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) -> AnyElement {
     let ui = ws.ui;
     let active = i == ws.active;
@@ -115,6 +116,22 @@ fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) ->
                     .size(px(7.0))
                     .rounded_full()
                     .bg(hsla(ws.theme.palette.ansi[2], 1.0)),
+            )
+        })
+        // A terminal there has news (see alert.rs).
+        .when(space.terminals.values().any(|p| p.alert.is_some()), |el| {
+            el.child(
+                div()
+                    .id(ElementId::Name(
+                        format!("workspace-alert-{}", space.id).into(),
+                    ))
+                    .absolute()
+                    .bottom(px(4.0))
+                    .right(px(4.0))
+                    .size(px(7.0))
+                    .rounded_full()
+                    .bg(hsla(ws.theme.palette.ansi[3], 1.0))
+                    .test_support(),
             )
         })
         .tooltip(move |window, cx| Tooltip::new(name.clone()).build(window, cx))

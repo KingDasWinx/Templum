@@ -537,7 +537,9 @@ fn rows(
         ],
         Section::Terminal => {
             let blink = ws.config.cursor.blink;
+            let notifications = ws.config.terminal.notifications;
             let e = entity.clone();
+            let n = entity.clone();
             vec![
                 choice_row(ws, entity, &CURSOR, "Cursor").description("Block, bar or underline"),
                 Row::new("cursor.blink", "Blink")
@@ -560,10 +562,37 @@ fn rows(
                     ),
                 number_row(ws, entity, &SCROLLBACK, "Scrollback", window, cx)
                     .description("Lines of history per terminal"),
+                Row::new("terminal.notifications", "System notifications")
+                    .description(
+                        "When Templum is in the background and a long command ends or a terminal \
+                         asks for attention",
+                    )
+                    .control(
+                        Switch::new("notifications-switch")
+                            .checked(notifications)
+                            .on_click(move |on: &bool, _, cx| {
+                                let on = *on;
+                                n.update(cx, |ws, cx| {
+                                    ws.edit(
+                                        Edit::set("terminal", "notifications", on),
+                                        |c| c.terminal.notifications = on,
+                                        cx,
+                                    )
+                                })
+                            }),
+                    )
+                    .reset(
+                        !notifications,
+                        remove(entity, "terminal", "notifications", |c| {
+                            c.terminal.notifications = true
+                        }),
+                    ),
             ]
         }
         Section::Shell => {
             let shell = &ws.config.shell;
+            let integration = shell.integration;
+            let e = entity.clone();
             let mut rows = vec![
                 shell_row(ws, entity),
                 Row::new("shell.program", "Program")
@@ -613,6 +642,33 @@ fn rows(
                         )),
                 );
             }
+            rows.push(
+                Row::new("shell.integration", "Shell integration")
+                    .description(
+                        "bash, zsh, fish and PowerShell tell Templum their folder, and when \
+                         commands end and how",
+                    )
+                    .control(
+                        Switch::new("integration-switch")
+                            .checked(integration)
+                            .on_click(move |on: &bool, _, cx| {
+                                let on = *on;
+                                e.update(cx, |ws, cx| {
+                                    ws.edit(
+                                        Edit::set("shell", "integration", on),
+                                        |c| c.shell.integration = on,
+                                        cx,
+                                    )
+                                })
+                            }),
+                    )
+                    .reset(
+                        !integration,
+                        remove(entity, "shell", "integration", |c| {
+                            c.shell.integration = true
+                        }),
+                    ),
+            );
             rows
         }
         Section::Agents => ws

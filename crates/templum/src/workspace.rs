@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 use gpui_kit::base::motion::{MotionStatus, Transition, transition_with_status};
 use gpui_kit::component::kbd::Kbd;
-use gpui_kit::component::notification::Notification;
+use gpui_kit::component::notification::{Notification, NotificationDelivery};
 use gpui_kit::component::{TITLE_BAR_HEIGHT, WindowExt, window_paddings};
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -28,6 +28,7 @@ use templum_canvas::{
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
 use crate::agents::{self, AgentEntry};
+use crate::alert::{self, Alert};
 use crate::block::{self, Content};
 use crate::board::{self, Boards};
 use crate::config::{self, Config, Edit, ThemeConfig, WorkingDirectory};
@@ -75,6 +76,10 @@ pub fn bind_keys(cx: &mut App) {
 pub(crate) struct Pane {
     pub term: Terminal,
     pub snapshot: Rc<RefCell<Snapshot>>,
+    /// The terminal's finished and attention counts when last heard (`Workspace::hear`).
+    pub heard: (u64, u64),
+    /// News nobody has looked at yet; gone once the block is focused in the active window.
+    pub alert: Option<Alert>,
 }
 
 /// A closed block, still drawn while it fades out. A terminal's shell lives until then.
@@ -209,6 +214,8 @@ pub struct Workspace {
     pub(crate) config_dir: Option<PathBuf>,
     /// Where the canvas is saved (None: it isn't kept).
     pub(crate) data_dir: Option<PathBuf>,
+    /// Where the shell integration's scripts were written (None: not written, no integration).
+    integration: Option<PathBuf>,
     /// Counts snapshots: a write older than the last one done is dropped (session::save).
     generation: u64,
     /// A background snapshot is reading or writing: the next waits for the next period.
@@ -333,6 +340,18 @@ impl Workspace {
             show_notification(window, cx, Notification::warning(warning));
         }
         let effective_agents = agents::effective(&config.agents);
+        let integration = data_dir.as_deref().and_then(|dir| {
+            templum_terminal::install(dir)
+                .inspect_err(|err| {
+                    let message = format!(
+                        "Couldn't write the shell integration to {}: {err}",
+                        dir.display()
+                    );
+                    eprintln!("templum: {message}");
+                    show_notification(window, cx, Notification::warning(message));
+                })
+                .ok()
+        });
         let (keymap, key_warnings) = Keymap::new(&config.keys, cfg!(target_os = "macos"))
             .expect("config::parse validated the shortcuts");
         for warning in key_warnings {
@@ -407,6 +426,7 @@ impl Workspace {
             command,
             config_dir,
             data_dir,
+            integration,
             generation: 0,
             snapshotting: false,
             canvas_save_failed: false,
@@ -903,6 +923,10 @@ impl Workspace {
             palette: self.theme.palette,
             options: self.config.term_options(),
             working_directory: folder,
+            integration: self
+                .integration
+                .clone()
+                .filter(|_| self.config.shell.integration),
         };
         let id = match Terminal::spawn(opts, self.notify.clone()) {
             Ok(term) => {
@@ -912,6 +936,8 @@ impl Workspace {
                     Pane {
                         term,
                         snapshot: Rc::default(),
+                        heard: (0, 0),
+                        alert: None,
                     },
                 );
                 self.space.focused = Some(id);
@@ -1392,6 +1418,88 @@ impl Workspace {
                     pane.term.resize(cols, rows, self.cell.px());
                 }
             }
+        }
+    }
+
+    /// Finds the news in every workspace's terminals (see [`alert::news`]). A terminal being looked
+    /// at, focused in the active window, has none, and loses its alert; another gets an alert and
+    /// a notification (the first news until it is seen), also the system's when the window is in
+    /// the background.
+    fn hear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let active = window.is_window_active();
+        let several = !self.others.is_empty();
+        let mut news = Vec::new();
+        let spaces = std::iter::once(&mut self.space).chain(&mut self.others);
+        for (i, space) in spaces.enumerate() {
+            for (&id, pane) in &mut space.terminals {
+                let status = pane.term.status();
+                let new = alert::news(&status, pane.heard);
+                pane.heard = (status.finished, status.attention);
+                if active && i == 0 && space.focused == Some(id) {
+                    pane.alert = None;
+                } else if let Some(alert) = new {
+                    // One notification until it is seen: a terminal ringing on and on doesn't flood.
+                    if pane.alert.is_none() {
+                        let mut title = pane.term.title();
+                        if several {
+                            title = format!("{title} · {}", space.name);
+                        }
+                        news.push((space.id.clone(), id, title, alert.clone()));
+                    }
+                    pane.alert = Some(alert);
+                }
+            }
+        }
+        let delivery = if self.config.terminal.notifications && !active {
+            NotificationDelivery::InAppAndSystem
+        } else {
+            NotificationDelivery::InApp
+        };
+        let ws = cx.entity().downgrade();
+        for (space, block, title, alert) in news {
+            let ws = ws.clone();
+            let key = SharedString::from(format!("alert-{space}-{}", block.0));
+            let notification = Notification::new()
+                .id1::<Alert>(key)
+                .with_type(alert.kind())
+                .title(title)
+                .message(alert.text())
+                .delivery(delivery)
+                .on_click(move |_, window, cx| {
+                    ws.update(cx, |ws, cx| ws.reveal(&space, block, window, cx))
+                        .ok();
+                });
+            show_notification(window, cx, notification);
+        }
+    }
+
+    /// Shows a block: its workspace, then the block focused, the camera on it if it was off screen.
+    pub(crate) fn reveal(
+        &mut self,
+        space: &str,
+        block: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(to) = self.order().iter().position(|s| s.id == space) else {
+            return;
+        };
+        self.switch_to(to, window, cx);
+        let Some(rect) = self.space.canvas.get(block).map(|b| b.rect) else {
+            return;
+        };
+        self.focus_block(block, window, cx);
+        let vp = self.viewport(window);
+        let camera = self.space.canvas.camera;
+        let shown = camera.rect_to_screen(rect);
+        if shown.x + shown.w < 0.0 || shown.y + shown.h < 0.0 || shown.x > vp.w || shown.y > vp.h {
+            let z = camera.zoom();
+            let mut to = camera;
+            to.origin = Point::new(
+                rect.x + rect.w / 2.0 - vp.w / 2.0 / z,
+                rect.y + rect.h / 2.0 - vp.h / 2.0 / z,
+            );
+            self.fly(to, self.center(window), cx);
         }
     }
 
@@ -2357,6 +2465,7 @@ impl Render for Workspace {
         for pane in self.space.terminals.values() {
             pane.term.rearm();
         }
+        self.hear(window, cx);
 
         let vp = self.viewport(window);
         if self.space.pristine
@@ -3015,6 +3124,133 @@ mod tests {
             assert!(ws.space.terminals.is_empty());
             assert_eq!(ws.space.focused, None);
         });
+    }
+
+    /// Draws frames (each hears the terminals) until `done`.
+    fn until(
+        what: &str,
+        handle: AnyWindowHandle,
+        ws: &Entity<Workspace>,
+        cx: &mut TestAppContext,
+        done: impl Fn(&Workspace) -> bool,
+    ) {
+        use std::time::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+                .unwrap();
+            if ws.read_with(cx, |ws, _| done(ws)) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "waited for {what}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// The terminal rings its bell: `cat` prints back the BEL it reads.
+    #[cfg(unix)]
+    fn ring(ws: &Entity<Workspace>, id: templum_canvas::BlockId, cx: &mut TestAppContext) {
+        ws.read_with(cx, |ws, _| {
+            ws.space.terminals[&id].term.write(b"\x07\r".to_vec())
+        });
+    }
+
+    fn set_active(handle: AnyWindowHandle, active: bool, cx: &mut TestAppContext) {
+        if active {
+            cx.update_window(handle, |_, window, _| window.activate_window())
+                .unwrap();
+            cx.run_until_parked();
+        } else {
+            gpui_kit::VisualTestContext::from_window(handle, cx).deactivate_window();
+        }
+    }
+
+    #[cfg(unix)]
+    #[gpui_kit::test]
+    fn a_bell_in_another_block_alerts_until_it_is_focused(cx: &mut TestAppContext) {
+        use crate::alert::Alert;
+        let (handle, ws) = open(cx);
+        set_active(handle, true, cx);
+        let ringing = first_id(&ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(NEW, cx);
+        })
+        .unwrap();
+        ring(&ws, ringing, cx);
+        until("the alert", handle, &ws, cx, |ws| {
+            ws.space.terminals[&ringing].alert.is_some()
+        });
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(
+                ws.space.terminals[&ringing].alert,
+                Some(Alert::Attention(None))
+            );
+        });
+        assert!(
+            cx.shown_system_notifications().is_empty(),
+            "the window is in front: only the in-app one"
+        );
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.focus_block(ringing, window, cx))
+        })
+        .unwrap();
+        until("the alert to go", handle, &ws, cx, |ws| {
+            ws.space.terminals[&ringing].alert.is_none()
+        });
+        // The focused terminal, looked at: no news.
+        ring(&ws, ringing, cx);
+        until("the bell", handle, &ws, cx, |ws| {
+            ws.space.terminals[&ringing].heard.1 == 2
+        });
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.terminals[&ringing].alert, None)
+        });
+    }
+
+    #[cfg(unix)]
+    #[gpui_kit::test]
+    fn in_the_background_a_bell_is_a_system_notification_unless_turned_off(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, ws) = open(cx);
+        // As main does: without it, no system notification (on Windows too).
+        cx.update(|cx| cx.set_app_identity("test.Templum", "Templum"));
+        let id = first_id(&ws, cx);
+        // Rings, then draws until it has been heard `bells` times, and the frame after (when
+        // notifications are shown).
+        let bell = |bells: u64, cx: &mut TestAppContext| {
+            ring(&ws, id, cx);
+            until("the bell", handle, &ws, cx, |ws| {
+                ws.space.terminals[&id].heard.1 == bells
+            });
+            cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+                .unwrap();
+            cx.run_until_parked();
+        };
+        set_active(handle, false, cx);
+        ws.update(cx, |ws, _| ws.config.terminal.notifications = false);
+        bell(1, cx);
+        assert!(ws.read_with(cx, |ws, _| ws.space.terminals[&id].alert.is_some()));
+        assert_eq!(cx.shown_system_notifications().len(), 0, "turned off");
+        // Looked at, then in the background again.
+        set_active(handle, true, cx);
+        until("the alert to go", handle, &ws, cx, |ws| {
+            ws.space.terminals[&id].alert.is_none()
+        });
+        set_active(handle, false, cx);
+        ws.update(cx, |ws, _| ws.config.terminal.notifications = true);
+        bell(2, cx);
+        let shown = cx.shown_system_notifications();
+        assert_eq!(shown.len(), 1, "{shown:?}");
+        assert_eq!(shown[0].title.as_ref(), "cat");
+        assert_eq!(shown[0].body.as_ref(), "Needs your attention");
+        bell(3, cx);
+        assert_eq!(
+            cx.shown_system_notifications().len(),
+            1,
+            "not again until it is seen"
+        );
     }
 
     fn first_id(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> templum_canvas::BlockId {
@@ -4330,6 +4566,103 @@ mod tests {
         let text =
             std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap_or_default();
         assert!(!text.contains("blink"), "{text}");
+    }
+
+    #[gpui_kit::test]
+    fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+            .unwrap();
+        settle_slide(handle, cx);
+        let on = |ws: &Workspace| {
+            (
+                ws.config.shell.integration,
+                ws.config.terminal.notifications,
+            )
+        };
+        for (tab, field, reset, line) in [
+            (
+                "settings-tab-shell",
+                "field-shell.integration",
+                "reset-shell.integration",
+                "integration = false",
+            ),
+            (
+                "settings-tab-terminal",
+                "field-terminal.notifications",
+                "reset-terminal.notifications",
+                "notifications = false",
+            ),
+        ] {
+            cx.update_window(handle, |_, window, cx| {
+                window.click(tab, cx);
+                window.render_frame(cx);
+                assert!(window.try_find(reset).is_none());
+                window.click(field, cx);
+                window.render_frame(cx);
+                window.render_frame(cx);
+            })
+            .unwrap();
+            ws.update(cx, |ws, _| ws.save());
+            let text = std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap();
+            assert!(text.contains(line), "{text}");
+            cx.update_window(handle, |_, window, cx| {
+                window.click(reset, cx);
+                window.render_frame(cx);
+                window.render_frame(cx);
+            })
+            .unwrap();
+        }
+        assert_eq!(ws.read_with(cx, |ws, _| on(ws)), (true, true), "back on");
+        ws.update(cx, |ws, _| ws.save());
+        let text = std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap();
+        assert!(
+            !text.contains("integration") && !text.contains("notifications"),
+            "{text}"
+        );
+    }
+
+    /// The startup terminal runs bash with Templum's integration; turned off, a new one doesn't.
+    #[cfg(unix)]
+    #[gpui_kit::test]
+    fn new_terminals_get_the_shell_integration_unless_turned_off(cx: &mut TestAppContext) {
+        use std::time::{Duration, Instant};
+        use templum_terminal::Snapshot;
+        let data = tempfile::tempdir().unwrap();
+        let bash = Some(("bash".to_string(), Vec::new()));
+        let (handle, ws) = open_as(cx, bash, None, Some(data.path().to_path_buf()));
+        assert!(data.path().join("shell-integration/templum.bash").is_file());
+        let shown = |id, cx: &mut TestAppContext| {
+            ws.read_with(cx, |ws, _| {
+                let mut snap = Snapshot::default();
+                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.text()
+            })
+        };
+        let ask = |id, want: &str, cx: &mut TestAppContext| {
+            ws.read_with(cx, |ws, _| {
+                ws.space.terminals[&id]
+                    .term
+                    .write(&b"echo \"[${__templum_installed-no}]\"\r"[..])
+            });
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !shown(id, cx).contains(want) {
+                assert!(Instant::now() < deadline, "no {want}: {}", shown(id, cx));
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+        let first = first_id(&ws, cx);
+        ask(first, "[1]\n", cx);
+        ws.update(cx, |ws, _| ws.config.shell.integration = false);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(NEW, cx);
+        })
+        .unwrap();
+        let second = ws.read_with(cx, |ws, _| ws.space.focused.unwrap());
+        assert_ne!(first, second);
+        ask(second, "[no]\n", cx);
     }
 
     #[gpui_kit::test]

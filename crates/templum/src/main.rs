@@ -1,4 +1,5 @@
 mod agents;
+mod alert;
 mod bench;
 mod block;
 mod board;
@@ -30,6 +31,8 @@ fn main() {
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
+            // Names Templum in system notifications; Windows shows none without it.
+            cx.set_app_identity("KingDasWinx.Templum", "Templum");
             gpui_kit::init(cx);
             workspace::bind_keys(cx);
             let options = WindowOptions {

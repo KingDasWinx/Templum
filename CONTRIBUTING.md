@@ -62,6 +62,9 @@ Open an issue to discuss it first.
   - [Arbor](https://github.com/penso/arbor) (MIT)
   - [termy](https://github.com/lassejlv/termy) (MIT)
   - [gpui-whiteboard](https://github.com/packetThrower/zorite/tree/main/crates/gpui-whiteboard) (MIT)
+  - [VS Code's shell integration scripts](https://github.com/microsoft/vscode/tree/main/src/vs/workbench/contrib/terminal/common/scripts)
+    (MIT) and [WezTerm's](https://github.com/wezterm/wezterm/tree/main/assets/shell-integration) (MIT). Ghostty's
+    and Kitty's are GPL-3: don't copy them.
 
 ## AI-assisted contributions
 

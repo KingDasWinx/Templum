@@ -33,6 +33,7 @@ fn runs_a_command_and_reports_its_exit() {
             palette: Palette::default(),
             options: TermOptions::default(),
             working_directory: None,
+            integration: None,
         },
         notify,
     )
@@ -71,6 +72,7 @@ fn shells_start_in_the_home_directory() {
             palette: Palette::default(),
             options: TermOptions::default(),
             working_directory: None,
+            integration: None,
         },
         notify,
     )
@@ -113,6 +115,7 @@ fn starts_in_the_given_folder_and_reports_it() {
             palette: Palette::default(),
             options: TermOptions::default(),
             working_directory: Some(dir.clone()),
+            integration: None,
         },
         Arc::new(|| {}),
     )
@@ -150,6 +153,7 @@ fn cwd_follows_the_shell_in_the_foreground() {
             palette: Palette::default(),
             options: TermOptions::default(),
             working_directory: Some(start.path().to_path_buf()),
+            integration: None,
         },
         Arc::new(|| {}),
     )
@@ -188,6 +192,7 @@ fn long_lived(dir: &std::path::Path) -> Terminal {
             palette: Palette::default(),
             options: TermOptions::default(),
             working_directory: Some(dir.to_path_buf()),
+            integration: None,
         },
         Arc::new(|| {}),
     )
@@ -240,6 +245,7 @@ fn inspect_finds_an_agent_and_its_folder() {
             palette: Palette::default(),
             options: TermOptions::default(),
             working_directory: Some(work.path().to_path_buf()),
+            integration: None,
         },
         Arc::new(|| {}),
     )
@@ -307,6 +313,7 @@ fn inspect_finds_an_agent_the_shell_started() {
             palette: Palette::default(),
             options: TermOptions::default(),
             working_directory: Some(work.path().to_path_buf()),
+            integration: None,
         },
         Arc::new(|| {}),
     )

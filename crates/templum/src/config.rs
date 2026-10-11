@@ -125,7 +125,7 @@ impl Mode {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Shell {
     /// None: the default shell: $SHELL; on Windows, Git Bash, else PowerShell 7, else Windows
@@ -134,6 +134,20 @@ pub(crate) struct Shell {
     /// Used with `program` only.
     pub args: Vec<String>,
     pub working_directory: WorkingDirectory,
+    /// bash, zsh, fish and PowerShell load Templum's shell integration: they tell when commands
+    /// start and end, and their folder.
+    pub integration: bool,
+}
+
+impl Default for Shell {
+    fn default() -> Self {
+        Self {
+            program: None,
+            args: Vec::new(),
+            working_directory: WorkingDirectory::default(),
+            integration: true,
+        }
+    }
 }
 
 /// Where new terminals start.
@@ -194,11 +208,17 @@ impl Cursor {
 pub(crate) struct TerminalConfig {
     /// Lines of history per terminal.
     pub scrollback: usize,
+    /// The system's notifications too, when Templum is in the background and a long command ends
+    /// or a terminal asks for attention.
+    pub notifications: bool,
 }
 
 impl Default for TerminalConfig {
     fn default() -> Self {
-        Self { scrollback: 10_000 }
+        Self {
+            scrollback: 10_000,
+            notifications: true,
+        }
     }
 }
 
@@ -563,12 +583,17 @@ pub(crate) fn template(macos: bool) -> String {
         "## For example:\n",
         "## program = \"fish\"\n",
         "## args = [\"--login\"]\n",
-        "# working_directory = \"inherit\"   # \"inherit\" | \"~\" | a path\n\n",
+        "# working_directory = \"inherit\"   # \"inherit\" | \"~\" | a path\n",
+        "## bash, zsh, fish and PowerShell tell Templum when commands end, and their folder.\n",
+        "# integration = true\n\n",
         "[cursor]\n",
         "# shape = \"block\"   # \"block\" | \"bar\" | \"underline\"\n",
         "# blink = false\n\n",
         "[terminal]\n",
-        "# scrollback = 10000   # 0 to 100000\n\n",
+        "# scrollback = 10000   # 0 to 100000\n",
+        "## A system notification when Templum is in the background and a long command ends or\n",
+        "## a terminal asks for attention.\n",
+        "# notifications = true\n\n",
         "[keys]\n",
     ));
     for command in Command::ALL {
@@ -986,6 +1011,14 @@ scrollback = 500
             "LF only line: {text:?}"
         );
         assert!(text.contains("dark = \"One Dark\""), "{text:?}");
+    }
+
+    #[test]
+    fn shell_integration_and_notifications_are_on_unless_turned_off() {
+        let c = parse("").unwrap();
+        assert!(c.shell.integration && c.terminal.notifications);
+        let c = parse("[shell]\nintegration = false\n[terminal]\nnotifications = false\n").unwrap();
+        assert!(!c.shell.integration && !c.terminal.notifications);
     }
 
     #[test]

@@ -7,6 +7,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::base::animation::Lerp as _;
 use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::Icon;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, BoxShadow, ClickEvent, Context, ElementId, Hsla,
@@ -15,7 +16,8 @@ use gpui_kit::{
 };
 use templum_canvas::{Block, Rect, chrome};
 
-use crate::grid;
+use crate::alert::{self, Alert};
+use crate::grid::{self, hsla};
 use crate::kanban::{self, Kanban};
 use crate::menu::Target;
 use crate::motion::{self, Look};
@@ -129,6 +131,23 @@ pub(crate) fn render(
         .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.close(id, cx)))
         .test_support();
 
+    // A terminal's state, on the left of its header.
+    let dot = match &content {
+        Content::Terminal(pane) if live => status_dot(ws, pane).map(|(color, text)| {
+            div()
+                .id(("status", n))
+                .absolute()
+                .top(px((chrome::TITLE_H - 7.0) / 2.0 * z))
+                .left(px(12.0 * z))
+                .size(px(7.0 * z))
+                .rounded_full()
+                .bg(color)
+                .tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx))
+                .test_support()
+        }),
+        _ => None,
+    };
+
     // A kanban block's board list, on the left of its header (over the title: no move).
     let boards = match &content {
         Content::Kanban(_) if live => Some(
@@ -160,6 +179,7 @@ pub(crate) fn render(
         .w_full()
         .h(px(chrome::TITLE_H * z))
         .child(title)
+        .children(dot)
         .children(boards)
         .when(hovered, |el| el.child(fade_in(close, ("close-fade", n))));
 
@@ -318,6 +338,32 @@ fn shadow(color: Hsla, focused: bool, lift: f32, z: f32) -> BoxShadow {
         spread_radius: px(0.0),
         inset: false,
     }
+}
+
+/// The dot before a terminal's title, and what it says. News first: yellow when it asked for
+/// attention, red or green when a long command ended. Then a command running, then a last command
+/// that failed. Nothing when the shell doesn't say (no shell integration).
+fn status_dot(ws: &Workspace, pane: &Pane) -> Option<(Hsla, SharedString)> {
+    let ansi = |i: usize| hsla(ws.theme.palette.ansi[i], 1.0);
+    let (color, text) = match &pane.alert {
+        Some(a @ Alert::Attention(_)) => (ansi(3), a.text()),
+        Some(a) if a.failed() => (ansi(1), a.text()),
+        Some(a) => (ansi(2), a.text()),
+        None => {
+            let status = pane.term.status();
+            match (status.running, status.last) {
+                (Some(since), _) => (
+                    ws.ui.accent,
+                    format!("Running for {}", alert::took(since.elapsed())),
+                ),
+                (None, Some(last)) if last.code.is_some_and(|c| c != 0) => {
+                    (ansi(1), alert::finished(&last))
+                }
+                _ => return None,
+            }
+        }
+    };
+    Some((color, text.into()))
 }
 
 #[cfg(test)]
