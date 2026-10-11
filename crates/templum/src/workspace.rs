@@ -27,9 +27,11 @@ use templum_canvas::{
 };
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
-use crate::block;
+use crate::block::{self, Content};
+use crate::board::{self, Boards};
 use crate::config::{self, Config, Edit, ThemeConfig, WorkingDirectory};
 use crate::grid::CellMetrics;
+use crate::kanban::{self, Kanban};
 use crate::keys::{self, Command, Keymap, Keys};
 use crate::motion;
 use crate::session;
@@ -68,11 +70,16 @@ pub(crate) struct Pane {
     pub snapshot: Rc<RefCell<Snapshot>>,
 }
 
-/// A closed block, still drawn while it fades out. Its terminal lives until then.
+/// A closed block, still drawn while it fades out. A terminal's shell lives until then.
 pub(crate) struct Ghost {
     pub block: Block,
-    pub pane: Pane,
+    pub body: GhostBody,
     since: Instant,
+}
+
+pub(crate) enum GhostBody {
+    Terminal(Pane),
+    Kanban(Kanban),
 }
 
 #[derive(Clone, Copy)]
@@ -91,6 +98,8 @@ pub(crate) struct Space {
     pub name: String,
     pub canvas: Canvas,
     pub terminals: HashMap<BlockId, Pane>,
+    /// The kanban blocks: every block is a terminal or one of these.
+    pub kanbans: HashMap<BlockId, Kanban>,
     pub focused: Option<BlockId>,
     /// True until the user first moves the camera or touches a block: meanwhile the startup
     /// terminal stays centered, since tiling compositors resize the window after it opens.
@@ -117,7 +126,13 @@ impl Space {
             camera: self.canvas.camera,
             blocks: blocks
                 .iter()
-                .map(|b| (b.rect, self.terminals[&b.id].term.processes()))
+                .map(|b| match self.terminals.get(&b.id) {
+                    Some(pane) => session::LayoutBlock::Terminal(b.rect, pane.term.processes()),
+                    None => session::LayoutBlock::Kanban(
+                        b.rect,
+                        self.kanbans.get(&b.id).and_then(|k| k.board),
+                    ),
+                })
                 .collect(),
             focused: self
                 .focused
@@ -128,10 +143,10 @@ impl Space {
     /// The last snapshot found Claude Code or Codex running in one of its terminals.
     pub fn has_agent(&self) -> bool {
         self.saved.as_ref().is_some_and(|saved| {
-            saved
-                .items
-                .iter()
-                .any(|session::Item::Terminal(t)| t.agent().is_some())
+            saved.items.iter().any(|item| match item {
+                session::Item::Terminal(t) => t.agent().is_some(),
+                session::Item::Kanban(_) => false,
+            })
         })
     }
 }
@@ -147,6 +162,10 @@ pub struct Workspace {
     pub(crate) others: Vec<Space>,
     /// The active workspace's position in the sidebar.
     pub(crate) active: usize,
+    /// Every kanban board, shown by kanban blocks in any workspace.
+    pub(crate) boards: Boards,
+    /// The boards as last read or written, to write only what changed.
+    boards_saved: Option<Boards>,
     /// The sidebar is shown.
     pub(crate) sidebar: bool,
     pub(crate) cell: CellMetrics,
@@ -339,6 +358,8 @@ impl Workspace {
             space: Space::default(),
             others: Vec::new(),
             active: 0,
+            boards: Boards::default(),
+            boards_saved: None,
             sidebar: true,
             cell,
             marked: None,
@@ -396,6 +417,28 @@ impl Workspace {
     /// gets one terminal, centered.
     fn load_spaces(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use session::Loaded;
+        match self.data_dir.as_deref().map(board::load) {
+            Some(Loaded::Saved(boards)) => {
+                self.boards_saved = Some(boards.clone());
+                self.boards = boards;
+            }
+            Some(Loaded::Moved { to, why }) => {
+                let message = format!(
+                    "Couldn't read the boards ({why}); they were kept as {}",
+                    to.display()
+                );
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::warning(message));
+            }
+            Some(Loaded::Unreadable(why)) => {
+                let message =
+                    format!("Couldn't read the boards ({why}); this session won't be saved");
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::error(message));
+                self.data_dir = None;
+            }
+            Some(Loaded::Nothing) | None => {}
+        }
         let (index, no_index) = match self.data_dir.as_deref().map(session::load_index) {
             Some(Loaded::Saved(index)) => (index, false),
             Some(Loaded::Moved { to, why }) => {
@@ -606,6 +649,73 @@ impl Workspace {
         }
     }
 
+    /// Adds a kanban block on top, focused, popping in.
+    fn add_kanban(&mut self, rect: Rect, kanban: Kanban) -> BlockId {
+        let id = self.space.canvas.add(rect);
+        self.space.kanbans.insert(id, kanban);
+        self.space.focused = Some(id);
+        self.space.appearing.insert(id, Instant::now());
+        id
+    }
+
+    /// A saved kanban block's rect made safe: None with a number that isn't finite; at least
+    /// the smallest kanban block.
+    fn kanban_rect(r: Rect) -> Option<Rect> {
+        [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()).then(|| {
+            Rect::new(
+                r.x,
+                r.y,
+                r.w.clamp(kanban::MIN.w, 20_000.0),
+                r.h.clamp(kanban::MIN.h, 20_000.0),
+            )
+        })
+    }
+
+    /// A kanban block at the viewport's center, showing the board list.
+    pub(crate) fn new_kanban(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.space.pristine = false;
+        let center = self.space.canvas.camera.to_world(self.center(window));
+        let size = kanban::SIZE;
+        let rect = self.space.canvas.place_new(
+            size,
+            Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
+        );
+        self.add_kanban(rect, Kanban::default());
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
+    /// The kanban block `block` shows `board`.
+    pub(crate) fn show_board(&mut self, block: BlockId, board: u64, cx: &mut Context<Self>) {
+        if let Some(k) = self.space.kanbans.get_mut(&block) {
+            *k = Kanban {
+                board: Some(board),
+                picking: false,
+            };
+            cx.notify();
+        }
+    }
+
+    /// The kanban block `block` shows the board list.
+    pub(crate) fn pick_board(&mut self, block: BlockId, cx: &mut Context<Self>) {
+        if let Some(k) = self.space.kanbans.get_mut(&block) {
+            k.picking = !k.picking;
+            cx.notify();
+        }
+    }
+
+    /// A new board, shown in `block`.
+    pub(crate) fn new_board(&mut self, block: BlockId, cx: &mut Context<Self>) {
+        let board = self.boards.add_board();
+        self.show_board(block, board, cx);
+    }
+
+    /// Deletes a board and its cards; the blocks that showed it show the board list.
+    pub(crate) fn delete_board(&mut self, board: u64, cx: &mut Context<Self>) {
+        self.boards.remove_board(board);
+        cx.notify();
+    }
+
     /// Starts a terminal in a new focused block, in the configured start folder.
     pub(crate) fn open(&mut self, rect: Rect, window: &mut Window, cx: &mut Context<Self>) {
         let folder = self.start_dir(window, cx);
@@ -674,7 +784,22 @@ impl Workspace {
         let mut gone = Vec::new();
         let mut failed = false;
         for item in &saved.items {
-            let session::Item::Terminal(t) = item;
+            let t = match item {
+                session::Item::Terminal(t) => t,
+                session::Item::Kanban(k) => {
+                    let id = Self::kanban_rect(k.rect.into()).map(|rect| {
+                        self.add_kanban(
+                            rect,
+                            Kanban {
+                                board: k.board,
+                                picking: false,
+                            },
+                        )
+                    });
+                    ids.push(id);
+                    continue;
+                }
+            };
             let Some(rect) = self.restorable(t.rect.into()) else {
                 ids.push(None);
                 continue;
@@ -754,22 +879,32 @@ impl Workspace {
             .spaces()
             .map(|s| (s.id.clone(), s.layout(), s.saved.clone()))
             .collect();
+        let boards =
+            (self.boards_saved.as_ref() != Some(&self.boards)).then(|| self.boards.clone());
         cx.spawn_in(window, async move |ws, cx| {
-            let done = cx
+            let (done, boards) = cx
                 .background_executor()
                 .spawn(async move {
-                    jobs.into_iter()
+                    let done = jobs
+                        .into_iter()
                         .map(|(id, layout, last)| {
                             let saved = layout.snapshot();
                             let written = (last.as_ref() != Some(&saved))
                                 .then(|| session::save(&dir, &id, &saved, generation));
                             (id, saved, written)
                         })
-                        .collect::<Vec<_>>()
+                        .collect::<Vec<_>>();
+                    let boards = boards.map(|b| {
+                        let written = board::save(&dir, &b);
+                        (b, written)
+                    });
+                    (done, boards)
                 })
                 .await;
-            ws.update_in(cx, |ws, window, cx| ws.snapshot_done(done, window, cx))
-                .ok();
+            ws.update_in(cx, |ws, window, cx| {
+                ws.snapshot_done(done, boards, window, cx)
+            })
+            .ok();
         })
         .detach();
     }
@@ -777,12 +912,21 @@ impl Workspace {
     fn snapshot_done(
         &mut self,
         done: Vec<(String, session::Saved, Option<std::io::Result<()>>)>,
+        boards: Option<(Boards, std::io::Result<()>)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.snapshotting = false;
         let mut wrote = false;
         let mut failed = None;
+        match boards {
+            Some((boards, Ok(()))) => {
+                wrote = true;
+                self.boards_saved = Some(boards);
+            }
+            Some((_, Err(err))) => failed = Some(err),
+            None => {}
+        }
         for (id, saved, written) in done {
             match written {
                 None => {}
@@ -820,6 +964,12 @@ impl Workspace {
         };
         self.generation += 1;
         let generation = self.generation;
+        if self.boards_saved.as_ref() != Some(&self.boards) {
+            match board::save(&dir, &self.boards) {
+                Ok(()) => self.boards_saved = Some(self.boards.clone()),
+                Err(err) => eprintln!("templum: couldn't save the boards: {err}"),
+            }
+        }
         for space in std::iter::once(&mut self.space).chain(&mut self.others) {
             let saved = space.layout().snapshot();
             if space.saved.as_ref() == Some(&saved) {
@@ -854,10 +1004,14 @@ impl Workspace {
         let block = self.space.canvas.get(id).copied();
         self.space.canvas.remove(id);
         self.space.appearing.remove(&id);
-        if let (Some(block), Some(pane)) = (block, self.space.terminals.remove(&id)) {
+        let body = match self.space.terminals.remove(&id) {
+            Some(pane) => Some(GhostBody::Terminal(pane)),
+            None => self.space.kanbans.remove(&id).map(GhostBody::Kanban),
+        };
+        if let (Some(block), Some(body)) = (block, body) {
             self.space.ghosts.push(Ghost {
                 block,
-                pane,
+                body,
                 since: Instant::now(),
             });
         }
@@ -1401,7 +1555,11 @@ impl Workspace {
 
     pub(crate) fn begin_resize(&mut self, id: BlockId, pos: PixelPoint<Pixels>) {
         let p = self.local(pos);
-        let min = chrome::min_block_size(self.cell.size);
+        let min = if self.space.kanbans.contains_key(&id) {
+            kanban::MIN
+        } else {
+            chrome::min_block_size(self.cell.size)
+        };
         self.drag = Gesture::resize_block(&self.space.canvas, id, p, min).map(Drag::Canvas);
     }
 
@@ -1608,6 +1766,7 @@ impl Workspace {
             Command::ThemePicker => self.toggle_theme_picker(cx),
             Command::OpenConfig => self.open_config(window, cx),
             Command::Settings => self.toggle_settings(window, cx),
+            Command::NewKanban => self.new_kanban(window, cx),
             Command::NextWorkspace => self.cycle_space(1, window, cx),
             Command::PreviousWorkspace => self.cycle_space(-1, window, cx),
             Command::NewWorkspace => self.new_space(window, cx),
@@ -2069,21 +2228,23 @@ impl Render for Workspace {
                     .map_or(motion::Look::REST, |since| {
                         motion::opening(motion::progress(*since, now, motion::OPEN))
                     });
-                block::render(
-                    self,
-                    b,
-                    &self.space.terminals[&b.id],
-                    look,
-                    true,
-                    window,
-                    cx,
-                )
+                let content = match self.space.terminals.get(&b.id) {
+                    Some(pane) => Content::Terminal(pane),
+                    None => {
+                        Content::Kanban(self.space.kanbans.get(&b.id).copied().unwrap_or_default())
+                    }
+                };
+                block::render(self, b, content, look, true, window, cx)
             })
             .collect();
         // Ghosts fade above the blocks, where they were.
         blocks.extend(self.space.ghosts.iter().map(|g| {
             let look = motion::closing(motion::progress(g.since, now, motion::CLOSE));
-            block::render(self, g.block, &g.pane, look, false, window, cx)
+            let content = match &g.body {
+                GhostBody::Terminal(pane) => Content::Terminal(pane),
+                GhostBody::Kanban(k) => Content::Kanban(*k),
+            };
+            block::render(self, g.block, content, look, false, window, cx)
         }));
 
         let entity = cx.entity();
@@ -5029,6 +5190,166 @@ mod tests {
             assert_eq!(ws.space.canvas.blocks().len(), 2);
             assert_eq!(ws.others[0].canvas.blocks().len(), 1, "Main's terminal");
             assert!(ws.others[1].canvas.blocks().is_empty());
+        });
+    }
+
+    /// The kanban block on top.
+    fn top_kanban(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {
+        ws.read_with(cx, |ws, _| {
+            let id = ws.space.canvas.top().unwrap();
+            assert!(
+                ws.space.kanbans.contains_key(&id),
+                "the top block is a kanban"
+            );
+            id
+        })
+    }
+
+    #[gpui_kit::test]
+    fn the_board_button_opens_a_block_with_the_board_list(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("new-kanban", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let block = top_kanban(&ws, cx);
+        let n = block.0 as usize;
+        cx.update_window(handle, |_, window, cx| {
+            assert!(window.try_find(("board-list", n)).is_some());
+            window.click(("new-board", n), cx);
+            window.render_frame(cx);
+            assert!(
+                window.try_find(("columns", n)).is_some(),
+                "the new board shows"
+            );
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            let board = ws.boards.boards[0].id;
+            assert_eq!(ws.space.kanbans[&block].board, Some(board));
+            assert_eq!(ws.boards.board(board).unwrap().columns.len(), 3);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn two_blocks_on_one_board_show_the_same_cards(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let (a, b, board, todo) = cx
+            .update_window(handle, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.new_kanban(window, cx);
+                    let a = ws.space.canvas.top().unwrap();
+                    ws.new_board(a, cx);
+                    ws.new_kanban(window, cx);
+                    let b = ws.space.canvas.top().unwrap();
+                    let board = ws.space.kanbans[&a].board.unwrap();
+                    ws.show_board(b, board, cx);
+                    let todo = ws.boards.board(board).unwrap().columns[0].id;
+                    ws.space.appearing.clear();
+                    (a, b, board, todo)
+                })
+            })
+            .unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            // Through the block on top: it covers most of the other.
+            let add = gpui_kit::ElementId::Name(format!("add-card-{}-{todo}", b.0).into());
+            window.click(add, cx);
+            window.render_frame(cx);
+            let card = ws.read(cx).boards.board(board).unwrap().columns[0].cards[0].id;
+            for block in [a, b] {
+                let id = gpui_kit::ElementId::Name(format!("card-{}-{card}", block.0).into());
+                assert!(window.try_find(id).is_some(), "block {block:?} shows it");
+            }
+        })
+        .unwrap();
+        ws.update(cx, |ws, cx| ws.delete_board(board, cx));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            for block in [a, b] {
+                let list = ("board-list", block.0 as usize);
+                assert!(window.try_find(list).is_some(), "back to the list");
+            }
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn an_open_card_toggles_labels_and_can_be_deleted(cx: &mut TestAppContext) {
+        use crate::board::Label;
+        let (handle, ws) = open(cx);
+        let (block, board, card) = cx
+            .update_window(handle, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.new_kanban(window, cx);
+                    let block = ws.space.canvas.top().unwrap();
+                    ws.new_board(block, cx);
+                    let board = ws.space.kanbans[&block].board.unwrap();
+                    let todo = ws.boards.board(board).unwrap().columns[0].id;
+                    let card = ws.boards.add_card(board, todo).unwrap();
+                    ws.space.appearing.clear();
+                    (block, board, card)
+                })
+            })
+            .unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let id = gpui_kit::ElementId::Name(format!("card-{}-{card}", block.0).into());
+            window.click(id, cx);
+            window.render_frame(cx);
+            // The dialog slides in for 0.25 s first.
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            window.render_frame(cx);
+            window.click("label-green", cx);
+            window.render_frame(cx);
+            let labels = ws.read(cx).boards.card(board, card).unwrap().labels.clone();
+            assert_eq!(labels, [Label::Green]);
+            window.click("delete-card", cx);
+            window.render_frame(cx);
+            assert!(ws.read(cx).boards.card(board, card).is_none());
+            assert!(
+                window.try_find("delete-card").is_none(),
+                "the dialog closed"
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn kanban_blocks_and_boards_come_back(cx: &mut TestAppContext) {
+        let data = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        let board = cx
+            .update_window(handle, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.new_kanban(window, cx);
+                    let block = ws.space.canvas.top().unwrap();
+                    ws.new_board(block, cx);
+                    let board = ws.space.kanbans[&block].board.unwrap();
+                    let todo = ws.boards.board(board).unwrap().columns[0].id;
+                    ws.boards.add_card(board, todo);
+                    ws.new_kanban(window, cx);
+                    ws.save_canvas_now();
+                    board
+                })
+            })
+            .unwrap();
+        let before = ws.read_with(cx, |ws, _| ws.boards.clone());
+        let (_, again) = open_in(cx, None, Some(data.path().to_path_buf()));
+        again.read_with(cx, |ws, _| {
+            assert_eq!(ws.boards, before);
+            let mut shown: Vec<Option<u64>> = ws
+                .space
+                .canvas
+                .blocks()
+                .iter()
+                .filter_map(|b| ws.space.kanbans.get(&b.id).map(|k| k.board))
+                .collect();
+            shown.sort();
+            assert_eq!(shown, [None, Some(board)]);
+            assert_eq!(ws.space.terminals.len(), 1, "and the terminal");
         });
     }
 

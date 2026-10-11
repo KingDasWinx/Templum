@@ -185,6 +185,15 @@ pub(crate) struct SavedCamera {
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub(crate) enum Item {
     Terminal(TerminalItem),
+    Kanban(KanbanItem),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct KanbanItem {
+    pub rect: SavedRect,
+    /// The board it shows; missing while it shows the board list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -236,16 +245,30 @@ impl From<SavedRect> for Rect {
 /// The canvas as the UI thread has it: what a snapshot needs before the processes are read.
 pub(crate) struct Layout {
     pub camera: Camera,
-    /// Back to front: each block's rect and its terminal's processes.
-    pub blocks: Vec<(Rect, Processes)>,
+    /// Back to front.
+    pub blocks: Vec<LayoutBlock>,
     pub focused: Option<usize>,
+}
+
+pub(crate) enum LayoutBlock {
+    /// A terminal's rect and its processes.
+    Terminal(Rect, Processes),
+    /// A kanban block's rect and its board.
+    Kanban(Rect, Option<u64>),
 }
 
 impl Layout {
     /// Reads the processes (folders) and builds the file's content. Slow: off the UI thread.
     pub fn snapshot(self) -> Saved {
-        let processes: Vec<Processes> = self.blocks.iter().map(|(_, p)| *p).collect();
-        let found = templum_terminal::inspect(&processes);
+        let processes: Vec<Processes> = self
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                LayoutBlock::Terminal(_, p) => Some(*p),
+                LayoutBlock::Kanban(..) => None,
+            })
+            .collect();
+        let mut found = templum_terminal::inspect(&processes).into_iter();
         Saved {
             version: VERSION,
             camera: SavedCamera {
@@ -256,13 +279,20 @@ impl Layout {
             items: self
                 .blocks
                 .iter()
-                .zip(found)
-                .map(|((rect, _), found)| {
-                    Item::Terminal(TerminalItem {
+                .map(|b| match b {
+                    LayoutBlock::Terminal(rect, _) => {
+                        // One answer per terminal, in order.
+                        let found = found.next().unwrap_or_default();
+                        Item::Terminal(TerminalItem {
+                            rect: (*rect).into(),
+                            folder: found.folder.and_then(utf8),
+                            agent: found.agent.map(|a| a.name().to_string()),
+                        })
+                    }
+                    LayoutBlock::Kanban(rect, board) => Item::Kanban(KanbanItem {
                         rect: (*rect).into(),
-                        folder: found.folder.and_then(utf8),
-                        agent: found.agent.map(|a| a.name().to_string()),
-                    })
+                        board: *board,
+                    }),
                 })
                 .collect(),
             focused: self.focused,
@@ -296,7 +326,7 @@ pub(crate) fn load(dir: &Path, id: &str) -> Loaded<Saved> {
 }
 
 /// A file with a `version`: one this Templum can't use (newer, broken) is set aside as `.bak`.
-fn read<T: DeserializeOwned>(path: &Path) -> Loaded<T> {
+pub(crate) fn read<T: DeserializeOwned>(path: &Path) -> Loaded<T> {
     let path = path.to_path_buf();
     // Bytes, not a string: a file that isn't UTF-8 is bad content to set aside, not a read failure.
     let bytes = match std::fs::read(&path) {
@@ -375,6 +405,15 @@ mod tests {
                     folder: None,
                     agent: None,
                 }),
+                Item::Kanban(KanbanItem {
+                    rect: SavedRect {
+                        x: -900.0,
+                        y: 0.0,
+                        w: 900.0,
+                        h: 540.0,
+                    },
+                    board: Some(7),
+                }),
             ],
             focused: Some(1),
         }
@@ -434,6 +473,8 @@ mod tests {
             "\"rect\":{\"x\":0.0,\"y\":0.0,\"w\":720.0,\"h\":460.0}",
             "\"folder\":\"/home/u/proj\"",
             "\"agent\":\"claude\"",
+            "\"kind\":\"kanban\"",
+            "\"board\":7",
             "\"focused\":1",
         ] {
             assert!(text.contains(part), "{part} in {text}");
@@ -652,8 +693,9 @@ mod tests {
             camera,
             // No processes: their folders are unknown.
             blocks: vec![
-                (Rect::new(0.0, 0.0, 10.0, 10.0), Processes::default()),
-                (Rect::new(20.0, 0.0, 30.0, 10.0), Processes::default()),
+                LayoutBlock::Terminal(Rect::new(0.0, 0.0, 10.0, 10.0), Processes::default()),
+                LayoutBlock::Kanban(Rect::new(5.0, 5.0, 10.0, 10.0), Some(3)),
+                LayoutBlock::Terminal(Rect::new(20.0, 0.0, 30.0, 10.0), Processes::default()),
             ],
             focused: Some(1),
         };
@@ -667,9 +709,17 @@ mod tests {
                 zoom: 1.5
             }
         );
-        let rects: Vec<SavedRect> = saved.items.iter().map(|Item::Terminal(t)| t.rect).collect();
+        let rects: Vec<SavedRect> = saved
+            .items
+            .iter()
+            .map(|item| match item {
+                Item::Terminal(t) => t.rect,
+                Item::Kanban(k) => k.rect,
+            })
+            .collect();
+        assert!(matches!(&saved.items[1], Item::Kanban(k) if k.board == Some(3)));
         assert_eq!(
-            rects[1],
+            rects[2],
             SavedRect {
                 x: 20.0,
                 y: 0.0,

@@ -6,6 +6,7 @@ use serde::Deserialize;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Command {
     NewTerminal,
+    NewKanban,
     CloseTerminal,
     Copy,
     Paste,
@@ -25,8 +26,9 @@ pub(crate) enum Command {
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 16] = [
+    pub const ALL: [Command; 17] = [
         Command::NewTerminal,
+        Command::NewKanban,
         Command::CloseTerminal,
         Command::Copy,
         Command::Paste,
@@ -48,6 +50,7 @@ impl Command {
     pub fn name(self) -> &'static str {
         match self {
             Command::NewTerminal => "new_terminal",
+            Command::NewKanban => "new_kanban",
             Command::CloseTerminal => "close_terminal",
             Command::Copy => "copy",
             Command::Paste => "paste",
@@ -70,6 +73,7 @@ impl Command {
     pub fn title(self) -> &'static str {
         match self {
             Command::NewTerminal => "New terminal",
+            Command::NewKanban => "New kanban board",
             Command::CloseTerminal => "Close terminal",
             Command::Copy => "Copy",
             Command::Paste => "Paste",
@@ -93,6 +97,8 @@ impl Command {
         match (self, macos) {
             (Command::NewTerminal, false) => &["ctrl-shift-t"],
             (Command::NewTerminal, true) => &["cmd-t"],
+            (Command::NewKanban, false) => &["ctrl-shift-k"],
+            (Command::NewKanban, true) => &["cmd-shift-k"],
             (Command::CloseTerminal, false) => &["ctrl-shift-w"],
             (Command::CloseTerminal, true) => &["cmd-w"],
             (Command::Copy, false) => &["ctrl-shift-c"],
@@ -136,6 +142,7 @@ pub(crate) enum Keys {
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct KeysConfig {
     pub new_terminal: Option<Keys>,
+    pub new_kanban: Option<Keys>,
     pub close_terminal: Option<Keys>,
     pub copy: Option<Keys>,
     pub paste: Option<Keys>,
@@ -157,6 +164,7 @@ impl KeysConfig {
     pub fn get(&self, command: Command) -> Option<&Keys> {
         match command {
             Command::NewTerminal => self.new_terminal.as_ref(),
+            Command::NewKanban => self.new_kanban.as_ref(),
             Command::CloseTerminal => self.close_terminal.as_ref(),
             Command::Copy => self.copy.as_ref(),
             Command::Paste => self.paste.as_ref(),
@@ -178,6 +186,7 @@ impl KeysConfig {
     pub fn set(&mut self, command: Command, keys: Option<Keys>) {
         let slot = match command {
             Command::NewTerminal => &mut self.new_terminal,
+            Command::NewKanban => &mut self.new_kanban,
             Command::CloseTerminal => &mut self.close_terminal,
             Command::Copy => &mut self.copy,
             Command::Paste => &mut self.paste,

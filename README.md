@@ -38,6 +38,7 @@ cargo run -p templum
 | Linux / Windows | macOS | Action |
 |---|---|---|
 | Ctrl+Shift+T | Cmd+T | New terminal |
+| Ctrl+Shift+K | Cmd+Shift+K | New kanban board block |
 | Ctrl+Shift+W | Cmd+W | Close the focused terminal |
 | Ctrl+Shift+C / V | Cmd+C / V | Copy / paste |
 | Ctrl+= / Ctrl+- | Cmd+= / Cmd+- | Zoom in / out |
@@ -94,6 +95,15 @@ as you make it.
 - Shortcuts keep working while the panel has the focus, except copy, paste and close terminal, which need a terminal
   to have it.
 - Edits you make by hand to `config.toml` show up in the panel.
+
+## Kanban boards
+
+The board button in the title bar (or Ctrl+Shift+K) puts a kanban block on the canvas, Trello-style. Pick a board
+in it or create one: it starts with To do, Doing and Done. Drag cards between columns and columns by their titles,
+click a card to edit its title, description and colored labels, and right-click a column or a board to rename or
+delete it. Boards aren't tied to a canvas: any block, in any workspace, can show any board (the ⇅ button at the left
+of its header switches), and blocks showing the same board stay in sync. Boards are kept in `boards.json`, next to
+the `workspaces` folder.
 
 ## Your canvas is kept
 

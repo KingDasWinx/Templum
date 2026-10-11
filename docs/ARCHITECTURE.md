@@ -74,6 +74,9 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
 - The workspace on screen is `Workspace::space`; the hidden ones (`others`) keep their terminals running, unarmed so
   their output never wakes the UI. The sidebar (`sidebar.rs`) switches them by swapping. `session.rs` keeps their
   order and names in `workspaces/index.json` ([specs/workspaces.md](specs/workspaces.md)).
+- A block is a terminal or a kanban block (`Space::kanbans`). Kanban boards are app-wide (`Workspace::boards`,
+  `board.rs`, saved in `boards.json` with the snapshot); `kanban.rs` draws a block's board at the zoom, with GPUI's
+  drag and drop ([specs/kanban.md](specs/kanban.md)).
 - The canvas is saved by `crates/templum/src/session.rs`: one JSON file per workspace in the data folder. Every
   5 s the workspace takes a `Layout` (rects and process ids, cheap) and a background task reads the processes
   (`templum_terminal::inspect`: folders, and whether Claude Code or Codex runs, by `agent_of`), builds the `Saved`

@@ -87,6 +87,18 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
                         .test_support(),
                 )
                 .child(
+                    button("new-kanban", ui)
+                        .child(
+                            Icon::new(IconName::LayoutDashboard)
+                                .size(px(14.0))
+                                .text_color(ui.title),
+                        )
+                        .on_click(
+                            cx.listener(|ws, _: &ClickEvent, window, cx| ws.new_kanban(window, cx)),
+                        )
+                        .test_support(),
+                )
+                .child(
                     button("new-terminal", ui)
                         .child(
                             Icon::new(IconName::Plus)

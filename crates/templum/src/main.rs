@@ -1,9 +1,12 @@
 mod bench;
 mod block;
+mod board;
 mod config;
 mod grid;
+mod kanban;
 mod keys;
 mod motion;
+mod prompt;
 mod session;
 mod settings;
 mod sidebar;

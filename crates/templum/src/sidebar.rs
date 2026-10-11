@@ -2,18 +2,17 @@
 //! and + for a new one. See docs/specs/workspaces.md.
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::dialog::DialogButtonProps;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::Icon;
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{Icon, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, ClickEvent, Context, ElementId, FontWeight, SharedString, TestSupportExt,
-    Window, div, px,
+    AnyElement, ClickEvent, Context, ElementId, FontWeight, SharedString, TestSupportExt, Window,
+    div, px,
 };
 
 use crate::grid::hsla;
+use crate::prompt;
 use crate::workspace::{Space, Workspace};
 
 /// The sidebar's width; the canvas gets the rest.
@@ -172,57 +171,32 @@ pub(crate) fn initials(name: &str) -> String {
         .collect()
 }
 
-/// A dialog with the name in a text field. Enter or Rename applies it; an empty name keeps the
-/// dialog open.
+/// Enter or Rename applies the name; an empty one keeps the dialog open.
 fn ask_rename(id: String, name: SharedString, window: &mut Window, cx: &mut Context<Workspace>) {
-    let input = cx.new(|cx| InputState::new(window, cx).default_value(name));
-    let apply = {
-        let (ws, input) = (cx.entity(), input.clone());
-        move |window: &mut Window, cx: &mut App| -> bool {
-            let text = input.read(cx).value();
+    let ws = cx.entity();
+    prompt::ask_text(
+        "Rename workspace",
+        "Rename",
+        name,
+        move |text, window, cx| {
             ws.update(cx, |ws, cx| ws.rename_space(&id, &text, window, cx))
                 .is_ok()
-        }
-    };
-    let on_enter = apply.clone();
-    cx.subscribe_in(
-        &input,
-        window,
-        move |_, _, event: &InputEvent, window, cx| {
-            if let InputEvent::PressEnter { .. } = event
-                && on_enter(window, cx)
-            {
-                window.close_dialog(cx);
-            }
         },
-    )
-    .detach();
-    input.update(cx, |input, cx| input.focus(window, cx));
-    window.open_alert_dialog(cx, move |alert, _, _| {
-        let apply = apply.clone();
-        alert
-            .confirm()
-            .title("Rename workspace")
-            .button_props(DialogButtonProps::default().ok_text("Rename"))
-            .child(Input::new(&input))
-            .on_ok(move |_, window, cx| apply(window, cx))
-    });
+        window,
+        cx,
+    );
 }
 
 fn ask_delete(id: String, name: SharedString, window: &mut Window, cx: &mut Context<Workspace>) {
     let ws = cx.entity();
-    window.open_alert_dialog(cx, move |alert, _, _| {
-        let (ws, id) = (ws.clone(), id.clone());
-        alert
-            .confirm()
-            .title(format!("Delete {name}?"))
-            .description("Its terminals will close.")
-            .button_props(DialogButtonProps::default().ok_text("Delete"))
-            .on_ok(move |_, window, cx| {
-                ws.update(cx, |ws, cx| ws.delete_space(&id, window, cx));
-                true
-            })
-    });
+    prompt::confirm(
+        format!("Delete {name}?"),
+        "Its terminals will close.",
+        "Delete",
+        move |window, cx| ws.update(cx, |ws, cx| ws.delete_space(&id, window, cx)),
+        window,
+        cx,
+    );
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
-//! One terminal block, a continuous card: header (title, close button), body (the grid) and
-//! resize grip, in screen space. Every size is multiplied by the zoom, so text is laid out at
-//! its real size. The close button and the grip show only while the pointer is over the block.
+//! One block, a continuous card: header (title, close button), body (a terminal's grid, or a
+//! kanban board) and resize grip, in screen space. Every size is multiplied by the zoom, so text
+//! is laid out at its real size. The close button and the grip show only while the pointer is
+//! over the block.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::animation::Lerp as _;
@@ -9,13 +10,21 @@ use gpui_kit::component::Icon;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, BoxShadow, ClickEvent, Context, ElementId, Hsla,
-    MouseButton, MouseDownEvent, ScrollWheelEvent, TestSupportExt, Window, div, point, px,
+    MouseButton, MouseDownEvent, ScrollWheelEvent, SharedString, TestSupportExt, Window, div,
+    point, px,
 };
 use templum_canvas::{Block, Rect, chrome};
 
 use crate::grid;
+use crate::kanban::{self, Kanban};
 use crate::motion::{self, Look};
 use crate::workspace::{Pane, Workspace};
+
+/// What a block holds.
+pub(crate) enum Content<'a> {
+    Terminal(&'a Pane),
+    Kanban(Kanban),
+}
 
 /// World units, like everything in a block.
 const TITLE_FONT: f32 = 12.0;
@@ -28,7 +37,7 @@ const RING: f32 = 2.0;
 pub(crate) fn render(
     ws: &Workspace,
     block: Block,
-    pane: &Pane,
+    content: Content,
     look: Look,
     live: bool,
     window: &mut Window,
@@ -81,7 +90,10 @@ pub(crate) fn render(
                 .truncate()
                 .text_size(px(TITLE_FONT * z))
                 .text_color(if focused { ui.title } else { ui.title_dim })
-                .child(pane.term.title()),
+                .child(match &content {
+                    Content::Terminal(pane) => SharedString::from(pane.term.title()),
+                    Content::Kanban(k) => k.title(ws),
+                }),
         )
         .when(live, |el| {
             el.on_mouse_down(
@@ -112,23 +124,51 @@ pub(crate) fn render(
         .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.close(id, cx)))
         .test_support();
 
+    // A kanban block's board list, on the left of its header (over the title: no move).
+    let boards = match &content {
+        Content::Kanban(_) if live => Some(
+            div()
+                .id(("boards", n))
+                .absolute()
+                .top(px(4.0 * z))
+                .left(px(4.0 * z))
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(20.0 * z))
+                .rounded(px(5.0 * z))
+                .cursor_pointer()
+                .hover(move |s| s.bg(ui.hover))
+                .child(
+                    Icon::new(IconName::ChevronsUpDown)
+                        .size(px(12.0 * z))
+                        .text_color(ui.title),
+                )
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.pick_board(id, cx)))
+                .test_support(),
+        ),
+        _ => None,
+    };
     let header = div()
         .relative()
         .w_full()
         .h(px(chrome::TITLE_H * z))
         .child(title)
+        .children(boards)
         .when(hovered, |el| el.child(fade_in(close, ("close-fade", n))));
 
-    let body =
-        div()
-            .id(("body", n))
-            .absolute()
-            .left(px(0.0))
-            .top(px(chrome::TITLE_H * z))
-            .w_full()
-            .h(px((r.h - chrome::TITLE_H * z).max(0.0)))
-            .p(px(chrome::PAD * z))
-            .overflow_hidden()
+    let body = div()
+        .id(("body", n))
+        .absolute()
+        .left(px(0.0))
+        .top(px(chrome::TITLE_H * z))
+        .w_full()
+        .h(px((r.h - chrome::TITLE_H * z).max(0.0)))
+        .p(px(chrome::PAD * z))
+        .overflow_hidden();
+    let body = match content {
+        Content::Terminal(pane) => body
             .when(live, |el| {
                 el.cursor_text()
                     .on_mouse_down(
@@ -149,8 +189,11 @@ pub(crate) fn render(
                 ws.theme.clone(),
                 ws.blink_on,
                 cx.entity(),
-            ))
-            .test_support();
+            )),
+        // A fading kanban block is drawn empty: its board is still live elsewhere.
+        Content::Kanban(k) => body.when(live, |el| el.child(kanban::body(ws, id, k, z, cx))),
+    }
+    .test_support();
 
     let handle = div()
         .id(("handle", n))
