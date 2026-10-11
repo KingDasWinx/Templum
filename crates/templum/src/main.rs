@@ -29,7 +29,8 @@ use workspace::Workspace;
 fn main() {
     let bench = std::env::args().any(|a| a == "--bench");
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        // Every Lucide icon, by name: the toolbar and the notes use ones outside the default set.
+        .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx| {
             // Names Templum in system notifications; Windows shows none without it.
             cx.set_app_identity("KingDasWinx.Templum", "Templum");
