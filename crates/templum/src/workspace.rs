@@ -20,7 +20,8 @@ use gpui_kit::{
     WindowAppearance, canvas, div, fill, point, px, size,
 };
 use templum_canvas::{
-    Block, BlockId, Camera, Canvas, Gesture, Point, Rect, Size, chrome, dot_grid, dot_size,
+    Block, BlockId, Camera, CameraFlight, Canvas, Gesture, Point, Rect, Size, chrome, dot_grid,
+    dot_size,
 };
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
@@ -164,6 +165,10 @@ pub struct Workspace {
     resetting: Vec<Command>,
     /// The block under the pointer: it shows its close button and resize grip.
     pub(crate) hovered: Option<BlockId>,
+    /// The camera drawn this frame: `canvas.camera` (where it is going), or a frame of `flight`.
+    pub(crate) view: Camera,
+    /// The view gliding to `canvas.camera`, since when.
+    pub(crate) flight: Option<(CameraFlight, Instant)>,
     /// The open theme picker.
     pub(crate) picker: Option<Picker>,
     /// Blocks still popping in, since when.
@@ -325,6 +330,8 @@ impl Workspace {
             key_note: None,
             resetting: Vec::new(),
             hovered: None,
+            view: Camera::default(),
+            flight: None,
             picker: None,
             appearing: HashMap::new(),
             ghosts: Vec::new(),
@@ -1199,28 +1206,64 @@ impl Workspace {
         Point::new(vp.w / 2.0, vp.h / 2.0)
     }
 
-    fn zoom_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Moves the camera to `to`: the view glides there from where it is drawn, pivoting on the
+    /// screen point `pivot`.
+    fn fly(&mut self, to: Camera, pivot: Point, cx: &mut Context<Self>) {
         self.pristine = false;
-        self.canvas.camera.zoom_step(1, Self::center(window));
+        if to == self.canvas.camera {
+            return;
+        }
+        // Mid-flight, from where it is drawn; otherwise the camera is what was last drawn (or
+        // moved since, by a drag).
+        let from = if self.flight.is_some() {
+            self.view
+        } else {
+            self.canvas.camera
+        };
+        self.canvas.camera = to;
+        let flight = CameraFlight { from, to, pivot };
+        self.flight = Some((flight, Instant::now()));
         cx.notify();
+    }
+
+    /// `delta` zoom steps, keeping the world point under `anchor` (screen units) still.
+    pub(crate) fn zoom_to(&mut self, delta: i32, anchor: Point, cx: &mut Context<Self>) {
+        let mut to = self.canvas.camera;
+        to.zoom_step(delta, anchor);
+        self.fly(to, anchor, cx);
+    }
+
+    /// Pans the camera, and the flight under way with it, so the view doesn't jump.
+    pub(crate) fn pan_by(&mut self, screen_delta: Point) {
+        self.canvas.camera.pan_by(screen_delta);
+        if let Some((flight, _)) = &mut self.flight {
+            flight.pan_by(screen_delta);
+        }
+    }
+
+    fn zoom_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_to(1, Self::center(window), cx);
     }
 
     fn zoom_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.pristine = false;
-        self.canvas.camera.zoom_step(-1, Self::center(window));
-        cx.notify();
+        self.zoom_to(-1, Self::center(window), cx);
     }
 
     pub(crate) fn zoom_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.pristine = false;
-        self.canvas.camera.zoom_reset(Self::center(window));
-        cx.notify();
+        let center = Self::center(window);
+        let mut to = self.canvas.camera;
+        to.zoom_reset(center);
+        self.fly(to, center, cx);
     }
 
     fn fit_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.pristine = false;
-        self.canvas.fit_all(viewport(window));
-        cx.notify();
+        let vp = viewport(window);
+        let mut to = self.canvas.camera;
+        match self.canvas.bounds() {
+            Some(bounds) => to.fit(bounds, vp),
+            None => to.zoom_reset(Point::new(vp.w / 2.0, vp.h / 2.0)),
+        }
+        self.fly(to, Self::center(window), cx);
     }
 
     fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
@@ -1436,16 +1479,13 @@ impl Workspace {
                 ScrollDelta::Pixels(d) => f32::from(d.y),
             };
             if self.zoom_acc.abs() >= 50.0 {
-                self.canvas
-                    .camera
-                    .zoom_step(self.zoom_acc.signum() as i32, p);
+                let delta = self.zoom_acc.signum() as i32;
                 self.zoom_acc = 0.0;
+                self.zoom_to(delta, p, cx);
             }
         } else {
             let d = e.delta.pixel_delta(px(self.cell.size.h));
-            self.canvas
-                .camera
-                .pan_by(Point::new(f32::from(d.x), f32::from(d.y)));
+            self.pan_by(Point::new(f32::from(d.x), f32::from(d.y)));
         }
         cx.notify();
     }
@@ -1455,11 +1495,9 @@ impl Workspace {
         self.zoom_acc += e.delta;
         if self.zoom_acc.abs() >= 0.15 {
             let p = self.local(e.position);
-            self.canvas
-                .camera
-                .zoom_step(self.zoom_acc.signum() as i32, p);
+            let delta = self.zoom_acc.signum() as i32;
             self.zoom_acc = 0.0;
-            cx.notify();
+            self.zoom_to(delta, p, cx);
         }
     }
 
@@ -1627,7 +1665,25 @@ impl Render for Workspace {
         if !self.appearing.is_empty() || !self.ghosts.is_empty() {
             window.request_animation_frame();
         }
-        let visible: Vec<_> = self.canvas.visible(vp).copied().collect();
+        // The view glides to the camera. Anything that moved the camera itself (a drag, the
+        // startup centering) ends the flight: the view is then the camera.
+        self.view = match self.flight {
+            Some((flight, since)) if flight.to == self.canvas.camera => {
+                let t = motion::progress(since, now, motion::FLIGHT);
+                if t < 1.0 {
+                    window.request_animation_frame();
+                    flight.at(motion::slide(t))
+                } else {
+                    self.flight = None;
+                    self.canvas.camera
+                }
+            }
+            _ => {
+                self.flight = None;
+                self.canvas.camera
+            }
+        };
+        let visible: Vec<_> = self.canvas.visible_from(&self.view, vp).copied().collect();
         let mut blocks: Vec<_> = visible
             .into_iter()
             .map(|b| {
@@ -1648,7 +1704,7 @@ impl Render for Workspace {
 
         let entity = cx.entity();
         let focus = self.focus_handle.clone();
-        let camera = self.canvas.camera;
+        let camera = self.view;
         let dot = self.theme.ui.dot;
         // A full-size layer under the blocks: the IME handler, the workspace origin, and
         // window-wide drag listeners (drags keep working outside the window).
@@ -2239,6 +2295,94 @@ mod tests {
             window.press(FIT, cx);
             let vp = super::viewport(window);
             assert_eq!(ws.read(cx).canvas.visible(vp).count(), 2);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn zoom_keys_glide_to_the_step(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(ZOOM_IN, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.canvas.camera.zoom(), 1.1, "the target is set at once");
+            assert!(ws.flight.is_some(), "the view glides");
+            assert!(ws.view.zoom() < 1.1, "drawn on the way: {}", ws.view.zoom());
+        });
+        std::thread::sleep(crate::motion::FLIGHT + std::time::Duration::from_millis(50));
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.flight.is_none(), "landed");
+            assert_eq!(ws.view, ws.canvas.camera);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_wheel_pan_during_a_glide_moves_the_glide_too(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(ZOOM_IN, cx);
+        })
+        .unwrap();
+        ws.update(cx, |ws, _| {
+            let (before, _) = ws.flight.unwrap();
+            ws.pan_by(Point::new(30.0, 0.0));
+            let (after, _) = ws.flight.expect("still gliding");
+            assert_eq!(
+                after.to, ws.canvas.camera,
+                "the glide still lands on the camera"
+            );
+            let z = before.from.zoom();
+            assert!((before.from.origin.x - after.from.origin.x - 30.0 / z).abs() < 1e-3);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn dragging_the_canvas_ends_a_glide_on_the_camera(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(ZOOM_OUT, cx);
+        })
+        .unwrap();
+        ws.update(cx, |ws, _| ws.canvas.camera.pan_by(Point::new(5.0, 5.0)));
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.flight.is_none());
+            assert_eq!(ws.view, ws.canvas.camera);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn fit_all_glides_then_shows_every_block(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open(
+                    templum_canvas::Rect::new(5000.0, 3000.0, 600.0, 400.0),
+                    window,
+                    cx,
+                )
+            });
+            window.render_frame(cx);
+            window.press(FIT, cx);
+            window.render_frame(cx);
+            assert!(ws.read(cx).flight.is_some());
+        })
+        .unwrap();
+        std::thread::sleep(crate::motion::FLIGHT + std::time::Duration::from_millis(50));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let vp = super::viewport(window);
+            let ws = ws.read(cx);
+            assert_eq!(ws.canvas.visible_from(&ws.view, vp).count(), 2);
         })
         .unwrap();
     }

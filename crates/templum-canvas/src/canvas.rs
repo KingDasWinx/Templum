@@ -62,10 +62,15 @@ impl Canvas {
 
     /// Blocks intersecting a viewport of `viewport` size (screen units), back-to-front.
     pub fn visible(&self, viewport: Size) -> impl Iterator<Item = &Block> {
-        let z = self.camera.zoom();
+        self.visible_from(&self.camera, viewport)
+    }
+
+    /// Like [`Canvas::visible`], seen through `camera` (a frame of a flight).
+    pub fn visible_from(&self, camera: &Camera, viewport: Size) -> impl Iterator<Item = &Block> {
+        let z = camera.zoom();
         let world = Rect::new(
-            self.camera.origin.x,
-            self.camera.origin.y,
+            camera.origin.x,
+            camera.origin.y,
             viewport.w / z,
             viewport.h / z,
         );
@@ -146,6 +151,19 @@ mod tests {
         c.camera.zoom_step(-6, Point::new(0.0, 0.0)); // zoom 0.25: sees 3200 world units
         c.camera.origin = Point::new(2000.0, 0.0);
         assert_eq!(c.visible(Size::new(800.0, 600.0)).count(), 1);
+    }
+
+    #[test]
+    fn visible_from_culls_with_another_camera() {
+        let mut c = Canvas::default();
+        c.add(rect(10.0, 10.0));
+        let far = c.add(rect(5000.0, 10.0));
+        let elsewhere = Camera::at(Point::new(4900.0, 0.0), 1.0);
+        let ids: Vec<_> = c
+            .visible_from(&elsewhere, Size::new(800.0, 600.0))
+            .map(|b| b.id)
+            .collect();
+        assert_eq!(ids, [far]);
     }
 
     #[test]

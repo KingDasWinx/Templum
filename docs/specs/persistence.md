@@ -123,7 +123,8 @@ What doesn't come back: the text that was on screen, and programs other than the
 
   - **`version`:** goes up only when an older Templum couldn't read the new file correctly. Additions it can ignore
     don't change it.
-  - **`camera`:** the world point at the top left of the canvas, and the zoom factor.
+  - **`camera`:** the world point at the top left of the canvas, and the zoom factor. During a zoom glide
+    ([polish.md](polish.md#camera-flights)) it is where the camera is going.
   - **`items`:** back to front, so the last is drawn on top. `kind` names the item's type. Only `"terminal"` exists
     now, and later kinds add their own fields.
   - **A terminal's fields:**

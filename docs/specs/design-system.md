@@ -2,7 +2,8 @@
 
 - **Date:** 2026-10-10
 - **Status:** Implemented
-- **Superseded in part by:** [polish.md](polish.md), which removed the glass (the window is always opaque).
+- **Superseded in part by:** [polish.md](polish.md), which removed the glass (the window is always opaque),
+  made the dots stronger and animated the zoom.
 - **Builds on:** [walking-skeleton.md](walking-skeleton.md), [ARCHITECTURE.md](../ARCHITECTURE.md),
   [ADR-0002](../adr/0002-ui-framework.md)
 

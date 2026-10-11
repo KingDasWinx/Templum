@@ -69,15 +69,23 @@ pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut App) 
                     let n = ZOOM_STEPS.len();
                     let k = (t / 0.25) as usize % (2 * (n - 1));
                     let target = if k < n { k } else { 2 * (n - 1) - k };
-                    let cam = &mut ws.canvas.camera;
-                    cam.zoom_step(target as i32 - cam.zoom_index() as i32, Point::default());
+                    // Through the workspace, as the keys and the wheel do: zoom steps glide.
+                    let step = target as i32 - ws.canvas.camera.zoom_index() as i32;
+                    if step != 0 {
+                        ws.zoom_to(step, Point::default(), cx);
+                    }
+                    let cam = ws.canvas.camera;
                     let z = cam.zoom();
                     let a = t * std::f32::consts::TAU / 4.0;
                     let vp = window.viewport_size();
-                    cam.origin = Point::new(
+                    let want = Point::new(
                         center.x + 400.0 * a.cos() - f32::from(vp.width) / 2.0 / z,
                         center.y + 400.0 * a.sin() - f32::from(vp.height) / 2.0 / z,
                     );
+                    ws.pan_by(Point::new(
+                        (cam.origin.x - want.x) * z,
+                        (cam.origin.y - want.y) * z,
+                    ));
                     window.request_animation_frame();
                     true
                 }));

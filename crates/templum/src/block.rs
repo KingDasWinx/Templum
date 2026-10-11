@@ -34,8 +34,8 @@ pub(crate) fn render(
 ) -> AnyElement {
     let id = block.id;
     let n = id.0 as usize;
-    let z = ws.canvas.camera.zoom() * look.scale;
-    let full = ws.canvas.camera.rect_to_screen(block.rect);
+    let z = ws.view.zoom() * look.scale;
+    let full = ws.view.rect_to_screen(block.rect);
     let r = Rect::new(
         full.x + full.w * (1.0 - look.scale) / 2.0,
         full.y + full.h * (1.0 - look.scale) / 2.0,

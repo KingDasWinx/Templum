@@ -10,44 +10,46 @@ const ZOOM_1: usize = 6;
 /// Screen margin kept around the blocks by [`Camera::fit`].
 pub const FIT_MARGIN: f32 = 32.0;
 
+/// Every way of moving the camera lands its zoom on [`ZOOM_STEPS`]; only a frame of a
+/// [`CameraFlight`](crate::CameraFlight) is drawn between them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
     /// World point shown at the viewport's top-left corner.
     pub origin: Point,
-    zoom_idx: usize,
+    zoom: f32,
 }
 
 impl Default for Camera {
     fn default() -> Self {
         Self {
             origin: Point::default(),
-            zoom_idx: ZOOM_1,
+            zoom: ZOOM_STEPS[ZOOM_1],
         }
     }
 }
 
 impl Camera {
     pub fn zoom(&self) -> f32 {
-        ZOOM_STEPS[self.zoom_idx]
+        self.zoom
     }
 
+    /// The step nearest to the zoom: the zoom's own step, except during a flight.
     pub fn zoom_index(&self) -> usize {
-        self.zoom_idx
+        nearest_step(self.zoom)
     }
 
     /// A camera at `origin` with the zoom step nearest to `zoom` (a saved canvas). A zoom that
     /// isn't a finite number gives 100%.
     pub fn at(origin: Point, zoom: f32) -> Camera {
-        let zoom_idx = if zoom.is_finite() {
-            ZOOM_STEPS
-                .iter()
-                .enumerate()
-                .min_by(|(_, a), (_, b)| (*a - zoom).abs().total_cmp(&(*b - zoom).abs()))
-                .map_or(ZOOM_1, |(i, _)| i)
-        } else {
-            ZOOM_1
-        };
-        Camera { origin, zoom_idx }
+        Camera {
+            origin,
+            zoom: ZOOM_STEPS[nearest_step(zoom)],
+        }
+    }
+
+    /// A camera at any zoom: a frame of a flight, never where the camera rests.
+    pub fn unsnapped(origin: Point, zoom: f32) -> Camera {
+        Camera { origin, zoom }
     }
 
     pub fn to_world(&self, screen: Point) -> Point {
@@ -77,7 +79,7 @@ impl Camera {
 
     /// Moves `delta` zoom steps (clamped), keeping the world point under `anchor` still.
     pub fn zoom_step(&mut self, delta: i32, anchor: Point) {
-        let idx = (self.zoom_idx as i32 + delta).clamp(0, ZOOM_STEPS.len() as i32 - 1);
+        let idx = (self.zoom_index() as i32 + delta).clamp(0, ZOOM_STEPS.len() as i32 - 1);
         self.set_zoom(idx as usize, anchor);
     }
 
@@ -91,10 +93,10 @@ impl Camera {
     pub fn fit(&mut self, bounds: Rect, viewport: Size) {
         let avail_w = (viewport.w - 2.0 * FIT_MARGIN).max(1.0);
         let avail_h = (viewport.h - 2.0 * FIT_MARGIN).max(1.0);
-        self.zoom_idx = ZOOM_STEPS
+        self.zoom = ZOOM_STEPS[ZOOM_STEPS
             .iter()
             .rposition(|&z| bounds.w * z <= avail_w && bounds.h * z <= avail_h)
-            .unwrap_or(0);
+            .unwrap_or(0)];
         let z = self.zoom();
         self.origin = Point::new(
             bounds.x + bounds.w / 2.0 - viewport.w / 2.0 / z,
@@ -104,12 +106,24 @@ impl Camera {
 
     fn set_zoom(&mut self, idx: usize, anchor: Point) {
         let world = self.to_world(anchor);
-        self.zoom_idx = idx;
+        self.zoom = ZOOM_STEPS[idx];
         self.origin = Point::new(
             world.x - anchor.x / self.zoom(),
             world.y - anchor.y / self.zoom(),
         );
     }
+}
+
+/// The index of the step nearest to `zoom`; 100% for a zoom that isn't a finite number.
+fn nearest_step(zoom: f32) -> usize {
+    if !zoom.is_finite() {
+        return ZOOM_1;
+    }
+    ZOOM_STEPS
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| (*a - zoom).abs().total_cmp(&(*b - zoom).abs()))
+        .map_or(ZOOM_1, |(i, _)| i)
 }
 
 #[cfg(test)]
@@ -164,6 +178,15 @@ mod tests {
         assert_eq!(Camera::at(origin, f32::NAN).zoom(), 1.0);
         assert_eq!(Camera::at(origin, f32::INFINITY).zoom(), 1.0);
         assert_eq!(Camera::at(origin, 1.5).origin, origin);
+    }
+
+    #[test]
+    fn unsnapped_keeps_its_zoom_and_a_step_from_there_lands_on_a_step() {
+        let mut cam = Camera::unsnapped(Point::new(7.0, 8.0), 1.18);
+        assert_eq!(cam.zoom(), 1.18);
+        assert_eq!(cam.zoom_index(), 8, "1.25 is the nearest step");
+        cam.zoom_step(1, Point::new(0.0, 0.0));
+        assert_eq!(cam.zoom(), 1.5);
     }
 
     #[test]
