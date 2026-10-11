@@ -24,9 +24,11 @@ would have opened together with the block's. The canvas and the blocks had no me
 
 | Right-click on | Items |
 |---|---|
-| The empty canvas | **Add ▸** Terminal, Kanban board. The block's top-left corner goes where you clicked. |
+| The empty canvas | **AI agent ▸** (the agents), **Add ▸** Terminal, Kanban board, Note. The block's top-left corner goes where you clicked. |
 | A terminal block (header or body) | Copy (disabled without a selection), Paste, Close terminal |
 | A kanban block (header, or its empty space) | Board list (or Back to the board, while the list shows), Close |
+| A note block | Preview (or Edit), Copy all, Close |
+| The toolbar's AI agent button | The agents; the chosen one opens in the middle of the canvas |
 | A board in a block's board list | Open, Rename…, Delete… |
 | A column's title | Rename…, Add a card, Delete |
 | A card | Open, Delete card |

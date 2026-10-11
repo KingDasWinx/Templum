@@ -78,7 +78,11 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
 - The workspace on screen is `Workspace::space`; the hidden ones (`others`) keep their terminals running, unarmed so
   their output never wakes the UI. The sidebar (`sidebar.rs`) switches them by swapping. `session.rs` keeps their
   order and names in `workspaces/index.json` ([specs/workspaces.md](specs/workspaces.md)).
-- A block is a terminal or a kanban block (`Space::kanbans`). Kanban boards are app-wide (`Workspace::boards`,
+- Every block's content is a `Body` in `Space::blocks`: a terminal, a kanban block or a note (`note.rs`, gpui-kit's
+  editor with the Markdown grammar). Adding a kind is one `Body` arm, one `session::Item` variant and one
+  `menu::Items` arm ([specs/cockpit.md](specs/cockpit.md)). Blocks snap to each other's edges and centers while they
+  are moved or resized (`templum-canvas`'s `snap.rs`). The toolbar (`toolbar.rs`) holds the tools;
+  `workspace::Tool` is the active one. Kanban boards are app-wide (`Workspace::boards`,
   `board.rs`, saved in `boards.json` with the snapshot); `kanban.rs` draws a block's board at the zoom, with GPUI's
   drag and drop ([specs/kanban.md](specs/kanban.md)).
 - The canvas is saved by `crates/templum/src/session.rs`: one JSON file per workspace in the data folder. Every

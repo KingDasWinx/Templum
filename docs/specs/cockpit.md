@@ -687,14 +687,17 @@ app usable after it; each plan ends with its docs.
 
 | Plan | Sub-projects | Depends on | New feature flags |
 |---|---|---|---|
-| **1. Canvas foundations** | §1 blocks of any kind, §2 snapping, §3 toolbar, §5 notes | — | `tree-sitter-markdown` |
+| **1. Canvas foundations** | §1 blocks of any kind, §2 snapping, §3 toolbar, §5 notes | — | `tree-sitter-markdown`, `AllAssets` |
 | **2. Drawing** | §4 | 1 (toolbar) | — |
-| **3. Workspaces screen** | §6 | — | `AllAssets` |
+| **3. Workspaces screen** | §6 | — | — |
 | **4. Editor** | §7, Settings ▸ Tools | 1 (blocks, toolbar) | `tree-sitter-languages` |
 | **5. Git** | §8, `templum-git` | 4 (opens files) | — |
 | **6. Docker** | §9, `templum-docker` | 1 (terminal hand-off); 4 for "Open compose file" | — |
 
 Plans 2 and 3 can be done in either order after 1; 5 and 6 are independent of each other.
+
+Plan 1 ([../plans/2026-10-11-canvas-foundations.md](../plans/2026-10-11-canvas-foundations.md)) shipped on
+2026-10-11. It left out §3's "hide the toolbar under the settings panel on narrow windows".
 
 ## Risks
 

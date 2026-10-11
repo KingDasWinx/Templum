@@ -30,19 +30,21 @@ cargo run -p templum
 |---|---|
 | Double-click empty canvas | New terminal there |
 | Drag a title bar / the bottom-right handle | Move / resize the block |
+| Drag a block near another | It snaps to the other's edges or center within 8 px, and a line shows which |
 | Drag empty canvas, or scroll over it | Pan |
 | Hold Alt (Option on macOS), then drag or scroll anywhere | Pan, even over blocks: they don't react while Alt is held |
 | Drag with the middle button, anywhere | Pan |
 | Scroll over a terminal | Scroll its history |
 | Ctrl+scroll, or pinch | Zoom |
 | Drag in a terminal (double-click: word, triple-click: line) | Select text |
-| Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal or Kanban board, where you clicked |
+| Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal, Kanban board or Note, where you clicked |
 | Right-click a block, card, column, board or workspace tile | Its menu (copy, paste, rename, delete, close…) |
 
 | Linux / Windows | macOS | Action |
 |---|---|---|
 | Ctrl+Shift+T | Cmd+T | New terminal |
 | Ctrl+Shift+K | Cmd+Shift+K | New kanban board block |
+| Ctrl+Shift+M | Cmd+Shift+M | New note |
 | Ctrl+Shift+W | Cmd+W | Close the focused terminal |
 | Ctrl+Shift+C / V | Cmd+C / V | Copy / paste |
 | Ctrl+= / Ctrl+- | Cmd+= / Cmd+- | Zoom in / out |
@@ -103,12 +105,24 @@ as you make it.
 
 ## Kanban boards
 
-The board button in the title bar (or Ctrl+Shift+K) puts a kanban block on the canvas, Trello-style. Pick a board
+The toolbar's board button (or Ctrl+Shift+K) puts a kanban block on the canvas, Trello-style. Pick a board
 in it or create one: it starts with To do, Doing and Done. Drag cards between columns and columns by their titles,
 click a card to edit its title, description and colored labels, and right-click a column or a board to rename or
 delete it. Boards aren't tied to a canvas: any block, in any workspace, can show any board (the ⇅ button at the left
 of its header switches), and blocks showing the same board stay in sync. Boards are kept in `boards.json`, next to
 the `workspaces` folder.
+
+## Notes
+
+The toolbar's note button (or Ctrl+Shift+M) puts a note on the canvas. Write Markdown in it: headings, lists (Tab
+indents an item), code. The eye button at the left of its header shows it rendered, and back; the first heading is
+the note's title. Notes are saved with the canvas.
+
+## The toolbar
+
+The bar at the bottom of the canvas holds the tools: **Select** and **Hand** (move the canvas by dragging anywhere,
+over blocks too; Esc goes back to Select), then a button for each kind of block (terminal, note, kanban board) and
+the AI agents.
 
 ## Your canvas is kept
 
