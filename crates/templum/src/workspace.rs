@@ -34,6 +34,7 @@ use crate::keys::{self, Command, Keymap, Keys};
 use crate::motion;
 use crate::session;
 use crate::settings::{self, Panel};
+use crate::sidebar;
 use crate::theme::{self, Entry, Theme, Ui};
 use crate::theme_picker::{self, Picker};
 use crate::title_bar;
@@ -85,6 +86,9 @@ enum Drag {
 /// animating.
 #[derive(Default)]
 pub(crate) struct Space {
+    /// Names its file; chosen once, never changed.
+    pub id: String,
+    pub name: String,
     pub canvas: Canvas,
     pub terminals: HashMap<BlockId, Pane>,
     pub focused: Option<BlockId>,
@@ -105,6 +109,33 @@ pub(crate) struct Space {
     pub ghosts: Vec<Ghost>,
 }
 
+impl Space {
+    /// The canvas as a snapshot needs it: rects and process ids, cheap on the UI thread.
+    fn layout(&self) -> session::Layout {
+        let blocks = self.canvas.blocks();
+        session::Layout {
+            camera: self.canvas.camera,
+            blocks: blocks
+                .iter()
+                .map(|b| (b.rect, self.terminals[&b.id].term.processes()))
+                .collect(),
+            focused: self
+                .focused
+                .and_then(|id| blocks.iter().position(|b| b.id == id)),
+        }
+    }
+
+    /// The last snapshot found Claude Code or Codex running in one of its terminals.
+    pub fn has_agent(&self) -> bool {
+        self.saved.as_ref().is_some_and(|saved| {
+            saved
+                .items
+                .iter()
+                .any(|session::Item::Terminal(t)| t.agent().is_some())
+        })
+    }
+}
+
 /// Called at the start of every render; returning false removes it (the bench drives frames).
 pub(crate) type FrameHook =
     Box<dyn FnMut(&mut Workspace, &mut Window, &mut Context<Workspace>) -> bool>;
@@ -112,6 +143,12 @@ pub(crate) type FrameHook =
 pub struct Workspace {
     /// The workspace on screen.
     pub(crate) space: Space,
+    /// The hidden ones, in the sidebar's order without the active one. Their terminals run on.
+    pub(crate) others: Vec<Space>,
+    /// The active workspace's position in the sidebar.
+    pub(crate) active: usize,
+    /// The sidebar is shown.
+    pub(crate) sidebar: bool,
     pub(crate) cell: CellMetrics,
     /// IME pre-edit text, drawn at the cursor until committed.
     pub(crate) marked: Option<String>,
@@ -299,10 +336,10 @@ impl Workspace {
             }),
         ];
         let mut ws = Self {
-            space: Space {
-                pristine: true,
-                ..Space::default()
-            },
+            space: Space::default(),
+            others: Vec::new(),
+            active: 0,
+            sidebar: true,
             cell,
             marked: None,
             ime_cursor: None,
@@ -350,35 +387,223 @@ impl Workspace {
             keymap,
             _wake: wake,
         };
-        let loaded = ws.data_dir.as_deref().map(session::load);
-        if let Some(session::Loaded::Saved(saved)) = loaded {
-            ws.restore(saved, window, cx);
-            return ws;
-        }
-        match loaded {
-            Some(session::Loaded::Moved { to, why }) => {
+        ws.load_spaces(window, cx);
+        ws
+    }
+
+    /// Opens every workspace of the index (without one: `default`, as the version without
+    /// workspaces saved it), each canvas as it was saved, and shows the active one. A first run
+    /// gets one terminal, centered.
+    fn load_spaces(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use session::Loaded;
+        let (index, no_index) = match self.data_dir.as_deref().map(session::load_index) {
+            Some(Loaded::Saved(index)) => (index, false),
+            Some(Loaded::Moved { to, why }) => {
                 let message = format!(
-                    "Couldn't read the saved canvas ({why}); it was kept as {}",
+                    "Couldn't read the workspace list ({why}); it was kept as {}",
                     to.display()
                 );
                 eprintln!("templum: {message}");
                 show_notification(window, cx, Notification::warning(message));
+                (session::Index::first_run(), true)
             }
-            Some(session::Loaded::Unreadable(why)) => {
-                let message =
-                    format!("Couldn't read the saved canvas ({why}); this session won't be saved");
+            Some(Loaded::Unreadable(why)) => {
+                let message = format!(
+                    "Couldn't read the workspace list ({why}); this session won't be saved"
+                );
                 eprintln!("templum: {message}");
                 show_notification(window, cx, Notification::error(message));
-                ws.data_dir = None;
+                self.data_dir = None;
+                (session::Index::first_run(), true)
             }
-            _ => {}
+            Some(Loaded::Nothing) | None => (session::Index::first_run(), true),
+        };
+        let mut spaces = Vec::new();
+        let mut first_saved = false;
+        for (i, entry) in index.workspaces.iter().enumerate() {
+            self.space = Space {
+                id: entry.id.clone(),
+                name: entry.name.clone(),
+                ..Space::default()
+            };
+            match self
+                .data_dir
+                .as_deref()
+                .map(|d| session::load(d, &entry.id))
+            {
+                Some(Loaded::Saved(saved)) => {
+                    first_saved |= i == 0;
+                    self.restore(saved, window, cx);
+                }
+                Some(Loaded::Moved { to, why }) => {
+                    let message = format!(
+                        "Couldn't read the saved canvas ({why}); it was kept as {}",
+                        to.display()
+                    );
+                    eprintln!("templum: {message}");
+                    show_notification(window, cx, Notification::warning(message));
+                }
+                Some(Loaded::Unreadable(why)) => {
+                    let message = format!(
+                        "Couldn't read the saved canvas ({why}); this session won't be saved"
+                    );
+                    eprintln!("templum: {message}");
+                    show_notification(window, cx, Notification::error(message));
+                    self.data_dir = None;
+                }
+                Some(Loaded::Nothing) | None => {}
+            }
+            spaces.push(std::mem::take(&mut self.space));
         }
-        // A first run: one terminal, centered.
-        let vp = viewport(window);
-        let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, ws.cell.size);
-        let rect = Rect::new((vp.w - size.w) / 2.0, (vp.h - size.h) / 2.0, size.w, size.h);
-        ws.open(rect, window, cx);
-        ws
+        self.sidebar = index.sidebar;
+        self.active = index.active.min(spaces.len() - 1);
+        self.space = spaces.remove(self.active);
+        self.others = spaces;
+        if no_index && !first_saved {
+            // A first run: one terminal, centered.
+            self.space.pristine = true;
+            let vp = self.viewport(window);
+            let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
+            let rect = Rect::new((vp.w - size.w) / 2.0, (vp.h - size.h) / 2.0, size.w, size.h);
+            self.open(rect, window, cx);
+        }
+    }
+
+    /// Shows workspace `to` (a position in the sidebar). What only makes sense on screen ends
+    /// with the one left: its fading blocks, its animations, a drag.
+    pub(crate) fn switch_to(&mut self, to: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if to == self.active || to > self.others.len() {
+            return;
+        }
+        let left = &mut self.space;
+        // Their shells close now.
+        left.ghosts.clear();
+        left.appearing.clear();
+        left.hovered = None;
+        left.flight = None;
+        left.view = left.canvas.camera;
+        self.drag = None;
+        self.press = None;
+        self.marked = None;
+        let current = std::mem::take(&mut self.space);
+        self.others.insert(self.active, current);
+        self.space = self.others.remove(to);
+        self.active = to;
+        self.space.view = self.space.canvas.camera;
+        window.focus(&self.focus_handle, cx);
+        self.write_index(window, cx);
+        cx.notify();
+    }
+
+    /// The next (`step` 1) or previous (-1) workspace, wrapping around.
+    fn cycle_space(&mut self, step: i32, window: &mut Window, cx: &mut Context<Self>) {
+        let n = self.others.len() as i32 + 1;
+        let to = (self.active as i32 + step).rem_euclid(n) as usize;
+        self.switch_to(to, window, cx);
+    }
+
+    /// Creates an empty workspace after the last one and shows it.
+    pub(crate) fn new_space(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dir = self.data_dir.clone();
+        let id = session::next_id(|id| {
+            self.spaces().any(|s| s.id == id)
+                || dir.as_deref().is_some_and(|d| session::id_in_folder(d, id))
+        });
+        let total = self.others.len() + 1;
+        let name = (total + 1..)
+            .map(|n| format!("Workspace {n}"))
+            .find(|name| !self.spaces().any(|s| s.name == *name))
+            .expect("an unused name");
+        self.others.push(Space {
+            id,
+            name,
+            ..Space::default()
+        });
+        self.switch_to(total, window, cx);
+    }
+
+    /// Renames the workspace with `id`; an empty name is refused.
+    pub(crate) fn rename_space(
+        &mut self,
+        id: &str,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("A workspace needs a name");
+        }
+        if let Some(space) = self.space_by_id_mut(id) {
+            space.name = name.to_string();
+        }
+        self.write_index(window, cx);
+        cx.notify();
+        Ok(())
+    }
+
+    /// Deletes the workspace with `id`, closing its terminals and keeping its file as `.bak`.
+    /// The last one stays.
+    pub(crate) fn delete_space(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(at) = self.order().iter().position(|s| s.id == id) else {
+            return;
+        };
+        if self.others.is_empty() {
+            return;
+        }
+        if at == self.active {
+            self.switch_to(if at > 0 { at - 1 } else { 1 }, window, cx);
+        }
+        let space = self
+            .others
+            .remove(if at < self.active { at } else { at - 1 });
+        if at < self.active {
+            self.active -= 1;
+        }
+        if let Some(dir) = &self.data_dir
+            && let Err(err) = session::set_aside(dir, &space.id)
+        {
+            eprintln!("templum: couldn't set {}.json aside: {err}", space.id);
+        }
+        // Dropping its terminals shuts their shells down.
+        drop(space);
+        self.write_index(window, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar = !self.sidebar;
+        self.write_index(window, cx);
+        cx.notify();
+    }
+
+    /// The workspaces as the index lists them.
+    fn index(&self) -> session::Index {
+        session::Index {
+            version: session::VERSION,
+            workspaces: self
+                .order()
+                .iter()
+                .map(|s| session::IndexEntry {
+                    id: s.id.clone(),
+                    name: s.name.clone(),
+                })
+                .collect(),
+            active: self.active,
+            sidebar: self.sidebar,
+        }
+    }
+
+    /// Writes the index at once: it changes only on a user's action.
+    fn write_index(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dir) = &self.data_dir else {
+            return;
+        };
+        if let Err(err) = session::save_index(dir, &self.index()) {
+            let message = format!("Couldn't save the workspace list: {err}");
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::error(message));
+        }
     }
 
     /// Starts a terminal in a new focused block, in the configured start folder.
@@ -495,24 +720,26 @@ impl Workspace {
         self.space.saved = Some(saved);
     }
 
-    /// The canvas as a snapshot needs it: rects and process ids, cheap on the UI thread.
-    fn layout(&self) -> session::Layout {
-        let blocks = self.space.canvas.blocks();
-        session::Layout {
-            camera: self.space.canvas.camera,
-            blocks: blocks
-                .iter()
-                .map(|b| (b.rect, self.space.terminals[&b.id].term.processes()))
-                .collect(),
-            focused: self
-                .space
-                .focused
-                .and_then(|id| blocks.iter().position(|b| b.id == id)),
-        }
+    /// Every workspace: the active one, then the hidden ones.
+    pub(crate) fn spaces(&self) -> impl Iterator<Item = &Space> {
+        std::iter::once(&self.space).chain(&self.others)
     }
 
-    /// Every session::EVERY: reads the processes and writes the file in the background, when the
-    /// snapshot differs from the last one written.
+    /// The workspaces in the sidebar's order.
+    pub(crate) fn order(&self) -> Vec<&Space> {
+        let mut order: Vec<&Space> = self.others.iter().collect();
+        order.insert(self.active, &self.space);
+        order
+    }
+
+    fn space_by_id_mut(&mut self, id: &str) -> Option<&mut Space> {
+        std::iter::once(&mut self.space)
+            .chain(&mut self.others)
+            .find(|s| s.id == id)
+    }
+
+    /// Every session::EVERY: reads the processes and writes each workspace's file in the
+    /// background, when its snapshot differs from the last one written.
     fn snapshot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(dir) = self.data_dir.clone() else {
             return;
@@ -522,15 +749,23 @@ impl Workspace {
         }
         self.snapshotting = true;
         self.generation += 1;
-        let (layout, generation, last) = (self.layout(), self.generation, self.space.saved.clone());
+        let generation = self.generation;
+        let jobs: Vec<_> = self
+            .spaces()
+            .map(|s| (s.id.clone(), s.layout(), s.saved.clone()))
+            .collect();
         cx.spawn_in(window, async move |ws, cx| {
             let done = cx
                 .background_executor()
                 .spawn(async move {
-                    let saved = layout.snapshot();
-                    let written = (last.as_ref() != Some(&saved))
-                        .then(|| session::save(&dir, &saved, generation));
-                    (saved, written)
+                    jobs.into_iter()
+                        .map(|(id, layout, last)| {
+                            let saved = layout.snapshot();
+                            let written = (last.as_ref() != Some(&saved))
+                                .then(|| session::save(&dir, &id, &saved, generation));
+                            (id, saved, written)
+                        })
+                        .collect::<Vec<_>>()
                 })
                 .await;
             ws.update_in(cx, |ws, window, cx| ws.snapshot_done(done, window, cx))
@@ -541,46 +776,59 @@ impl Workspace {
 
     fn snapshot_done(
         &mut self,
-        (saved, written): (session::Saved, Option<std::io::Result<()>>),
+        done: Vec<(String, session::Saved, Option<std::io::Result<()>>)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.snapshotting = false;
-        match written {
-            None => {}
-            Some(Ok(())) => {
-                if std::mem::take(&mut self.canvas_save_failed) {
-                    show_notification(
-                        window,
-                        cx,
-                        Notification::info("The canvas is saved again".to_string()),
-                    );
+        let mut wrote = false;
+        let mut failed = None;
+        for (id, saved, written) in done {
+            match written {
+                None => {}
+                Some(Ok(())) => {
+                    wrote = true;
+                    // A workspace deleted meanwhile is gone: nothing to update.
+                    if let Some(space) = self.space_by_id_mut(&id) {
+                        space.saved = Some(saved);
+                    }
                 }
-                self.space.saved = Some(saved);
-            }
-            Some(Err(err)) => {
-                eprintln!("templum: couldn't save the canvas: {err}");
-                if !std::mem::replace(&mut self.canvas_save_failed, true) {
-                    let message = format!("Couldn't save the canvas: {err}");
-                    show_notification(window, cx, Notification::error(message));
-                }
+                Some(Err(err)) => failed = Some(err),
             }
         }
+        if let Some(err) = failed {
+            eprintln!("templum: couldn't save the canvas: {err}");
+            if !std::mem::replace(&mut self.canvas_save_failed, true) {
+                let message = format!("Couldn't save the canvas: {err}");
+                show_notification(window, cx, Notification::error(message));
+            }
+        } else if wrote && std::mem::take(&mut self.canvas_save_failed) {
+            show_notification(
+                window,
+                cx,
+                Notification::info("The canvas is saved again".to_string()),
+            );
+        }
+        cx.notify();
     }
 
-    /// When the window closes or Templum quits: the last snapshot, read and written at once.
+    /// When the window closes or Templum quits: the last snapshot of every workspace, read and
+    /// written at once.
     fn save_canvas_now(&mut self) {
         let Some(dir) = self.data_dir.clone() else {
             return;
         };
         self.generation += 1;
-        let saved = self.layout().snapshot();
-        if self.space.saved.as_ref() == Some(&saved) {
-            return;
-        }
-        match session::save(&dir, &saved, self.generation) {
-            Ok(()) => self.space.saved = Some(saved),
-            Err(err) => eprintln!("templum: couldn't save the canvas: {err}"),
+        let generation = self.generation;
+        for space in std::iter::once(&mut self.space).chain(&mut self.others) {
+            let saved = space.layout().snapshot();
+            if space.saved.as_ref() == Some(&saved) {
+                continue;
+            }
+            match session::save(&dir, &space.id, &saved, generation) {
+                Ok(()) => space.saved = Some(saved),
+                Err(err) => eprintln!("templum: couldn't save the canvas: {err}"),
+            }
         }
     }
 
@@ -626,7 +874,7 @@ impl Workspace {
 
     /// Draws with `theme` from the next frame on, in every terminal and gpui-kit widget.
     pub(crate) fn apply(&mut self, theme: Rc<Theme>, cx: &mut Context<Self>) {
-        for pane in self.space.terminals.values() {
+        for pane in self.spaces().flat_map(|s| s.terminals.values()) {
             pane.term.set_palette(theme.palette);
         }
         theme::apply_to_kit(&theme, cx);
@@ -717,7 +965,7 @@ impl Workspace {
         }
         if self.config.cursor != old.cursor || self.config.terminal != old.terminal {
             let options = self.config.term_options();
-            for pane in self.space.terminals.values() {
+            for pane in self.spaces().flat_map(|s| s.terminals.values()) {
                 pane.term.shared().set_options(options);
             }
         }
@@ -806,11 +1054,13 @@ impl Workspace {
             show_notification(window, cx, Notification::warning(warning));
         }
         self.cell = cell;
-        for (id, pane) in self.space.terminals.iter_mut() {
-            if let Some(block) = self.space.canvas.get(*id) {
-                let content = chrome::content_rect(block.rect).size();
-                let (cols, rows) = chrome::grid_size(content, self.cell.size);
-                pane.term.resize(cols, rows, self.cell.px());
+        for space in std::iter::once(&mut self.space).chain(&mut self.others) {
+            for (id, pane) in space.terminals.iter_mut() {
+                if let Some(block) = space.canvas.get(*id) {
+                    let content = chrome::content_rect(block.rect).size();
+                    let (cols, rows) = chrome::grid_size(content, self.cell.size);
+                    pane.term.resize(cols, rows, self.cell.px());
+                }
             }
         }
     }
@@ -1217,8 +1467,20 @@ impl Workspace {
         }
     }
 
-    fn center(window: &Window) -> Point {
-        let vp = viewport(window);
+    /// The canvas area: the window minus the title bar, the sidebar and, on Linux, the
+    /// client-side shadow.
+    pub(crate) fn viewport(&self, window: &Window) -> Size {
+        let s = window.viewport_size();
+        let pad = window_paddings(window);
+        let sidebar = if self.sidebar { sidebar::WIDTH } else { 0.0 };
+        Size::new(
+            f32::from(s.width - pad.left - pad.right) - sidebar,
+            f32::from(s.height - pad.top - pad.bottom - TITLE_BAR_HEIGHT),
+        )
+    }
+
+    fn center(&self, window: &Window) -> Point {
+        let vp = self.viewport(window);
         Point::new(vp.w / 2.0, vp.h / 2.0)
     }
 
@@ -1258,28 +1520,28 @@ impl Workspace {
     }
 
     fn zoom_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.zoom_to(1, Self::center(window), cx);
+        self.zoom_to(1, self.center(window), cx);
     }
 
     fn zoom_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.zoom_to(-1, Self::center(window), cx);
+        self.zoom_to(-1, self.center(window), cx);
     }
 
     pub(crate) fn zoom_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let center = Self::center(window);
+        let center = self.center(window);
         let mut to = self.space.canvas.camera;
         to.zoom_reset(center);
         self.fly(to, center, cx);
     }
 
     fn fit_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let vp = viewport(window);
+        let vp = self.viewport(window);
         let mut to = self.space.canvas.camera;
         match self.space.canvas.bounds() {
             Some(bounds) => to.fit(bounds, vp),
             None => to.zoom_reset(Point::new(vp.w / 2.0, vp.h / 2.0)),
         }
-        self.fly(to, Self::center(window), cx);
+        self.fly(to, self.center(window), cx);
     }
 
     fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
@@ -1315,7 +1577,7 @@ impl Workspace {
 
     pub(crate) fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.space.pristine = false;
-        let vp = viewport(window);
+        let vp = self.viewport(window);
         let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
         let center = self
             .space
@@ -1346,6 +1608,10 @@ impl Workspace {
             Command::ThemePicker => self.toggle_theme_picker(cx),
             Command::OpenConfig => self.open_config(window, cx),
             Command::Settings => self.toggle_settings(window, cx),
+            Command::NextWorkspace => self.cycle_space(1, window, cx),
+            Command::PreviousWorkspace => self.cycle_space(-1, window, cx),
+            Command::NewWorkspace => self.new_space(window, cx),
+            Command::ToggleSidebar => self.toggle_sidebar(window, cx),
             Command::Quit => self.quit(window, cx),
         }
     }
@@ -1459,6 +1725,13 @@ impl Workspace {
         if self.picker.is_some() || command.is_some() {
             // While the picker is open, typing and shortcuts don't reach the terminal.
             self.command_key(e, command, window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        if let Some(to) = workspace_digit(&e.keystroke, cfg!(target_os = "macos"))
+            && to <= self.others.len()
+        {
+            self.switch_to(to, window, cx);
             cx.stop_propagation();
             return;
         }
@@ -1637,19 +1910,24 @@ fn show_notification(window: &mut Window, cx: &mut App, notification: Notificati
     });
 }
 
+/// Ctrl+1 to Ctrl+9 (Cmd on macOS), with no other modifier: the position of a workspace.
+fn workspace_digit(k: &Keystroke, macos: bool) -> Option<usize> {
+    let m = &k.modifiers;
+    let held = if macos {
+        m.platform && !m.control
+    } else {
+        m.control && !m.platform
+    };
+    if !held || m.alt || m.shift || m.function {
+        return None;
+    }
+    let digit: usize = k.key.parse().ok()?;
+    (1..=9).contains(&digit).then(|| digit - 1)
+}
+
 /// The first shortcut of the commands the empty canvas shows: new terminal, then settings.
 fn hint_keys(keymap: &Keymap) -> [Option<Keystroke>; 2] {
     [Command::NewTerminal, Command::Settings].map(|c| keymap.keystrokes(c).into_iter().next())
-}
-
-/// The canvas area: the window minus the title bar and, on Linux, the client-side shadow.
-fn viewport(window: &Window) -> Size {
-    let s = window.viewport_size();
-    let pad = window_paddings(window);
-    Size::new(
-        f32::from(s.width - pad.left - pad.right),
-        f32::from(s.height - pad.top - pad.bottom - TITLE_BAR_HEIGHT),
-    )
 }
 
 /// The dot grid under the blocks: round dots centered on the world lattice.
@@ -1728,7 +2006,7 @@ impl Render for Workspace {
             pane.term.rearm();
         }
 
-        let vp = viewport(window);
+        let vp = self.viewport(window);
         if self.space.pristine
             && let Some(b) = self.space.canvas.bounds()
         {
@@ -1887,7 +2165,14 @@ impl Render for Workspace {
             .overflow_hidden()
             .bg(self.ui.canvas)
             .child(title_bar::render(self, cx))
-            .child(area)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .flex()
+                    .when(self.sidebar, |el| el.child(sidebar::render(self, cx)))
+                    .child(area),
+            )
             .children(panel)
             .children(picker)
     }
@@ -1986,6 +2271,51 @@ mod tests {
     };
 
     use super::{Workspace, bind_keys};
+
+    #[test]
+    fn a_workspace_shows_an_agent_from_its_last_snapshot() {
+        use crate::session::{Item, Saved, SavedCamera, SavedRect, TerminalItem, VERSION};
+        let with = |agent: Option<&str>| super::Space {
+            saved: Some(Saved {
+                version: VERSION,
+                camera: SavedCamera {
+                    x: 0.0,
+                    y: 0.0,
+                    zoom: 1.0,
+                },
+                items: vec![Item::Terminal(TerminalItem {
+                    rect: SavedRect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 1.0,
+                        h: 1.0,
+                    },
+                    folder: None,
+                    agent: agent.map(String::from),
+                })],
+                focused: None,
+            }),
+            ..super::Space::default()
+        };
+        assert!(with(Some("claude")).has_agent());
+        assert!(!with(Some("vim")).has_agent());
+        assert!(!with(None).has_agent());
+        assert!(!super::Space::default().has_agent(), "no snapshot yet");
+    }
+
+    #[test]
+    fn ctrl_digits_pick_a_workspace() {
+        let digit =
+            |k: &str, macos| super::workspace_digit(&gpui_kit::Keystroke::parse(k).unwrap(), macos);
+        assert_eq!(digit("ctrl-1", false), Some(0));
+        assert_eq!(digit("ctrl-9", false), Some(8));
+        assert_eq!(digit("cmd-2", true), Some(1));
+        assert_eq!(digit("ctrl-2", true), None, "Cmd on macOS");
+        assert_eq!(digit("ctrl-0", false), None, "zoom reset");
+        assert_eq!(digit("ctrl-shift-1", false), None, "fit all");
+        assert_eq!(digit("ctrl-alt-1", false), None);
+        assert_eq!(digit("1", false), None);
+    }
 
     #[test]
     fn the_hint_shows_the_shortcuts_in_effect() {
@@ -2430,7 +2760,7 @@ mod tests {
             });
             window.render_frame(cx);
             window.press(FIT, cx);
-            let vp = super::viewport(window);
+            let vp = ws.read(cx).viewport(window);
             assert_eq!(ws.read(cx).space.canvas.visible(vp).count(), 2);
         })
         .unwrap();
@@ -2554,7 +2884,7 @@ mod tests {
         std::thread::sleep(crate::motion::FLIGHT + std::time::Duration::from_millis(50));
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
-            let vp = super::viewport(window);
+            let vp = ws.read(cx).viewport(window);
             let ws = ws.read(cx);
             assert_eq!(ws.space.canvas.visible_from(&ws.space.view, vp).count(), 2);
         })
@@ -4370,7 +4700,7 @@ mod tests {
 
     fn write_canvas(dir: &std::path::Path, text: &str) {
         std::fs::create_dir_all(dir.join("workspaces")).unwrap();
-        std::fs::write(crate::session::path(dir), text).unwrap();
+        std::fs::write(crate::session::path(dir, crate::session::DEFAULT_ID), text).unwrap();
     }
 
     /// Waits for a terminal's shell to report its folder (canonicalized).
@@ -4473,7 +4803,8 @@ mod tests {
         write_canvas(data.path(), "{nope");
         let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
         assert_eq!(notification_count(handle, cx), 1);
-        let bak = crate::session::path(data.path()).with_extension("json.bak");
+        let bak = crate::session::path(data.path(), crate::session::DEFAULT_ID)
+            .with_extension("json.bak");
         assert_eq!(std::fs::read_to_string(bak).unwrap(), "{nope");
         ws.read_with(cx, |ws, _| {
             assert_eq!(ws.space.canvas.blocks().len(), 1, "as on a first run")
@@ -4514,7 +4845,7 @@ mod tests {
             data.path(),
             r#"{"version":1,"camera":{"x":0,"y":0,"zoom":1},"items":[]}"#,
         );
-        let path = crate::session::path(data.path());
+        let path = crate::session::path(data.path(), crate::session::DEFAULT_ID);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
         let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
         assert_eq!(notification_count(handle, cx), 1);
@@ -4553,6 +4884,10 @@ mod tests {
         });
         let (_, again) = open_in(cx, None, Some(data.path().to_path_buf()));
         again.read_with(cx, |ws, _| {
+            assert_eq!(
+                ws.space.name, "Main",
+                "no index: the canvas is the first workspace"
+            );
             let blocks = ws.space.canvas.blocks();
             assert_eq!(blocks.iter().map(|b| b.rect).collect::<Vec<_>>(), before.0);
             assert_eq!(
@@ -4564,10 +4899,143 @@ mod tests {
         });
     }
 
+    #[cfg(target_os = "macos")]
+    const SECOND: &str = "cmd-2";
+    #[cfg(not(target_os = "macos"))]
+    const SECOND: &str = "ctrl-2";
+
+    #[gpui_kit::test]
+    fn a_new_workspace_is_empty_and_the_first_keeps_running(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let first = first_id(&ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.new_space(window, cx));
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!((ws.active, ws.others.len()), (1, 1));
+            assert_eq!(ws.space.name, "Workspace 2");
+            assert!(ws.space.canvas.blocks().is_empty(), "a new one is empty");
+            assert_eq!(ws.others[0].name, "Main");
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.find("workspace-name");
+            window.click("workspace-default", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.active, 0);
+            assert_eq!(ws.space.focused, Some(first));
+            assert!(!ws.space.terminals[&first].term.exited(), "still running");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn workspace_keys_cycle_and_jump(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.new_space(window, cx);
+                ws.new_space(window, cx);
+            });
+            window.render_frame(cx);
+            assert_eq!(ws.read(cx).active, 2);
+            window.press("ctrl-tab", cx);
+            assert_eq!(ws.read(cx).active, 0, "wraps around");
+            window.press("ctrl-shift-tab", cx);
+            assert_eq!(ws.read(cx).active, 2);
+            window.press(SECOND, cx);
+            assert_eq!(ws.read(cx).active, 1);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn hidden_workspaces_get_theme_changes(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let first = first_id(&ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.new_space(window, cx));
+        })
+        .unwrap();
+        ws.update(cx, |ws, cx| ws.set_dark(true, cx));
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(
+                ws.others[0].terminals[&first].term.palette(),
+                ws.theme.palette
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn renaming_and_deleting_workspaces(cx: &mut TestAppContext) {
+        let data = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                assert!(ws.rename_space("default", "  ", window, cx).is_err());
+                assert_eq!(ws.space.name, "Main", "an empty name is refused");
+                ws.rename_space("default", " Work ", window, cx).unwrap();
+                assert_eq!(ws.space.name, "Work");
+                ws.delete_space("default", window, cx);
+                assert_eq!(ws.others.len(), 0, "the last one stays");
+                ws.new_space(window, cx);
+                ws.open(Rect::new(0.0, 0.0, 600.0, 400.0), window, cx);
+                ws.save_canvas_now();
+                ws.delete_space("w2", window, cx);
+                assert_eq!((ws.active, ws.others.len()), (0, 0));
+                assert_eq!(ws.space.name, "Work", "the one before it is shown");
+            });
+            window.render_frame(cx);
+            let name = window.find("workspace-name");
+            assert!(name.bounds().size.width > px(0.0));
+        })
+        .unwrap();
+        let w2 = crate::session::path(data.path(), "w2");
+        assert!(!w2.exists() && w2.with_extension("json.bak").exists());
+        let index = crate::session::load_index(data.path());
+        let crate::session::Loaded::Saved(index) = index else {
+            panic!("no index: {index:?}");
+        };
+        assert_eq!(index.workspaces.len(), 1);
+        assert_eq!(index.workspaces[0].name, "Work");
+    }
+
+    #[gpui_kit::test]
+    fn every_workspace_comes_back_in_order(cx: &mut TestAppContext) {
+        let data = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.new_space(window, cx);
+                ws.open(Rect::new(10.0, 20.0, 600.0, 400.0), window, cx);
+                ws.open(Rect::new(700.0, 20.0, 600.0, 400.0), window, cx);
+                ws.rename_space("w2", "Side project", window, cx).unwrap();
+                ws.new_space(window, cx);
+                ws.switch_to(1, window, cx);
+                ws.toggle_sidebar(window, cx);
+                ws.save_canvas_now();
+            })
+        })
+        .unwrap();
+        let (_, again) = open_in(cx, None, Some(data.path().to_path_buf()));
+        again.read_with(cx, |ws, _| {
+            let names: Vec<&str> = ws.order().iter().map(|s| s.name.as_str()).collect();
+            assert_eq!(names, ["Main", "Side project", "Workspace 3"]);
+            assert_eq!(ws.active, 1);
+            assert!(!ws.sidebar);
+            assert_eq!(ws.space.canvas.blocks().len(), 2);
+            assert_eq!(ws.others[0].canvas.blocks().len(), 1, "Main's terminal");
+            assert!(ws.others[1].canvas.blocks().is_empty());
+        });
+    }
+
     #[gpui_kit::test]
     fn snapshots_write_only_what_changed(cx: &mut TestAppContext) {
         let data = tempfile::tempdir().unwrap();
-        let path = crate::session::path(data.path());
+        let path = crate::session::path(data.path(), crate::session::DEFAULT_ID);
         let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
         tick(cx);
         assert!(path.exists(), "the first snapshot is written");
@@ -4604,7 +5072,10 @@ mod tests {
         assert_eq!(notification_count(handle, cx), 0, "not again");
         std::fs::remove_file(&blocker).unwrap();
         tick(cx);
-        assert!(crate::session::path(data.path()).exists(), "retried");
+        assert!(
+            crate::session::path(data.path(), crate::session::DEFAULT_ID).exists(),
+            "retried"
+        );
         assert_eq!(notification_count(handle, cx), 1, "and says it works again");
     }
 
@@ -4621,7 +5092,11 @@ mod tests {
         cx.update_window(handle, |_, window, _| window.remove_window())
             .unwrap();
         cx.run_until_parked();
-        let text = std::fs::read_to_string(crate::session::path(data.path())).unwrap();
+        let text = std::fs::read_to_string(crate::session::path(
+            data.path(),
+            crate::session::DEFAULT_ID,
+        ))
+        .unwrap();
         assert!(text.contains("-500.0"), "{text}");
     }
 
@@ -4644,7 +5119,11 @@ mod tests {
         tick(cx);
         ws.read_with(cx, |ws, _| assert!(ws.space.canvas.blocks().is_empty()));
         assert_eq!(
-            std::fs::read_to_string(crate::session::path(data.path())).unwrap(),
+            std::fs::read_to_string(crate::session::path(
+                data.path(),
+                crate::session::DEFAULT_ID
+            ))
+            .unwrap(),
             text,
             "kept for the start after the setting is fixed"
         );

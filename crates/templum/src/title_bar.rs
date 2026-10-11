@@ -1,12 +1,13 @@
-//! The integrated title bar, drawn on the window's glass: the title in the middle, and on the
-//! right the zoom level (click: back to 100%), the theme picker, the settings and a button for a
-//! new terminal.
+//! The integrated title bar: on the left the sidebar's button, the workspace's name in the
+//! middle, and on the right the zoom level (click: back to 100%), the theme picker, the settings
+//! and a button for a new terminal.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{Icon, TitleBar};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    ClickEvent, Context, Div, MouseButton, Stateful, TestSupportExt, div, px, transparent_black,
+    ClickEvent, Context, Div, FontWeight, MouseButton, Stateful, TestSupportExt, div, px,
+    transparent_black,
 };
 
 use crate::theme::Ui;
@@ -18,12 +19,32 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
     TitleBar::new()
         .bg(transparent_black())
         .border_color(ui.hairline)
-        .child(div().flex_1())
+        .child(
+            div().flex_1().flex().items_center().pl(px(8.0)).child(
+                button("sidebar-button", ui)
+                    .child(
+                        Icon::new(if ws.sidebar {
+                            IconName::PanelLeftClose
+                        } else {
+                            IconName::PanelLeftOpen
+                        })
+                        .size(px(14.0))
+                        .text_color(ui.title),
+                    )
+                    .on_click(
+                        cx.listener(|ws, _: &ClickEvent, window, cx| ws.toggle_sidebar(window, cx)),
+                    )
+                    .test_support(),
+            ),
+        )
         .child(
             div()
+                .id("workspace-name")
                 .text_size(px(12.0))
-                .text_color(ui.title_dim)
-                .child("Templum"),
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(ui.title)
+                .child(ws.space.name.clone())
+                .test_support(),
         )
         .child(
             div()

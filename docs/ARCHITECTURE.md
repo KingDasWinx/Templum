@@ -71,6 +71,9 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   a temporary file and renames it over `config.toml` (the linked file, for a symlink), so a crash never leaves half a
   file. A write that fails keeps its edits for the next try; the poll saves them before reloading a file changed by
   hand.
+- The workspace on screen is `Workspace::space`; the hidden ones (`others`) keep their terminals running, unarmed so
+  their output never wakes the UI. The sidebar (`sidebar.rs`) switches them by swapping. `session.rs` keeps their
+  order and names in `workspaces/index.json` ([specs/workspaces.md](specs/workspaces.md)).
 - The canvas is saved by `crates/templum/src/session.rs`: one JSON file per workspace in the data folder. Every
   5 s the workspace takes a `Layout` (rects and process ids, cheap) and a background task reads the processes
   (`templum_terminal::inspect`: folders, and whether Claude Code or Codex runs, by `agent_of`), builds the `Saved`

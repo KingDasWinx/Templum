@@ -6,6 +6,7 @@ mod keys;
 mod motion;
 mod session;
 mod settings;
+mod sidebar;
 mod theme;
 mod theme_picker;
 mod title_bar;

@@ -16,12 +16,16 @@ pub(crate) enum Command {
     ThemePicker,
     OpenConfig,
     Settings,
+    NextWorkspace,
+    PreviousWorkspace,
+    NewWorkspace,
+    ToggleSidebar,
     Quit,
 }
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 12] = [
+    pub const ALL: [Command; 16] = [
         Command::NewTerminal,
         Command::CloseTerminal,
         Command::Copy,
@@ -33,6 +37,10 @@ impl Command {
         Command::ThemePicker,
         Command::OpenConfig,
         Command::Settings,
+        Command::NextWorkspace,
+        Command::PreviousWorkspace,
+        Command::NewWorkspace,
+        Command::ToggleSidebar,
         Command::Quit,
     ];
 
@@ -50,6 +58,10 @@ impl Command {
             Command::ThemePicker => "theme_picker",
             Command::OpenConfig => "open_config",
             Command::Settings => "settings",
+            Command::NextWorkspace => "next_workspace",
+            Command::PreviousWorkspace => "previous_workspace",
+            Command::NewWorkspace => "new_workspace",
+            Command::ToggleSidebar => "toggle_sidebar",
             Command::Quit => "quit",
         }
     }
@@ -68,6 +80,10 @@ impl Command {
             Command::ThemePicker => "Theme picker",
             Command::OpenConfig => "Edit config.toml",
             Command::Settings => "Settings",
+            Command::NextWorkspace => "Next workspace",
+            Command::PreviousWorkspace => "Previous workspace",
+            Command::NewWorkspace => "New workspace",
+            Command::ToggleSidebar => "Show or hide the sidebar",
             Command::Quit => "Quit Templum",
         }
     }
@@ -96,6 +112,11 @@ impl Command {
             (Command::OpenConfig, _) => &[],
             (Command::Settings, false) => &["ctrl-,"],
             (Command::Settings, true) => &["cmd-,"],
+            (Command::NextWorkspace, _) => &["ctrl-tab"],
+            (Command::PreviousWorkspace, _) => &["ctrl-shift-tab"],
+            (Command::NewWorkspace, false) => &["ctrl-shift-n"],
+            (Command::NewWorkspace, true) => &["cmd-shift-n"],
+            (Command::ToggleSidebar, _) => &[],
             (Command::Quit, false) => &["ctrl-shift-q"],
             (Command::Quit, true) => &["cmd-q"],
         }
@@ -125,6 +146,10 @@ pub(crate) struct KeysConfig {
     pub theme_picker: Option<Keys>,
     pub open_config: Option<Keys>,
     pub settings: Option<Keys>,
+    pub next_workspace: Option<Keys>,
+    pub previous_workspace: Option<Keys>,
+    pub new_workspace: Option<Keys>,
+    pub toggle_sidebar: Option<Keys>,
     pub quit: Option<Keys>,
 }
 
@@ -142,6 +167,10 @@ impl KeysConfig {
             Command::ThemePicker => self.theme_picker.as_ref(),
             Command::OpenConfig => self.open_config.as_ref(),
             Command::Settings => self.settings.as_ref(),
+            Command::NextWorkspace => self.next_workspace.as_ref(),
+            Command::PreviousWorkspace => self.previous_workspace.as_ref(),
+            Command::NewWorkspace => self.new_workspace.as_ref(),
+            Command::ToggleSidebar => self.toggle_sidebar.as_ref(),
             Command::Quit => self.quit.as_ref(),
         }
     }
@@ -159,6 +188,10 @@ impl KeysConfig {
             Command::ThemePicker => &mut self.theme_picker,
             Command::OpenConfig => &mut self.open_config,
             Command::Settings => &mut self.settings,
+            Command::NextWorkspace => &mut self.next_workspace,
+            Command::PreviousWorkspace => &mut self.previous_workspace,
+            Command::NewWorkspace => &mut self.new_workspace,
+            Command::ToggleSidebar => &mut self.toggle_sidebar,
             Command::Quit => &mut self.quit,
         };
         *slot = keys;

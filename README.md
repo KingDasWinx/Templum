@@ -44,7 +44,17 @@ cargo run -p templum
 | Ctrl+0 | Cmd+0 | Zoom 100% |
 | Ctrl+Shift+1 | Cmd+Shift+1 | Fit all blocks |
 | Ctrl+, | Cmd+, | Settings |
+| Ctrl+Tab / Ctrl+Shift+Tab | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous workspace |
+| Ctrl+1 … Ctrl+9 | Cmd+1 … Cmd+9 | Workspace 1 to 9 |
+| Ctrl+Shift+N | Cmd+Shift+N | New workspace |
 | Ctrl+Shift+Q, twice | Cmd+Q, twice | Quit (the first press only asks for the second) |
+
+## Workspaces
+
+Each workspace is a whole canvas of its own, such as one per project. The sidebar on the left shows them all: click
+one to switch, **+** to add one, and right-click a tile to rename or delete it. The button at the left of the title
+bar hides or shows the sidebar. Terminals in the workspaces you aren't looking at keep running, so an agent keeps
+working while you look elsewhere; a green dot on a tile means Claude Code or Codex is running in it.
 
 ## Themes
 
@@ -87,11 +97,12 @@ as you make it.
 
 ## Your canvas is kept
 
-Templum saves the canvas as you go (every few seconds, and when it quits) and brings it back when it opens: the
-view, every terminal's place and size, and a new shell in each terminal's last folder. What was on screen doesn't
-come back. The file is `~/.local/share/templum/workspaces/default.json`
-(`~/Library/Application Support/Templum/workspaces/` on macOS, `%APPDATA%\templum\workspaces\` on Windows). If
-Templum can't read it, it keeps it as `default.json.bak` and starts fresh.
+Templum saves every workspace as you go (every few seconds, and when it quits) and brings them back when it opens:
+the view, every terminal's place and size, and a new shell in each terminal's last folder. What was on screen
+doesn't come back. The files are in `~/.local/share/templum/workspaces/`
+(`~/Library/Application Support/Templum/workspaces/` on macOS, `%APPDATA%\templum\workspaces\` on Windows): one
+per workspace, and `index.json` listing them. If Templum can't read a file, it keeps it as `.bak` and starts that
+canvas fresh.
 
 If Claude Code or Codex was open in a terminal, Templum types `claude --continue` or `codex resume --last` there,
 which continues that folder's latest conversation.

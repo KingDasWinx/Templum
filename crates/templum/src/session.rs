@@ -1,5 +1,6 @@
-//! The saved canvas: one JSON file per workspace in the platform's data folder, read at startup
-//! and written by snapshots (see docs/specs/persistence.md).
+//! The saved canvases: one JSON file per workspace in the platform's data folder, read at startup
+//! and written by snapshots, and the index that lists the workspaces (see
+//! docs/specs/persistence.md and docs/specs/workspaces.md).
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -8,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use templum_canvas::{Camera, Rect};
 use templum_terminal::Processes;
@@ -18,8 +20,8 @@ use crate::config;
 pub(crate) const VERSION: u32 = 1;
 /// How often a snapshot is taken (and written when it changed).
 pub(crate) const EVERY: Duration = Duration::from_secs(5);
-/// The only workspace for now.
-const DEFAULT: &str = "default.json";
+/// The first workspace's id: the file the version without workspaces wrote.
+pub(crate) const DEFAULT_ID: &str = "default";
 
 /// Templum's data folder: `$XDG_DATA_HOME/templum` or `~/.local/share/templum` on Linux,
 /// `~/Library/Application Support/Templum` on macOS, `%APPDATA%\templum` on Windows.
@@ -53,9 +55,111 @@ fn dir_from(
     }
 }
 
-/// The default workspace's file.
-pub(crate) fn path(dir: &Path) -> PathBuf {
-    dir.join("workspaces").join(DEFAULT)
+/// A workspace's canvas file.
+pub(crate) fn path(dir: &Path, id: &str) -> PathBuf {
+    dir.join("workspaces").join(format!("{id}.json"))
+}
+
+pub(crate) fn index_path(dir: &Path) -> PathBuf {
+    dir.join("workspaces").join("index.json")
+}
+
+/// The workspaces, in the sidebar's order, and what the window showed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Index {
+    pub version: u32,
+    pub workspaces: Vec<IndexEntry>,
+    /// The active workspace's position.
+    #[serde(default)]
+    pub active: usize,
+    /// The sidebar is shown.
+    #[serde(default = "shown")]
+    pub sidebar: bool,
+}
+
+fn shown() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct IndexEntry {
+    /// Names its file; chosen once, never changed.
+    pub id: String,
+    pub name: String,
+}
+
+impl Index {
+    /// No index yet (a first run, or the version without workspaces): one workspace, whose file
+    /// is the one that version wrote.
+    pub fn first_run() -> Index {
+        Index {
+            version: VERSION,
+            workspaces: vec![IndexEntry {
+                id: DEFAULT_ID.into(),
+                name: "Main".into(),
+            }],
+            active: 0,
+            sidebar: true,
+        }
+    }
+}
+
+/// Letters, digits, `-` and `_` only: an edited index can't name a file outside the folder.
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// The id for a new workspace: the smallest `w<n>` from 2 that isn't `taken`.
+pub(crate) fn next_id(taken: impl Fn(&str) -> bool) -> String {
+    (2..)
+        .map(|n| format!("w{n}"))
+        .find(|id| !taken(id))
+        .expect("an unused id")
+}
+
+/// An id is taken by a workspace in the index, or by a file left in the folder (a deleted
+/// workspace's `.bak`): a new workspace must never open an old canvas.
+pub(crate) fn id_in_folder(dir: &Path, id: &str) -> bool {
+    let file = path(dir, id);
+    file.exists() || file.with_extension("json.bak").exists()
+}
+
+pub(crate) fn load_index(dir: &Path) -> Loaded<Index> {
+    match read::<Index>(&index_path(dir)) {
+        Loaded::Saved(mut index) => {
+            let mut seen = Vec::new();
+            index.workspaces.retain(|w| {
+                let keep = valid_id(&w.id) && !seen.contains(&w.id);
+                seen.push(w.id.clone());
+                keep
+            });
+            if index.workspaces.is_empty() {
+                return Loaded::Saved(Index::first_run());
+            }
+            index.active = index.active.min(index.workspaces.len() - 1);
+            Loaded::Saved(index)
+        }
+        other => other,
+    }
+}
+
+pub(crate) fn save_index(dir: &Path, index: &Index) -> io::Result<()> {
+    let path = index_path(dir);
+    let text = serde_json::to_string_pretty(index).map_err(io::Error::other)?;
+    std::fs::create_dir_all(path.parent().expect("a workspaces folder"))?;
+    config::write_whole(&path, &text)
+}
+
+/// A deleted workspace's canvas is kept as `<id>.json.bak`, replacing an older one.
+pub(crate) fn set_aside(dir: &Path, id: &str) -> io::Result<()> {
+    let path = path(dir, id);
+    match std::fs::rename(&path, path.with_extension("json.bak")) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -171,12 +275,12 @@ fn utf8(path: PathBuf) -> Option<String> {
     path.into_os_string().into_string().ok()
 }
 
-/// What reading the saved canvas found.
+/// What reading a saved file found.
 #[derive(Debug, PartialEq)]
-pub(crate) enum Loaded {
+pub(crate) enum Loaded<T> {
     /// No file: a first run.
     Nothing,
-    Saved(Saved),
+    Saved(T),
     /// A file this Templum can't use, renamed to `to` so it is never written over.
     Moved {
         to: PathBuf,
@@ -186,8 +290,14 @@ pub(crate) enum Loaded {
     Unreadable(String),
 }
 
-pub(crate) fn load(dir: &Path) -> Loaded {
-    let path = path(dir);
+/// A workspace's canvas.
+pub(crate) fn load(dir: &Path, id: &str) -> Loaded<Saved> {
+    read(&path(dir, id))
+}
+
+/// A file with a `version`: one this Templum can't use (newer, broken) is set aside as `.bak`.
+fn read<T: DeserializeOwned>(path: &Path) -> Loaded<T> {
+    let path = path.to_path_buf();
     // Bytes, not a string: a file that isn't UTF-8 is bad content to set aside, not a read failure.
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
@@ -200,7 +310,7 @@ pub(crate) fn load(dir: &Path) -> Loaded {
     }
     let why = match serde_json::from_slice::<Version>(&bytes) {
         Ok(v) if v.version > VERSION => "it is from a newer Templum".to_string(),
-        _ => match serde_json::from_slice::<Saved>(&bytes) {
+        _ => match serde_json::from_slice::<T>(&bytes) {
             Ok(saved) => return Loaded::Saved(saved),
             Err(e) => e.to_string(),
         },
@@ -217,10 +327,10 @@ pub(crate) fn load(dir: &Path) -> Loaded {
 
 /// Writes `saved`. Writes take turns, and one older than the last written to the same file is
 /// dropped: a background snapshot that finishes after the one taken on quit.
-pub(crate) fn save(dir: &Path, saved: &Saved, generation: u64) -> io::Result<()> {
+pub(crate) fn save(dir: &Path, id: &str, saved: &Saved, generation: u64) -> io::Result<()> {
     static WRITTEN: LazyLock<Mutex<HashMap<PathBuf, u64>>> = LazyLock::new(Default::default);
     let mut written = WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
-    let path = path(dir);
+    let path = path(dir, id);
     let last = written.entry(path.clone()).or_default();
     if generation < *last {
         return Ok(());
@@ -310,8 +420,8 @@ mod tests {
     #[test]
     fn a_saved_canvas_reads_back_equal() {
         let d = tempfile::tempdir().unwrap();
-        save(d.path(), &sample(), 1).unwrap();
-        assert_eq!(load(d.path()), Loaded::Saved(sample()));
+        save(d.path(), DEFAULT_ID, &sample(), 1).unwrap();
+        assert_eq!(load(d.path(), DEFAULT_ID), Loaded::Saved(sample()));
     }
 
     #[test]
@@ -363,26 +473,26 @@ mod tests {
     #[test]
     fn no_file_is_a_first_run() {
         let d = tempfile::tempdir().unwrap();
-        assert_eq!(load(d.path()), Loaded::Nothing);
+        assert_eq!(load(d.path(), DEFAULT_ID), Loaded::Nothing);
     }
 
     fn write(dir: &Path, text: &str) {
         std::fs::create_dir_all(dir.join("workspaces")).unwrap();
-        std::fs::write(path(dir), text).unwrap();
+        std::fs::write(path(dir, DEFAULT_ID), text).unwrap();
     }
 
     fn moved(dir: &Path, text: &str) -> String {
         write(dir, text);
-        let Loaded::Moved { to, why } = load(dir) else {
+        let Loaded::Moved { to, why } = load(dir, DEFAULT_ID) else {
             panic!("{text} wasn't set aside");
         };
-        assert_eq!(to, path(dir).with_extension("json.bak"));
+        assert_eq!(to, path(dir, DEFAULT_ID).with_extension("json.bak"));
         assert_eq!(
             std::fs::read_to_string(&to).unwrap(),
             text,
             "the old bytes are kept"
         );
-        assert!(!path(dir).exists());
+        assert!(!path(dir, DEFAULT_ID).exists());
         why
     }
 
@@ -401,9 +511,9 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join("workspaces")).unwrap();
         // UTF-16, as some Windows tools write.
-        std::fs::write(path(d.path()), [0xff, 0xfe, b'{', 0]).unwrap();
+        std::fs::write(path(d.path(), DEFAULT_ID), [0xff, 0xfe, b'{', 0]).unwrap();
         assert!(
-            matches!(load(d.path()), Loaded::Moved { .. }),
+            matches!(load(d.path(), DEFAULT_ID), Loaded::Moved { .. }),
             "not Unreadable: that would stop every future save"
         );
     }
@@ -416,7 +526,7 @@ mod tests {
             r#"{"version":1,"later":true,"camera":{"x":1,"y":2,"zoom":1,"tilt":3},
                "items":[{"kind":"terminal","rect":{"x":0,"y":0,"w":10,"h":10},"color":"red"}]}"#,
         );
-        let Loaded::Saved(saved) = load(d.path()) else {
+        let Loaded::Saved(saved) = load(d.path(), DEFAULT_ID) else {
             panic!("not loaded");
         };
         assert_eq!(saved.items.len(), 1);
@@ -428,9 +538,102 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mut newer = sample();
         newer.focused = Some(0);
-        save(d.path(), &newer, 7).unwrap();
-        save(d.path(), &sample(), 6).unwrap();
-        assert_eq!(load(d.path()), Loaded::Saved(newer));
+        save(d.path(), DEFAULT_ID, &newer, 7).unwrap();
+        save(d.path(), DEFAULT_ID, &sample(), 6).unwrap();
+        assert_eq!(load(d.path(), DEFAULT_ID), Loaded::Saved(newer));
+    }
+
+    fn two() -> Index {
+        Index {
+            version: VERSION,
+            workspaces: vec![
+                IndexEntry {
+                    id: DEFAULT_ID.into(),
+                    name: "Main".into(),
+                },
+                IndexEntry {
+                    id: "w2".into(),
+                    name: "Side project".into(),
+                },
+            ],
+            active: 1,
+            sidebar: false,
+        }
+    }
+
+    #[test]
+    fn an_index_reads_back_equal() {
+        let d = tempfile::tempdir().unwrap();
+        save_index(d.path(), &two()).unwrap();
+        assert_eq!(load_index(d.path()), Loaded::Saved(two()));
+        let text = std::fs::read_to_string(index_path(d.path())).unwrap();
+        assert!(text.contains("\"name\": \"Side project\""), "{text}");
+    }
+
+    #[test]
+    fn no_index_is_one_workspace_named_main_in_default_json() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(load_index(d.path()), Loaded::Nothing);
+        let first = Index::first_run();
+        assert_eq!(first.workspaces.len(), 1);
+        assert_eq!(first.workspaces[0].id, DEFAULT_ID);
+        assert_eq!(first.workspaces[0].name, "Main");
+        assert!(first.sidebar);
+    }
+
+    #[test]
+    fn a_broken_index_is_set_aside() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("workspaces")).unwrap();
+        std::fs::write(index_path(d.path()), "{nope").unwrap();
+        assert!(matches!(load_index(d.path()), Loaded::Moved { .. }));
+        assert!(index_path(d.path()).with_extension("json.bak").exists());
+    }
+
+    #[test]
+    fn ids_that_could_leave_the_folder_are_dropped() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("workspaces")).unwrap();
+        std::fs::write(
+            index_path(d.path()),
+            r#"{"version":1,"workspaces":[{"id":"../x","name":"A"},{"id":"a/b","name":"B"},
+               {"id":"","name":"C"},{"id":"ok-1_2","name":"D"},{"id":"ok-1_2","name":"E"}],
+               "active":9}"#,
+        )
+        .unwrap();
+        let Loaded::Saved(index) = load_index(d.path()) else {
+            panic!("not loaded");
+        };
+        let ids: Vec<&str> = index.workspaces.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(ids, ["ok-1_2"], "unsafe and repeated ids go");
+        assert_eq!(index.active, 0, "kept in range");
+        assert!(index.sidebar, "missing: shown");
+        std::fs::write(index_path(d.path()), r#"{"version":1,"workspaces":[]}"#).unwrap();
+        assert_eq!(load_index(d.path()), Loaded::Saved(Index::first_run()));
+    }
+
+    #[test]
+    fn a_new_id_is_the_smallest_unused() {
+        assert_eq!(next_id(|id| id == "default"), "w2");
+        assert_eq!(next_id(|id| ["default", "w2", "w4"].contains(&id)), "w3");
+        let d = tempfile::tempdir().unwrap();
+        save(d.path(), "w2", &sample(), 1).unwrap();
+        set_aside(d.path(), "w2").unwrap();
+        assert!(
+            id_in_folder(d.path(), "w2"),
+            "a deleted workspace's id isn't reused"
+        );
+        assert!(!id_in_folder(d.path(), "w3"));
+    }
+
+    #[test]
+    fn a_deleted_workspace_keeps_its_file_as_bak() {
+        let d = tempfile::tempdir().unwrap();
+        save(d.path(), "w2", &sample(), 1).unwrap();
+        set_aside(d.path(), "w2").unwrap();
+        assert!(!path(d.path(), "w2").exists());
+        assert!(path(d.path(), "w2").with_extension("json.bak").exists());
+        set_aside(d.path(), "never-saved").unwrap();
     }
 
     #[cfg(unix)]
