@@ -33,11 +33,12 @@ cargo test --workspace
 
 ## Workflow
 
-- Fork the repo (or create a branch if you have access) and open a pull request against `main`.
-  Nobody pushes to `main` directly, maintainers included.
-- Keep pull requests small: one change per PR.
-- Pull requests are squash-merged and the title becomes the commit message. Write it as an imperative sentence:
-  "Add block snapping", "Fix resize on Windows".
+- There are two branches: `main` (released) and `development` (where everything happens). Work is committed
+  on `development` directly, in small commits whose titles are imperative sentences: "Add block snapping",
+  "Fix resize on Windows". No feature branches.
+- Contributors without access fork the repo and open a pull request against `development`.
+- When `development` is ready, it is merged into `main` through one pull request. Nobody pushes to `main`
+  directly, maintainers included. That pull request is squash-merged and its title becomes the commit message.
 - CI (`ci-ok`) must pass and a maintainer must approve.
 - Logic changes come with a test. UI changes come with a screenshot or short clip in the PR description.
 - Before writing UI code, read the GPUI lessons in [ADR-0002](docs/adr/0002-ui-framework.md#lessons-from-the-spike-read-before-writing-gpui-code).
