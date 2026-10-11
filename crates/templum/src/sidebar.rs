@@ -119,7 +119,7 @@ fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) ->
             )
         })
         // A terminal there has news (see alert.rs).
-        .when(space.terminals.values().any(|p| p.alert.is_some()), |el| {
+        .when(space.terminals().any(|(_, p)| p.alert.is_some()), |el| {
             el.child(
                 div()
                     .id(ElementId::Name(

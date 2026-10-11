@@ -16,15 +16,15 @@ use templum_canvas::{BlockId, Point};
 use crate::kanban;
 use crate::launcher;
 use crate::prompt;
-use crate::workspace::Workspace;
+use crate::workspace::{Body, Workspace};
 
 /// What was right-clicked.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Target {
     /// The empty canvas, at a world point: blocks are added there.
     Canvas(Point),
-    Terminal(BlockId),
-    Kanban(BlockId),
+    /// A block, whatever it holds: the menu is built for its kind.
+    Block(BlockId),
     /// A row of a kanban block's board list.
     Board {
         block: BlockId,
@@ -64,7 +64,9 @@ impl Workspace {
         let back = window
             .focused(cx)
             .unwrap_or_else(|| self.focus_handle.clone());
-        let items = self.items(&target);
+        let Some(items) = self.items(&target) else {
+            return;
+        };
         let view = PopupMenu::build(window, cx, move |menu, window, cx| {
             items.build(&ws, menu.action_context(back), window, cx)
         });
@@ -84,8 +86,8 @@ impl Workspace {
     }
 
     /// What the menu for `target` needs to know, read now: building it can't read the workspace.
-    fn items(&self, target: &Target) -> Items {
-        match *target {
+    fn items(&self, target: &Target) -> Option<Items> {
+        Some(match *target {
             Target::Canvas(at) => Items::Canvas {
                 at,
                 agents: self
@@ -95,21 +97,15 @@ impl Workspace {
                     .map(|a| (a.clone(), templum_terminal::installed(a.program())))
                     .collect(),
             },
-            Target::Terminal(block) => Items::Terminal {
-                block,
-                selection: self
-                    .space
-                    .terminals
-                    .get(&block)
-                    .is_some_and(|p| p.term.shared().selection_text().is_some()),
-            },
-            Target::Kanban(block) => Items::Kanban {
-                block,
-                listing: self
-                    .space
-                    .kanbans
-                    .get(&block)
-                    .is_some_and(|k| k.shown(self).is_none() && k.board.is_some()),
+            Target::Block(block) => match self.space.blocks.get(&block)? {
+                Body::Terminal(pane) => Items::Terminal {
+                    block,
+                    selection: pane.term.shared().selection_text().is_some(),
+                },
+                Body::Kanban(k) => Items::Kanban {
+                    block,
+                    listing: k.shown(self).is_none() && k.board.is_some(),
+                },
             },
             Target::Board { block, board } => Items::Board {
                 block,
@@ -141,7 +137,7 @@ impl Workspace {
                     .map_or_else(String::new, |s| s.name.clone()),
                 only_one: self.others.is_empty(),
             },
-        }
+        })
     }
 }
 

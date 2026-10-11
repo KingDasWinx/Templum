@@ -249,10 +249,10 @@ pub(crate) struct Layout {
 }
 
 pub(crate) enum LayoutBlock {
-    /// A terminal's rect and its processes.
+    /// A terminal's rect and its processes, read in the background.
     Terminal(Rect, Processes),
-    /// A kanban block's rect and its board.
-    Kanban(Rect, Option<u64>),
+    /// Any other kind: its item, complete, built on the UI thread.
+    Saved(Item),
 }
 
 impl Layout {
@@ -263,7 +263,7 @@ impl Layout {
             .iter()
             .filter_map(|b| match b {
                 LayoutBlock::Terminal(_, p) => Some(p.clone()),
-                LayoutBlock::Kanban(..) => None,
+                LayoutBlock::Saved(_) => None,
             })
             .collect();
         let mut found = templum_terminal::inspect(&processes, &self.agents).into_iter();
@@ -287,10 +287,7 @@ impl Layout {
                             agent: found.agent,
                         })
                     }
-                    LayoutBlock::Kanban(rect, board) => Item::Kanban(KanbanItem {
-                        rect: (*rect).into(),
-                        board: *board,
-                    }),
+                    LayoutBlock::Saved(item) => item.clone(),
                 })
                 .collect(),
             focused: self.focused,
@@ -677,7 +674,10 @@ mod tests {
             // No processes: their folders are unknown.
             blocks: vec![
                 LayoutBlock::Terminal(Rect::new(0.0, 0.0, 10.0, 10.0), Processes::default()),
-                LayoutBlock::Kanban(Rect::new(5.0, 5.0, 10.0, 10.0), Some(3)),
+                LayoutBlock::Saved(Item::Kanban(KanbanItem {
+                    rect: Rect::new(5.0, 5.0, 10.0, 10.0).into(),
+                    board: Some(3),
+                })),
                 LayoutBlock::Terminal(Rect::new(20.0, 0.0, 30.0, 10.0), Processes::default()),
             ],
             focused: Some(1),

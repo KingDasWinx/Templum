@@ -29,7 +29,7 @@ use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOpt
 
 use crate::agents::{self, AgentEntry};
 use crate::alert::{self, Alert};
-use crate::block::{self, Content};
+use crate::block;
 use crate::board::{self, Boards};
 use crate::config::{self, Config, Edit, ThemeConfig, WorkingDirectory};
 use crate::grid::CellMetrics;
@@ -85,13 +85,53 @@ pub(crate) struct Pane {
 /// A closed block, still drawn while it fades out. A terminal's shell lives until then.
 pub(crate) struct Ghost {
     pub block: Block,
-    pub body: GhostBody,
+    pub body: Body,
     since: Instant,
 }
 
-pub(crate) enum GhostBody {
+/// What a block holds. Every block on a canvas is one of these.
+pub(crate) enum Body {
     Terminal(Pane),
     Kanban(Kanban),
+}
+
+impl Body {
+    pub fn terminal(&self) -> Option<&Pane> {
+        match self {
+            Body::Terminal(pane) => Some(pane),
+            _ => None,
+        }
+    }
+
+    pub fn terminal_mut(&mut self) -> Option<&mut Pane> {
+        match self {
+            Body::Terminal(pane) => Some(pane),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn kanban(&self) -> Option<&Kanban> {
+        match self {
+            Body::Kanban(kanban) => Some(kanban),
+            _ => None,
+        }
+    }
+
+    pub fn kanban_mut(&mut self) -> Option<&mut Kanban> {
+        match self {
+            Body::Kanban(kanban) => Some(kanban),
+            _ => None,
+        }
+    }
+
+    /// The smallest block of this kind.
+    pub fn min_size(&self, cell: Size) -> Size {
+        match self {
+            Body::Terminal(_) => chrome::min_block_size(cell),
+            Body::Kanban(_) => kanban::MIN,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -109,9 +149,8 @@ pub(crate) struct Space {
     pub id: String,
     pub name: String,
     pub canvas: Canvas,
-    pub terminals: HashMap<BlockId, Pane>,
-    /// The kanban blocks: every block is a terminal or one of these.
-    pub kanbans: HashMap<BlockId, Kanban>,
+    /// What each block of the canvas holds. Inserted and removed together with `canvas`'s blocks.
+    pub blocks: HashMap<BlockId, Body>,
     pub focused: Option<BlockId>,
     /// True until the user first moves the camera or touches a block: meanwhile the startup
     /// terminal stays centered, since tiling compositors resize the window after it opens.
@@ -143,12 +182,16 @@ impl Space {
             camera: self.canvas.camera,
             blocks: blocks
                 .iter()
-                .map(|b| match self.terminals.get(&b.id) {
-                    Some(pane) => session::LayoutBlock::Terminal(b.rect, pane.term.processes()),
-                    None => session::LayoutBlock::Kanban(
-                        b.rect,
-                        self.kanbans.get(&b.id).and_then(|k| k.board),
-                    ),
+                .map(|b| match &self.blocks[&b.id] {
+                    Body::Terminal(pane) => {
+                        session::LayoutBlock::Terminal(b.rect, pane.term.processes())
+                    }
+                    Body::Kanban(k) => {
+                        session::LayoutBlock::Saved(session::Item::Kanban(session::KanbanItem {
+                            rect: b.rect.into(),
+                            board: k.board,
+                        }))
+                    }
                 })
                 .collect(),
             focused: self
@@ -167,9 +210,38 @@ impl Space {
                     .agent
                     .as_ref()
                     .is_some_and(|id| agents.iter().any(|a| a.id == *id)),
-                session::Item::Kanban(_) => false,
+                _ => false,
             })
         })
+    }
+
+    /// Every terminal block, in no order.
+    pub fn terminals(&self) -> impl Iterator<Item = (BlockId, &Pane)> {
+        self.blocks
+            .iter()
+            .filter_map(|(id, body)| Some((*id, body.terminal()?)))
+    }
+
+    pub fn terminal(&self, id: BlockId) -> Option<&Pane> {
+        self.blocks.get(&id)?.terminal()
+    }
+
+    pub fn terminal_mut(&mut self, id: BlockId) -> Option<&mut Pane> {
+        self.blocks.get_mut(&id)?.terminal_mut()
+    }
+
+    #[cfg(test)]
+    pub fn kanban(&self, id: BlockId) -> Option<&Kanban> {
+        self.blocks.get(&id)?.kanban()
+    }
+
+    pub fn kanban_mut(&mut self, id: BlockId) -> Option<&mut Kanban> {
+        self.blocks.get_mut(&id)?.kanban_mut()
+    }
+
+    /// The focused block's terminal, when the focused block is one.
+    pub fn focused_terminal(&self) -> Option<&Pane> {
+        self.focused.and_then(|id| self.terminal(id))
     }
 }
 
@@ -708,10 +780,10 @@ impl Workspace {
         }
     }
 
-    /// Adds a kanban block on top, focused, popping in.
-    fn add_kanban(&mut self, rect: Rect, kanban: Kanban) -> BlockId {
+    /// Adds a block on top, focused, popping in.
+    fn add_block(&mut self, rect: Rect, body: Body) -> BlockId {
         let id = self.space.canvas.add(rect);
-        self.space.kanbans.insert(id, kanban);
+        self.space.blocks.insert(id, body);
         self.space.focused = Some(id);
         self.space.appearing.insert(id, Instant::now());
         id
@@ -749,7 +821,7 @@ impl Workspace {
     pub(crate) fn add_kanban_at(&mut self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
         self.space.pristine = false;
         let rect = Rect::new(at.x, at.y, kanban::SIZE.w, kanban::SIZE.h);
-        self.add_kanban(rect, Kanban::default());
+        self.add_block(rect, Body::Kanban(Kanban::default()));
         window.focus(&self.focus_handle, cx);
         cx.notify();
     }
@@ -789,7 +861,11 @@ impl Workspace {
         let id = self.spawn_block(rect, Some(folder.to_path_buf()), window, cx)?;
         // The shell reads it once it is ready.
         let line = format!("{command}\r");
-        self.space.terminals[&id].term.write(line.into_bytes());
+        self.space
+            .terminal(id)
+            .expect("just spawned")
+            .term
+            .write(line.into_bytes());
         remember(&mut self.space.recent, folder.to_path_buf());
         window.focus(&self.focus_handle, cx);
         Some(id)
@@ -863,7 +939,7 @@ impl Workspace {
 
     /// The kanban block `block` shows `board`.
     pub(crate) fn show_board(&mut self, block: BlockId, board: u64, cx: &mut Context<Self>) {
-        if let Some(k) = self.space.kanbans.get_mut(&block) {
+        if let Some(k) = self.space.kanban_mut(block) {
             *k = Kanban {
                 board: Some(board),
                 picking: false,
@@ -874,7 +950,7 @@ impl Workspace {
 
     /// The kanban block `block` shows the board list.
     pub(crate) fn pick_board(&mut self, block: BlockId, cx: &mut Context<Self>) {
-        if let Some(k) = self.space.kanbans.get_mut(&block) {
+        if let Some(k) = self.space.kanban_mut(block) {
             k.picking = !k.picking;
             cx.notify();
         }
@@ -931,14 +1007,14 @@ impl Workspace {
         let id = match Terminal::spawn(opts, self.notify.clone()) {
             Ok(term) => {
                 let id = self.space.canvas.add(rect);
-                self.space.terminals.insert(
+                self.space.blocks.insert(
                     id,
-                    Pane {
+                    Body::Terminal(Pane {
                         term,
                         snapshot: Rc::default(),
                         heard: (0, 0),
                         alert: None,
-                    },
+                    }),
                 );
                 self.space.focused = Some(id);
                 self.space.appearing.insert(id, Instant::now());
@@ -970,12 +1046,12 @@ impl Workspace {
                 session::Item::Terminal(t) => t,
                 session::Item::Kanban(k) => {
                     let id = Self::kanban_rect(k.rect.into()).map(|rect| {
-                        self.add_kanban(
+                        self.add_block(
                             rect,
-                            Kanban {
+                            Body::Kanban(Kanban {
                                 board: k.board,
                                 picking: false,
-                            },
+                            }),
                         )
                     });
                     ids.push(id);
@@ -1005,7 +1081,11 @@ impl Workspace {
                 .and_then(|a| self.agents.iter().find(|known| known.id == *a));
             if let (Some(id), Some(agent), true) = (id, agent, in_its_folder) {
                 let line = format!("{}\r", agent.resume_command());
-                self.space.terminals[&id].term.write(line.into_bytes());
+                self.space
+                    .terminal(id)
+                    .expect("just spawned")
+                    .term
+                    .write(line.into_bytes());
             }
             ids.push(id);
         }
@@ -1203,10 +1283,7 @@ impl Workspace {
         let block = self.space.canvas.get(id).copied();
         self.space.canvas.remove(id);
         self.space.appearing.remove(&id);
-        let body = match self.space.terminals.remove(&id) {
-            Some(pane) => Some(GhostBody::Terminal(pane)),
-            None => self.space.kanbans.remove(&id).map(GhostBody::Kanban),
-        };
+        let body = self.space.blocks.remove(&id);
         if let (Some(block), Some(body)) = (block, body) {
             self.space.ghosts.push(Ghost {
                 block,
@@ -1227,7 +1304,7 @@ impl Workspace {
 
     /// Draws with `theme` from the next frame on, in every terminal and gpui-kit widget.
     pub(crate) fn apply(&mut self, theme: Rc<Theme>, cx: &mut Context<Self>) {
-        for pane in self.spaces().flat_map(|s| s.terminals.values()) {
+        for pane in self.spaces().flat_map(|s| s.terminals().map(|(_, p)| p)) {
             pane.term.set_palette(theme.palette);
         }
         theme::apply_to_kit(&theme, cx);
@@ -1318,7 +1395,7 @@ impl Workspace {
         }
         if self.config.cursor != old.cursor || self.config.terminal != old.terminal {
             let options = self.config.term_options();
-            for pane in self.spaces().flat_map(|s| s.terminals.values()) {
+            for pane in self.spaces().flat_map(|s| s.terminals().map(|(_, p)| p)) {
                 pane.term.shared().set_options(options);
             }
         }
@@ -1411,8 +1488,8 @@ impl Workspace {
         }
         self.cell = cell;
         for space in std::iter::once(&mut self.space).chain(&mut self.others) {
-            for (id, pane) in space.terminals.iter_mut() {
-                if let Some(block) = space.canvas.get(*id) {
+            for (id, body) in space.blocks.iter_mut() {
+                if let (Some(pane), Some(block)) = (body.terminal_mut(), space.canvas.get(*id)) {
                     let content = chrome::content_rect(block.rect).size();
                     let (cols, rows) = chrome::grid_size(content, self.cell.size);
                     pane.term.resize(cols, rows, self.cell.px());
@@ -1431,7 +1508,11 @@ impl Workspace {
         let mut news = Vec::new();
         let spaces = std::iter::once(&mut self.space).chain(&mut self.others);
         for (i, space) in spaces.enumerate() {
-            for (&id, pane) in &mut space.terminals {
+            let terminals = space
+                .blocks
+                .iter_mut()
+                .filter_map(|(id, body)| Some((*id, body.terminal_mut()?)));
+            for (id, pane) in terminals {
                 let status = pane.term.status();
                 let new = alert::news(&status, pane.heard);
                 pane.heard = (status.finished, status.attention);
@@ -1508,8 +1589,7 @@ impl Workspace {
         match &self.config.shell.working_directory {
             WorkingDirectory::Inherit => self
                 .space
-                .focused
-                .and_then(|id| self.space.terminals.get(&id))
+                .focused_terminal()
                 .and_then(|pane| pane.term.cwd()),
             WorkingDirectory::Home => None,
             WorkingDirectory::Path(path) if path.is_dir() => Some(path.clone()),
@@ -1847,11 +1927,13 @@ impl Workspace {
 
     pub(crate) fn begin_resize(&mut self, id: BlockId, pos: PixelPoint<Pixels>) {
         let p = self.local(pos);
-        let min = if self.space.kanbans.contains_key(&id) {
-            kanban::MIN
-        } else {
-            chrome::min_block_size(self.cell.size)
-        };
+        let min = self
+            .space
+            .blocks
+            .get(&id)
+            .map_or(chrome::min_block_size(self.cell.size), |b| {
+                b.min_size(self.cell.size)
+            });
         self.drag = Gesture::resize_block(&self.space.canvas, id, p, min).map(Drag::Canvas);
     }
 
@@ -1862,7 +1944,7 @@ impl Workspace {
                 if let Some((id, rect)) = gesture.update(&mut self.space.canvas, p) {
                     let (cols, rows) =
                         chrome::grid_size(chrome::content_rect(rect).size(), self.cell.size);
-                    if let Some(pane) = self.space.terminals.get_mut(&id) {
+                    if let Some(pane) = self.space.terminal_mut(id) {
                         pane.term.resize(cols, rows, self.cell.px());
                     }
                 }
@@ -1870,7 +1952,7 @@ impl Workspace {
             Some(Drag::Select(id)) => {
                 let id = *id;
                 if let (Some((row, col, side)), Some(pane)) =
-                    (self.cell_under(id, pos), self.space.terminals.get(&id))
+                    (self.cell_under(id, pos), self.space.terminal(id))
                 {
                     pane.term.shared().select_update(row, col, side);
                 }
@@ -1894,7 +1976,7 @@ impl Workspace {
         let Some((row, col, side)) = self.cell_under(id, e.position) else {
             return;
         };
-        let Some(pane) = self.space.terminals.get(&id) else {
+        let Some(pane) = self.space.terminal(id) else {
             return;
         };
         let kind = match e.click_count {
@@ -1909,8 +1991,7 @@ impl Workspace {
     pub(crate) fn copy_selection(&mut self, cx: &mut Context<Self>) {
         let text = self
             .space
-            .focused
-            .and_then(|id| self.space.terminals.get(&id))
+            .focused_terminal()
             .and_then(|pane| pane.term.shared().selection_text());
         if let Some(text) = text {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -1998,11 +2079,7 @@ impl Workspace {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
-        if let Some(pane) = self
-            .space
-            .focused
-            .and_then(|id| self.space.terminals.get(&id))
-        {
+        if let Some(pane) = self.space.focused_terminal() {
             pane.term.paste(&text);
         }
     }
@@ -2071,10 +2148,7 @@ impl Workspace {
 
     /// Scrolls the focused terminal to its previous or next prompt (shell integration marks them).
     fn jump_to_prompt(&mut self, up: bool, cx: &mut Context<Self>) {
-        let pane = self
-            .space
-            .focused
-            .and_then(|id| self.space.terminals.get(&id));
+        let pane = self.space.focused_terminal();
         if pane.is_some_and(|pane| pane.term.jump_to_prompt(up)) {
             cx.notify();
         }
@@ -2208,11 +2282,7 @@ impl Workspace {
             cx.stop_propagation();
             return;
         }
-        let Some(pane) = self
-            .space
-            .focused
-            .and_then(|id| self.space.terminals.get(&id))
-        else {
+        let Some(pane) = self.space.focused_terminal() else {
             return;
         };
         let k = &e.keystroke;
@@ -2332,7 +2402,7 @@ impl Workspace {
         let lines = self.scroll_acc.trunc();
         self.scroll_acc -= lines;
         if lines != 0.0 {
-            if let Some(pane) = self.space.terminals.get(&id) {
+            if let Some(pane) = self.space.terminal(id) {
                 pane.term.scroll(lines as i32);
             }
             cx.notify();
@@ -2472,16 +2542,15 @@ impl Render for Workspace {
         self.cursor_blinks = false;
         let exited: Vec<BlockId> = self
             .space
-            .terminals
-            .iter()
+            .terminals()
             .filter(|(_, pane)| pane.term.exited())
-            .map(|(id, _)| *id)
+            .map(|(id, _)| id)
             .collect();
         for id in exited {
             self.close(id, cx);
         }
         // Re-arm once per frame: output is coalesced to frame rate.
-        for pane in self.space.terminals.values() {
+        for (_, pane) in self.space.terminals() {
             pane.term.rearm();
         }
         self.hear(window, cx);
@@ -2549,23 +2618,14 @@ impl Render for Workspace {
                     .map_or(motion::Look::REST, |since| {
                         motion::opening(motion::progress(*since, now, motion::OPEN))
                     });
-                let content = match self.space.terminals.get(&b.id) {
-                    Some(pane) => Content::Terminal(pane),
-                    None => {
-                        Content::Kanban(self.space.kanbans.get(&b.id).copied().unwrap_or_default())
-                    }
-                };
-                block::render(self, b, content, look, true, window, cx)
+                let body = &self.space.blocks[&b.id];
+                block::render(self, b, body, look, true, window, cx)
             })
             .collect();
         // Ghosts fade above the blocks, where they were.
         blocks.extend(self.space.ghosts.iter().map(|g| {
             let look = motion::closing(motion::progress(g.since, now, motion::CLOSE));
-            let content = match &g.body {
-                GhostBody::Terminal(pane) => Content::Terminal(pane),
-                GhostBody::Kanban(k) => Content::Kanban(*k),
-            };
-            block::render(self, g.block, content, look, false, window, cx)
+            block::render(self, g.block, &g.body, look, false, window, cx)
         }));
 
         let entity = cx.entity();
@@ -2754,11 +2814,7 @@ impl EntityInputHandler for Workspace {
         cx: &mut Context<Self>,
     ) {
         self.marked = None;
-        if let Some(pane) = self
-            .space
-            .focused
-            .and_then(|id| self.space.terminals.get(&id))
-        {
+        if let Some(pane) = self.space.focused_terminal() {
             pane.term.write(text.as_bytes().to_vec());
         }
         cx.notify();
@@ -3075,7 +3131,28 @@ mod tests {
         ws.read_with(cx, |ws, _| {
             assert_eq!(ws.space.canvas.blocks().len(), 1);
             assert_eq!(ws.space.focused, ws.space.canvas.top());
-            assert_eq!(ws.space.terminals.len(), 1);
+            assert_eq!(ws.space.terminals().count(), 1);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn blocks_of_any_kind_share_one_map(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let terminal = first_id(&ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.new_kanban(window, cx));
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            let kanban = ws.space.canvas.top().unwrap();
+            assert_eq!(ws.space.blocks.len(), 2);
+            assert!(ws.space.terminal(terminal).is_some());
+            assert!(ws.space.kanban(terminal).is_none());
+            assert!(ws.space.kanban(kanban).is_some());
+            assert!(ws.space.terminal(kanban).is_none());
+            assert_eq!(ws.space.terminals().count(), 1);
+            assert_eq!(ws.space.focused, Some(kanban));
+            assert!(ws.space.focused_terminal().is_none());
         });
     }
 
@@ -3140,7 +3217,7 @@ mod tests {
         .unwrap();
         ws.read_with(cx, |ws, _| {
             assert!(ws.space.canvas.blocks().is_empty());
-            assert!(ws.space.terminals.is_empty());
+            assert!(ws.space.terminals().next().is_none());
             assert_eq!(ws.space.focused, None);
         });
     }
@@ -3171,7 +3248,11 @@ mod tests {
     #[cfg(unix)]
     fn ring(ws: &Entity<Workspace>, id: templum_canvas::BlockId, cx: &mut TestAppContext) {
         ws.read_with(cx, |ws, _| {
-            ws.space.terminals[&id].term.write(b"\x07\r".to_vec())
+            ws.space
+                .terminal(id)
+                .unwrap()
+                .term
+                .write(b"\x07\r".to_vec())
         });
     }
 
@@ -3200,11 +3281,11 @@ mod tests {
         .unwrap();
         ring(&ws, ringing, cx);
         until("the alert", handle, &ws, cx, |ws| {
-            ws.space.terminals[&ringing].alert.is_some()
+            ws.space.terminal(ringing).unwrap().alert.is_some()
         });
         ws.read_with(cx, |ws, _| {
             assert_eq!(
-                ws.space.terminals[&ringing].alert,
+                ws.space.terminal(ringing).unwrap().alert,
                 Some(Alert::Attention(None))
             );
         });
@@ -3217,15 +3298,15 @@ mod tests {
         })
         .unwrap();
         until("the alert to go", handle, &ws, cx, |ws| {
-            ws.space.terminals[&ringing].alert.is_none()
+            ws.space.terminal(ringing).unwrap().alert.is_none()
         });
         // The focused terminal, looked at: no news.
         ring(&ws, ringing, cx);
         until("the bell", handle, &ws, cx, |ws| {
-            ws.space.terminals[&ringing].heard.1 == 2
+            ws.space.terminal(ringing).unwrap().heard.1 == 2
         });
         ws.read_with(cx, |ws, _| {
-            assert_eq!(ws.space.terminals[&ringing].alert, None)
+            assert_eq!(ws.space.terminal(ringing).unwrap().alert, None)
         });
     }
 
@@ -3243,7 +3324,7 @@ mod tests {
         let bell = |bells: u64, cx: &mut TestAppContext| {
             ring(&ws, id, cx);
             until("the bell", handle, &ws, cx, |ws| {
-                ws.space.terminals[&id].heard.1 == bells
+                ws.space.terminal(id).unwrap().heard.1 == bells
             });
             cx.update_window(handle, |_, window, cx| window.render_frame(cx))
                 .unwrap();
@@ -3252,12 +3333,12 @@ mod tests {
         set_active(handle, false, cx);
         ws.update(cx, |ws, _| ws.config.terminal.notifications = false);
         bell(1, cx);
-        assert!(ws.read_with(cx, |ws, _| ws.space.terminals[&id].alert.is_some()));
+        assert!(ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().alert.is_some()));
         assert_eq!(cx.shown_system_notifications().len(), 0, "turned off");
         // Looked at, then in the background again.
         set_active(handle, true, cx);
         until("the alert to go", handle, &ws, cx, |ws| {
-            ws.space.terminals[&id].alert.is_none()
+            ws.space.terminal(id).unwrap().alert.is_none()
         });
         set_active(handle, false, cx);
         ws.update(cx, |ws, _| ws.config.terminal.notifications = true);
@@ -3350,7 +3431,7 @@ mod tests {
                 templum_canvas::chrome::content_rect(rect).size(),
                 cell,
             );
-            assert_eq!(ws.space.terminals[&id].term.grid_size(), expected);
+            assert_eq!(ws.space.terminal(id).unwrap().term.grid_size(), expected);
             assert_eq!(
                 expected,
                 (super::DEFAULT_COLS + 10, super::DEFAULT_ROWS + 3)
@@ -3408,7 +3489,9 @@ mod tests {
         #[cfg(windows)]
         let input = "echo hello\r";
         ws.read_with(cx, |ws, _| {
-            ws.space.terminals[&id]
+            ws.space
+                .terminal(id)
+                .unwrap()
                 .term
                 .write(input.as_bytes().to_vec())
         });
@@ -3416,7 +3499,10 @@ mod tests {
         loop {
             let shown = ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(
+                    ws.space.terminal(id).unwrap().term.shared(),
+                    &ws.theme.palette,
+                );
                 snap.text()
             });
             if shown.contains("hello") {
@@ -3426,7 +3512,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         ws.read_with(cx, |ws, _| {
-            let pane = &ws.space.terminals[&id];
+            let pane = &ws.space.terminal(id).unwrap();
             let (cols, rows) = pane.term.grid_size();
             let term = pane.term.shared();
             term.select_start(0, 0, Side::Left, SelectionKind::Simple);
@@ -3657,13 +3743,16 @@ mod tests {
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {
-            ws.space.terminals[&id].term.write(b"x\r".to_vec())
+            ws.space.terminal(id).unwrap().term.write(b"x\r".to_vec())
         });
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let shown = ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(
+                    ws.space.terminal(id).unwrap().term.shared(),
+                    &ws.theme.palette,
+                );
                 snap.text()
             });
             if shown.contains('x') {
@@ -3722,8 +3811,8 @@ mod tests {
         .unwrap();
         ws.read_with(cx, |ws, _| {
             assert_eq!(ws.theme.name, "Catppuccin Mocha");
-            assert_eq!(ws.space.terminals.len(), 2);
-            for pane in ws.space.terminals.values() {
+            assert_eq!(ws.space.terminals().count(), 2);
+            for pane in ws.space.terminals().map(|(_, p)| p) {
                 assert_eq!(
                     pane.term.palette(),
                     ws.theme.palette,
@@ -4029,7 +4118,7 @@ mod tests {
             (
                 ws.space.canvas.get(id).unwrap().rect,
                 ws.cell.size,
-                ws.space.terminals[&id].term.grid_size(),
+                ws.space.terminal(id).unwrap().term.grid_size(),
             )
         });
         write_config(dir.path(), "[font]\nsize = 28\n");
@@ -4041,7 +4130,7 @@ mod tests {
                 "the block keeps its rect"
             );
             assert!(ws.cell.size.w > cell.w);
-            let now = ws.space.terminals[&id].term.grid_size();
+            let now = ws.space.terminal(id).unwrap().term.grid_size();
             assert!(now.0 < grid.0 && now.1 < grid.1, "{now:?} vs {grid:?}");
         });
     }
@@ -4073,7 +4162,10 @@ mod tests {
         reload(handle, &ws, cx);
         ws.read_with(cx, |ws, _| {
             let mut snap = templum_terminal::Snapshot::default();
-            snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+            snap.refresh(
+                ws.space.terminal(id).unwrap().term.shared(),
+                &ws.theme.palette,
+            );
             let c = snap.cursor.unwrap();
             assert_eq!(
                 (c.shape, c.blinking),
@@ -4149,7 +4241,7 @@ mod tests {
         let new = ws.read_with(cx, |ws, _| ws.space.canvas.top().unwrap());
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            let cwd = ws.read_with(cx, |ws, _| ws.space.terminals[&new].term.cwd());
+            let cwd = ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().term.cwd());
             if let Some(cwd) = cwd {
                 assert_eq!(cwd.canonicalize().unwrap(), start.canonicalize().unwrap());
                 break;
@@ -4679,15 +4771,21 @@ mod tests {
         let top = |cx: &mut TestAppContext| {
             ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(
+                    ws.space.terminal(id).unwrap().term.shared(),
+                    &ws.theme.palette,
+                );
                 (snap.rows[0].text.clone(), snap.rows[0].mark)
             })
         };
         ws.read_with(cx, |ws, _| {
-            ws.space.terminals[&id].term.write(&b"seq 100\r"[..])
+            ws.space.terminal(id).unwrap().term.write(&b"seq 100\r"[..])
         });
         let deadline = Instant::now() + Duration::from_secs(10);
-        while ws.read_with(cx, |ws, _| ws.space.terminals[&id].term.status().finished) < 1 {
+        while ws.read_with(cx, |ws, _| {
+            ws.space.terminal(id).unwrap().term.status().finished
+        }) < 1
+        {
             assert!(Instant::now() < deadline, "seq never ended");
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -4721,13 +4819,18 @@ mod tests {
         let shown = |id, cx: &mut TestAppContext| {
             ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(
+                    ws.space.terminal(id).unwrap().term.shared(),
+                    &ws.theme.palette,
+                );
                 snap.text()
             })
         };
         let ask = |id, want: &str, cx: &mut TestAppContext| {
             ws.read_with(cx, |ws, _| {
-                ws.space.terminals[&id]
+                ws.space
+                    .terminal(id)
+                    .unwrap()
                     .term
                     .write(&b"echo \"[${__templum_installed-no}]\"\r"[..])
             });
@@ -5755,7 +5858,7 @@ mod tests {
         use std::time::{Duration, Instant};
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            if let Some(cwd) = ws.read_with(cx, |ws, _| ws.space.terminals[&id].term.cwd()) {
+            if let Some(cwd) = ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().term.cwd()) {
                 return cwd.canonicalize().unwrap();
             }
             assert!(Instant::now() < deadline, "no cwd");
@@ -5987,7 +6090,10 @@ mod tests {
         ws.read_with(cx, |ws, _| {
             assert_eq!(ws.active, 0);
             assert_eq!(ws.space.focused, Some(first));
-            assert!(!ws.space.terminals[&first].term.exited(), "still running");
+            assert!(
+                !ws.space.terminal(first).unwrap().term.exited(),
+                "still running"
+            );
         });
     }
 
@@ -6022,7 +6128,7 @@ mod tests {
         ws.update(cx, |ws, cx| ws.set_dark(true, cx));
         ws.read_with(cx, |ws, _| {
             assert_eq!(
-                ws.others[0].terminals[&first].term.palette(),
+                ws.others[0].terminal(first).unwrap().term.palette(),
                 ws.theme.palette
             );
         });
@@ -6095,10 +6201,7 @@ mod tests {
     fn top_kanban(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {
         ws.read_with(cx, |ws, _| {
             let id = ws.space.canvas.top().unwrap();
-            assert!(
-                ws.space.kanbans.contains_key(&id),
-                "the top block is a kanban"
-            );
+            assert!(ws.space.kanban(id).is_some(), "the top block is a kanban");
             id
         })
     }
@@ -6126,7 +6229,7 @@ mod tests {
         .unwrap();
         ws.read_with(cx, |ws, _| {
             let board = ws.boards.boards[0].id;
-            assert_eq!(ws.space.kanbans[&block].board, Some(board));
+            assert_eq!(ws.space.kanban(block).unwrap().board, Some(board));
             assert_eq!(ws.boards.board(board).unwrap().columns.len(), 3);
         });
     }
@@ -6142,7 +6245,7 @@ mod tests {
                     ws.new_board(a, cx);
                     ws.new_kanban(window, cx);
                     let b = ws.space.canvas.top().unwrap();
-                    let board = ws.space.kanbans[&a].board.unwrap();
+                    let board = ws.space.kanban(a).unwrap().board.unwrap();
                     ws.show_board(b, board, cx);
                     let todo = ws.boards.board(board).unwrap().columns[0].id;
                     ws.space.appearing.clear();
@@ -6212,7 +6315,7 @@ mod tests {
                     ws.new_kanban(window, cx);
                     let block = ws.space.canvas.top().unwrap();
                     ws.new_board(block, cx);
-                    let board = ws.space.kanbans[&block].board.unwrap();
+                    let board = ws.space.kanban(block).unwrap().board.unwrap();
                     let todo = ws.boards.board(board).unwrap().columns[0].id;
                     let card = ws.boards.add_card(board, todo).unwrap();
                     ws.space.appearing.clear();
@@ -6266,7 +6369,7 @@ mod tests {
                     let block = ws.space.canvas.top().unwrap();
                     ws.new_board(block, cx);
                     ws.space.appearing.clear();
-                    let board = ws.space.kanbans[&block].board.unwrap();
+                    let board = ws.space.kanban(block).unwrap().board.unwrap();
                     (block, ws.boards.board(board).unwrap().columns[1].id)
                 })
             })
@@ -6357,7 +6460,7 @@ mod tests {
         ws.read_with(cx, |ws, _| {
             let moved = ws.space.canvas.camera.origin;
             assert_eq!((moved.x, moved.y), (before.x - 100.0, before.y - 40.0));
-            let term = ws.space.terminals[&id].term.shared();
+            let term = ws.space.terminal(id).unwrap().term.shared();
             assert!(term.selection_text().is_none(), "no selection");
             assert!(ws.drag.is_none(), "the drag ended");
         });
@@ -6476,7 +6579,7 @@ mod tests {
             ws.read_with(cx, |ws, _| {
                 let top = ws.space.canvas.top().unwrap();
                 assert_eq!(ws.space.canvas.get(top).unwrap().rect.origin(), world);
-                assert_eq!(ws.space.kanbans.contains_key(&top), item == 1);
+                assert_eq!(ws.space.kanban(top).is_some(), item == 1);
                 assert!(ws.menu.is_none(), "a choice closes it");
             });
         }
@@ -6529,7 +6632,7 @@ mod tests {
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {
-            assert_eq!(ws.space.terminals.len(), 2, "the agent's terminal");
+            assert_eq!(ws.space.terminals().count(), 2, "the agent's terminal");
             assert_eq!(ws.space.recent, [folder.path()]);
         });
     }
@@ -6544,7 +6647,7 @@ mod tests {
                     ws.add_kanban_at(Point::new(900.0, 0.0), window, cx);
                     let block = ws.space.canvas.top().unwrap();
                     ws.new_board(block, cx);
-                    let board = ws.space.kanbans[&block].board.unwrap();
+                    let board = ws.space.kanban(block).unwrap().board.unwrap();
                     let todo = ws.boards.board(board).unwrap().columns[0].id;
                     let card = ws.boards.add_card(board, todo).unwrap();
                     ws.space.appearing.clear();
@@ -6562,7 +6665,7 @@ mod tests {
             window.render_frame(cx);
             let ws = ws.read(cx);
             assert!(ws.boards.card(board, card).is_none(), "the card went");
-            assert!(ws.space.kanbans.contains_key(&block), "its block stayed");
+            assert!(ws.space.kanban(block).is_some(), "its block stayed");
         })
         .unwrap();
         cx.update_window(handle, |_, window, cx| {
@@ -6575,7 +6678,7 @@ mod tests {
             window.within("popup-menu").click(3usize, cx);
             window.render_frame(cx);
             assert!(
-                !ws.read(cx).space.terminals.contains_key(&terminal),
+                !ws.read(cx).space.terminal(terminal).is_some(),
                 "the terminal closed"
             );
         })
@@ -6592,7 +6695,7 @@ mod tests {
                     ws.new_kanban(window, cx);
                     let block = ws.space.canvas.top().unwrap();
                     ws.new_board(block, cx);
-                    let board = ws.space.kanbans[&block].board.unwrap();
+                    let board = ws.space.kanban(block).unwrap().board.unwrap();
                     let todo = ws.boards.board(board).unwrap().columns[0].id;
                     ws.boards.add_card(board, todo);
                     ws.new_kanban(window, cx);
@@ -6610,11 +6713,11 @@ mod tests {
                 .canvas
                 .blocks()
                 .iter()
-                .filter_map(|b| ws.space.kanbans.get(&b.id).map(|k| k.board))
+                .filter_map(|b| ws.space.kanban(b.id).map(|k| k.board))
                 .collect();
             shown.sort();
             assert_eq!(shown, [None, Some(board)]);
-            assert_eq!(ws.space.terminals.len(), 1, "and the terminal");
+            assert_eq!(ws.space.terminals().count(), 1, "and the terminal");
         });
     }
 
@@ -6736,7 +6839,10 @@ mod tests {
         loop {
             let shown = ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(
+                    ws.space.terminal(id).unwrap().term.shared(),
+                    &ws.theme.palette,
+                );
                 snap.text()
             });
             if shown.contains("claude --continue") {
@@ -6796,7 +6902,10 @@ mod tests {
         loop {
             let shown = ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(
+                    ws.space.terminal(id).unwrap().term.shared(),
+                    &ws.theme.palette,
+                );
                 snap.text()
             });
             if shown.contains("claude") {
@@ -6902,7 +7011,10 @@ mod tests {
         loop {
             let shown = ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(
+                    ws.space.terminal(id).unwrap().term.shared(),
+                    &ws.theme.palette,
+                );
                 snap.text()
             });
             if shown.contains("claude -c --fast") {
@@ -6937,7 +7049,10 @@ mod tests {
         let shown = |id: BlockId, cx: &mut TestAppContext| {
             ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(
+                    ws.space.terminal(id).unwrap().term.shared(),
+                    &ws.theme.palette,
+                );
                 snap.text()
             })
         };

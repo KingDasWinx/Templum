@@ -18,16 +18,10 @@ use templum_canvas::{Block, Rect, chrome};
 
 use crate::alert::{self, Alert};
 use crate::grid::{self, hsla};
-use crate::kanban::{self, Kanban};
+use crate::kanban;
 use crate::menu::Target;
 use crate::motion::{self, Look};
-use crate::workspace::{Pane, Workspace};
-
-/// What a block holds.
-pub(crate) enum Content<'a> {
-    Terminal(&'a Pane),
-    Kanban(Kanban),
-}
+use crate::workspace::{Body, Pane, Workspace};
 
 /// World units, like everything in a block.
 const TITLE_FONT: f32 = 12.0;
@@ -40,7 +34,7 @@ const RING: f32 = 2.0;
 pub(crate) fn render(
     ws: &Workspace,
     block: Block,
-    content: Content,
+    body: &Body,
     look: Look,
     live: bool,
     window: &mut Window,
@@ -57,10 +51,7 @@ pub(crate) fn render(
         full.h * look.scale,
     );
     let focused = live && ws.space.focused == Some(id);
-    let target = match &content {
-        Content::Terminal(_) => Target::Terminal(id),
-        Content::Kanban(_) => Target::Kanban(id),
-    };
+    let target = Target::Block(id);
     let hovered = live && ws.space.hovered == Some(id);
     let ui = ws.ui;
     // 0 at rest, 1 hovered; eased both ways.
@@ -97,9 +88,9 @@ pub(crate) fn render(
                 .truncate()
                 .text_size(px(TITLE_FONT * z))
                 .text_color(if focused { ui.title } else { ui.title_dim })
-                .child(match &content {
-                    Content::Terminal(pane) => SharedString::from(pane.term.title()),
-                    Content::Kanban(k) => k.title(ws),
+                .child(match body {
+                    Body::Terminal(pane) => SharedString::from(pane.term.title()),
+                    Body::Kanban(k) => k.title(ws),
                 }),
         )
         .when(live, |el| {
@@ -132,8 +123,8 @@ pub(crate) fn render(
         .test_support();
 
     // A terminal's state, on the left of its header.
-    let dot = match &content {
-        Content::Terminal(pane) if live => status_dot(ws, pane).map(|(color, text)| {
+    let dot = match body {
+        Body::Terminal(pane) if live => status_dot(ws, pane).map(|(color, text)| {
             div()
                 .id(("status", n))
                 .absolute()
@@ -149,8 +140,8 @@ pub(crate) fn render(
     };
 
     // A kanban block's board list, on the left of its header (over the title: no move).
-    let boards = match &content {
-        Content::Kanban(_) if live => Some(
+    let boards = match body {
+        Body::Kanban(_) if live => Some(
             div()
                 .id(("boards", n))
                 .absolute()
@@ -183,7 +174,7 @@ pub(crate) fn render(
         .children(boards)
         .when(hovered, |el| el.child(fade_in(close, ("close-fade", n))));
 
-    let body = div()
+    let frame = div()
         .id(("body", n))
         .absolute()
         .left(px(0.0))
@@ -192,8 +183,8 @@ pub(crate) fn render(
         .h(px((r.h - chrome::TITLE_H * z).max(0.0)))
         .p(px(chrome::PAD * z))
         .overflow_hidden();
-    let body = match content {
-        Content::Terminal(pane) => body
+    let content = match body {
+        Body::Terminal(pane) => frame
             .when(live, |el| {
                 el.cursor_text()
                     .on_mouse_down(
@@ -216,7 +207,7 @@ pub(crate) fn render(
                 cx.entity(),
             )),
         // A fading kanban block is drawn empty: its board is still live elsewhere.
-        Content::Kanban(k) => body.when(live, |el| el.child(kanban::body(ws, id, k, z, cx))),
+        Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, cx))),
     }
     .test_support();
 
@@ -306,7 +297,7 @@ pub(crate) fn render(
                 )
         })
         .child(header)
-        .child(body)
+        .child(content)
         .when(hovered, |el| el.child(fade_in(handle, ("handle-fade", n))))
         .test_support()
         .into_any_element()

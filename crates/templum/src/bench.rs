@@ -27,7 +27,7 @@ pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut App) 
         let idle_rss = rss_mb();
         let _ = cx.update_window(window, |_, _, cx| {
             ws.update(cx, |ws, cx| {
-                for pane in ws.space.terminals.values().take(5) {
+                for (_, pane) in ws.space.terminals().take(5) {
                     pane.term.write(&b"yes\r"[..]);
                 }
                 let center = ws
