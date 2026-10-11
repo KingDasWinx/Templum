@@ -6069,7 +6069,18 @@ mod tests {
         let (handle, ws) = open(cx);
         let folder = tempfile::tempdir().unwrap();
         ws.update(cx, |ws, _| {
-            ws.space.recent = vec![folder.path().to_path_buf()]
+            ws.space.recent = vec![folder.path().to_path_buf()];
+            // One agent, installed everywhere: the menu's first, whatever this computer has.
+            ws.agents = vec![crate::agents::AgentEntry {
+                id: "mine".into(),
+                title: "Mine".into(),
+                command: quiet().0,
+                resume: None,
+                install: None,
+                builtin: None,
+                changed: false,
+                show: true,
+            }];
         });
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
