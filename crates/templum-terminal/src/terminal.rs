@@ -756,10 +756,15 @@ mod tests {
 
     #[test]
     fn the_reported_folder_counts_while_the_shell_is_in_front() {
-        let reported = tempfile::tempdir().unwrap();
-        let folder = |p: Processes| inspect(&[p], &[]).pop().unwrap().folder;
+        // Canonical: the OS may spell a folder another way (Windows).
+        let folder = |p: Processes| {
+            let folder = inspect(&[p], &[]).pop().unwrap().folder;
+            folder.map(|f| f.canonicalize().unwrap())
+        };
         let me = std::process::id();
-        let mine = std::env::current_dir().unwrap();
+        let mine = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let reported = tempfile::tempdir().unwrap();
+        let canonical = reported.path().canonicalize().unwrap();
         let p = Processes {
             shell: Some(me),
             foreground: None,
@@ -767,7 +772,7 @@ mod tests {
         };
         assert_eq!(
             folder(p.clone()).as_deref(),
-            Some(reported.path()),
+            Some(canonical.as_path()),
             "no foreground (Windows)"
         );
         let front = Processes {
@@ -776,7 +781,7 @@ mod tests {
         };
         assert_eq!(
             folder(front).as_deref(),
-            Some(reported.path()),
+            Some(canonical.as_path()),
             "the shell in front"
         );
         // Another program in front (ssh, a nested shell): what the OS says of it.

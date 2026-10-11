@@ -3146,6 +3146,7 @@ mod tests {
     }
 
     /// Draws frames (each hears the terminals) until `done`.
+    #[cfg(unix)]
     fn until(
         what: &str,
         handle: AnyWindowHandle,
@@ -3174,6 +3175,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     fn set_active(handle: AnyWindowHandle, active: bool, cx: &mut TestAppContext) {
         if active {
             cx.update_window(handle, |_, window, _| window.activate_window())
@@ -4644,11 +4646,11 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     const PREVIOUS_PROMPT: &str = "cmd-up";
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(unix, not(target_os = "macos")))]
     const PREVIOUS_PROMPT: &str = "ctrl-shift-up";
     #[cfg(target_os = "macos")]
     const NEXT_PROMPT: &str = "cmd-down";
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(unix, not(target_os = "macos")))]
     const NEXT_PROMPT: &str = "ctrl-shift-down";
 
     /// A command whose output scrolled its prompt out of view: the shortcut brings the prompt to
@@ -4658,6 +4660,18 @@ mod tests {
     fn the_command_shortcuts_jump_between_prompts(cx: &mut TestAppContext) {
         use std::time::{Duration, Instant};
         use templum_terminal::Snapshot;
+        // Bash 4.4 brought PS0, which reports a command's start (macOS has 3.2).
+        let ps0 = std::process::Command::new("bash")
+            .args([
+                "-c",
+                "(( BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] >= 404 ))",
+            ])
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ps0 {
+            eprintln!("skipped: this bash doesn't report commands");
+            return;
+        }
         let data = tempfile::tempdir().unwrap();
         let bash = Some(("bash".to_string(), Vec::new()));
         let (handle, ws) = open_as(cx, bash, None, Some(data.path().to_path_buf()));

@@ -252,8 +252,9 @@ mod tests {
         .unwrap();
         assert_eq!(i.args.unwrap()[2..], args(&["-i"]));
         assert_eq!(i.env, vec![("TEMPLUM_SHELL_LOGIN".into(), "1".into())]);
-        assert_eq!(new_args("bash", &["-il"]).unwrap()[2..], args(&["-i"]));
-        assert_eq!(new_args("bash", &["-l"]).unwrap().len(), 2);
+        // A path: on Windows, `bash` alone is WSL's (see wsl_bash).
+        assert_eq!(new_args("/bin/bash", &["-il"]).unwrap()[2..], args(&["-i"]));
+        assert_eq!(new_args("/bin/bash", &["-l"]).unwrap().len(), 2);
     }
 
     #[test]
@@ -265,7 +266,7 @@ mod tests {
             &["--rcfile", "x"],
             &["script.sh"],
         ] {
-            assert_eq!(new_args("bash", a), None, "{a:?}");
+            assert_eq!(new_args("/bin/bash", a), None, "{a:?}");
         }
     }
 
