@@ -357,7 +357,7 @@ fn program_dirs() -> Vec<PathBuf> {
 }
 
 /// The first `program` among `dirs` that can be run (on Windows, with a program extension).
-fn find_program(program: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+pub(crate) fn find_program(program: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
     let names: Vec<String> = if cfg!(windows) {
         ["exe", "cmd", "bat", "ps1"]
             .iter()

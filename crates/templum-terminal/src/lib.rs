@@ -3,6 +3,7 @@
 mod agent;
 mod input;
 pub mod palette;
+mod shells;
 mod snapshot;
 mod terminal;
 
@@ -11,6 +12,7 @@ pub use alacritty_terminal::index::Side;
 pub use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Rgb};
 pub use input::{KeyInput, encode_key, paste_bytes};
 pub use palette::Palette;
+pub use shells::{ShellOption, available_shells, default_shell, default_shell_label};
 pub use snapshot::{Cursor, Row, Run, Snapshot, Span};
 pub use terminal::{
     Inspection, Notify, Processes, SelectionKind, SharedTerm, SpawnOptions, TermOptions, Terminal,

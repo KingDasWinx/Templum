@@ -128,7 +128,8 @@ impl Mode {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Shell {
-    /// None: $SHELL (PowerShell on Windows).
+    /// None: the default shell: $SHELL; on Windows, Git Bash, else PowerShell 7, else Windows
+    /// PowerShell (`templum_terminal::default_shell`).
     pub program: Option<String>,
     /// Used with `program` only.
     pub args: Vec<String>,
@@ -558,7 +559,8 @@ pub(crate) fn template(macos: bool) -> String {
         "# light = \"Catppuccin Latte\"\n",
         "# dark = \"Catppuccin Mocha\"\n\n",
         "[shell]\n",
-        "## Default: $SHELL, or PowerShell on Windows. For example:\n",
+        "## Default: $SHELL. On Windows: Git Bash, else PowerShell 7, else Windows PowerShell.\n",
+        "## For example:\n",
         "## program = \"fish\"\n",
         "## args = [\"--login\"]\n",
         "# working_directory = \"inherit\"   # \"inherit\" | \"~\" | a path\n\n",

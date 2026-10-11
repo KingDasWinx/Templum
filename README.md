@@ -87,7 +87,7 @@ dark = "Catppuccin Mocha"
 
 Press **Ctrl+,** (**Cmd+,** on macOS), or the ⚙ in the title bar, to open the settings panel on the right. It has
 Appearance (light/dark mode and themes), Font (with a preview), Terminal (cursor and
-scrollback), Shell (for new terminals) and Shortcuts. The terminals stay usable next to it, so you see each change
+scrollback), Shell (for new terminals: pick one of the shells found on your computer), Agents and Shortcuts. The terminals stay usable next to it, so you see each change
 as you make it.
 
 - Every change applies at once and is saved to `config.toml` a moment later, keeping your comments. Numbers apply
@@ -164,7 +164,9 @@ new_terminal = "ctrl-shift-t"   # one shortcut, a list, or [] to disable
 ```
 
 A mistake in the file (a typo, a value out of range) shows a notification saying where, and Templum keeps the
-last working settings. On Windows, `"inherit"` follows `cd` in cmd.exe but not in PowerShell, which doesn't move its
+last working settings. On Windows, new terminals run Git Bash when Git for Windows is installed, else PowerShell 7,
+else Windows PowerShell; Settings ▸ Shell lists every shell found (Git Bash, PowerShell 7, Windows PowerShell, WSL,
+Nushell, Command Prompt). On Windows, `"inherit"` follows `cd` in cmd.exe but not in PowerShell, which doesn't move its
 process's folder. The full list is in [docs/specs/config.md](docs/specs/config.md).
 
 ## Pre-built binaries

@@ -341,20 +341,23 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    /// Starts the user's login shell (PowerShell on Windows), or `opts.command`, in a PTY.
-    /// `notify` is called, coalesced, on new output, title changes and exit.
+    /// Starts `opts.command`, else the default shell (see [`crate::default_shell`]: the user's
+    /// login shell, or Git Bash first on Windows), in a PTY. `notify` is called, coalesced, on
+    /// new output, title changes and exit.
     pub fn spawn(opts: SpawnOptions, notify: Notify) -> io::Result<Self> {
         let size = window_size(opts.cols, opts.rows, opts.cell_px);
-        let shell_name = match &opts.command {
+        let command = opts
+            .command
+            .clone()
+            .or_else(|| crate::default_shell().map(|s| (s.program, s.args)));
+        let shell_name = match &command {
             Some((program, _)) => file_stem(program),
             None => default_shell_name(),
         };
         // Windows has one more field (escape_args): the update is only needless elsewhere.
         #[allow(clippy::needless_update)]
         let options = tty::Options {
-            shell: opts
-                .command
-                .map(|(program, args)| tty::Shell::new(program, args)),
+            shell: command.map(|(program, args)| tty::Shell::new(program, args)),
             env: HashMap::from([
                 ("TERM".into(), "xterm-256color".into()),
                 ("COLORTERM".into(), "truecolor".into()),

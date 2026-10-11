@@ -249,6 +249,9 @@ pub struct Workspace {
     _flush: Vec<Subscription>,
     /// Installed monospaced families, measured when the settings panel opens.
     pub(crate) fonts: Vec<SharedString>,
+    /// The shells found on this computer, and the default's name, read when the panel opens.
+    pub(crate) shells: Vec<templum_terminal::ShellOption>,
+    pub(crate) default_shell: String,
     /// What the user typed in the panel's text fields that can't apply yet (an unclosed quote),
     /// by the config key it is for.
     pub(crate) drafts: HashMap<&'static str, String>,
@@ -422,6 +425,8 @@ impl Workspace {
             save_error: None,
             _flush: flush,
             fonts: Vec::new(),
+            shells: Vec::new(),
+            default_shell: String::new(),
             drafts: HashMap::new(),
             quit_armed: None,
             settings: None,
@@ -1507,6 +1512,8 @@ impl Workspace {
         }
         self.themes = theme::load(self.config_dir.as_deref());
         self.fonts = settings::monospace_families(window);
+        self.shells = templum_terminal::available_shells();
+        self.default_shell = templum_terminal::default_shell_label();
         let now = Instant::now();
         self.settings = Some(match &self.settings {
             // Still sliding out: it turns back from where it is.
@@ -4389,6 +4396,71 @@ mod tests {
             window.render_frame(cx);
             window.render_frame(cx);
             assert!(ws.read(cx).agents.iter().all(|a| a.id != "mine"), "deleted");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_shell_list_sets_the_program_and_its_arguments(cx: &mut TestAppContext) {
+        use templum_terminal::ShellOption;
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+            .unwrap();
+        settle_slide(handle, cx);
+        // Two shells "found" on this computer.
+        ws.update(cx, |ws, _| {
+            ws.shells = vec![
+                ShellOption {
+                    label: "Git Bash".into(),
+                    program: "C:\\Git\\bin\\bash.exe".into(),
+                    args: vec!["--login".into(), "-i".into()],
+                },
+                ShellOption {
+                    label: "PowerShell 7".into(),
+                    program: "pwsh".into(),
+                    args: vec!["-NoLogo".into()],
+                },
+            ];
+            ws.default_shell = "Git Bash".into();
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.click("settings-tab-shell", cx);
+            window.render_frame(cx);
+            assert!(
+                window.try_find("reset-shell.shell").is_none(),
+                "the default"
+            );
+            window
+                .within("field-shell.shell")
+                .click("menu-shell.shell", cx);
+            window.render_frame(cx);
+            // Default (Git Bash), Git Bash, PowerShell 7.
+            window.within("popup-menu").click(2usize, cx);
+            window.render_frame(cx);
+            window.render_frame(cx);
+            let shell = ws.read(cx).config.shell.clone();
+            assert_eq!(shell.program.as_deref(), Some("pwsh"));
+            assert_eq!(shell.args, ["-NoLogo"]);
+            assert!(window.try_find("reset-shell.shell").is_some());
+        })
+        .unwrap();
+        ws.update(cx, |ws, _| ws.save());
+        let text = std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap();
+        assert!(
+            text.contains("program = \"pwsh\"") && text.contains("-NoLogo"),
+            "{text}"
+        );
+        cx.update_window(handle, |_, window, cx| {
+            window.click("reset-shell.shell", cx);
+            window.render_frame(cx);
+            window.render_frame(cx);
+            let shell = ws.read(cx).config.shell.clone();
+            assert_eq!(
+                (shell.program, shell.args.len()),
+                (None, 0),
+                "back to the default"
+            );
         })
         .unwrap();
     }

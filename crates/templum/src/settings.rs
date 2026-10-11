@@ -565,8 +565,9 @@ fn rows(
         Section::Shell => {
             let shell = &ws.config.shell;
             let mut rows = vec![
+                shell_row(ws, entity),
                 Row::new("shell.program", "Program")
-                    .description("Empty: the default shell ($SHELL, or PowerShell on Windows)")
+                    .description("Empty: the default shell, above. Set by the list, or typed")
                     .control(text_input(
                         entity,
                         "shell.program",
@@ -1464,7 +1465,7 @@ pub(crate) fn join_args(args: &[String]) -> String {
         .join(" ")
 }
 
-/// `shell.program`, trimmed; empty removes the key ($SHELL, or PowerShell on Windows). The typed
+/// `shell.program`, trimmed; empty removes the key (the default shell). The typed
 /// text is kept as a draft, so a space typed before the rest of a path stays in the field.
 pub(crate) fn set_program(ws: &mut Workspace, text: &str, cx: &mut Context<Workspace>) {
     ws.drafts.insert("program", text.to_string());
@@ -1482,6 +1483,91 @@ pub(crate) fn set_program(ws: &mut Workspace, text: &str, cx: &mut Context<Works
             cx,
         );
     }
+}
+
+/// The shell new terminals run: the default, or one found on this computer. One set by hand that
+/// isn't in the list shows as Custom.
+fn shell_row(ws: &Workspace, entity: &Entity<Workspace>) -> Row {
+    let shell = &ws.config.shell;
+    let current = match &shell.program {
+        None => "default".to_string(),
+        Some(program) => ws
+            .shells
+            .iter()
+            .position(|s| s.program == *program && s.args == shell.args)
+            .map_or_else(|| "custom".to_string(), |i| i.to_string()),
+    };
+    let mut options: Vec<(SharedString, SharedString)> = vec![(
+        "default".into(),
+        format!("Default ({})", ws.default_shell).into(),
+    )];
+    options.extend(
+        ws.shells
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (i.to_string().into(), s.label.clone().into())),
+    );
+    if current == "custom" {
+        options.push(("custom".into(), "Custom".into()));
+    }
+    let (e, shells) = (entity.clone(), ws.shells.clone());
+    let reset = entity.clone();
+    Row::new("shell.shell", "Shell")
+        .description("What new terminals run")
+        .control(menu_button(
+            "menu-shell.shell",
+            options,
+            current.into(),
+            false,
+            move |value, cx| {
+                let chosen = value.parse::<usize>().ok().and_then(|i| shells.get(i));
+                if chosen.is_none() && value != "default" {
+                    return;
+                }
+                e.update(cx, |ws, cx| set_shell(ws, chosen, cx))
+            },
+        ))
+        .reset(shell.program.is_some(), move |_, cx| {
+            reset.update(cx, |ws, cx| set_shell(ws, None, cx))
+        })
+}
+
+/// `shell.program` and `shell.args` from the list: a shell found here, or None for the default
+/// (both keys removed).
+pub(crate) fn set_shell(
+    ws: &mut Workspace,
+    shell: Option<&templum_terminal::ShellOption>,
+    cx: &mut Context<Workspace>,
+) {
+    // The text fields show what the list chose.
+    ws.drafts.remove("program");
+    ws.drafts.remove("args");
+    match shell {
+        None => {
+            ws.edit(
+                Edit::remove("shell", "program"),
+                |c| c.shell.program = None,
+                cx,
+            );
+            ws.edit(Edit::remove("shell", "args"), |c| c.shell.args.clear(), cx);
+        }
+        Some(shell) => {
+            let program = shell.program.clone();
+            ws.edit(
+                Edit::set("shell", "program", program.as_str()),
+                |c| c.shell.program = Some(program.clone()),
+                cx,
+            );
+            let args = shell.args.clone();
+            let value: toml_edit::Array = args.iter().map(String::as_str).collect();
+            ws.edit(
+                Edit::set("shell", "args", value),
+                |c| c.shell.args = args,
+                cx,
+            );
+        }
+    }
+    cx.notify();
 }
 
 /// `shell.args` from the text field. An unclosed quote waits (the field says so); the typed text

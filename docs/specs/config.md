@@ -62,7 +62,7 @@ light = "Catppuccin Latte"
 dark = "Catppuccin Mocha"
 
 [shell]
-program = "fish"                # default: $SHELL, or PowerShell on Windows
+program = "fish"                # default: $SHELL; on Windows see shells.md
 args = ["--login"]              # default: none
 working_directory = "inherit"   # "inherit" | "~" | a path
 
