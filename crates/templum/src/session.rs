@@ -205,19 +205,10 @@ pub(crate) struct TerminalItem {
     /// Missing when the OS wouldn't say, or when the path isn't UTF-8 (JSON can't hold it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
-    /// "claude" or "codex": resumed in the block's folder. Any other value is ignored.
+    /// The agent open in it, by id: resumed in the block's folder when Templum knows that id
+    /// (one of its own, or one in `[agents]`); any other value is ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
-}
-
-impl TerminalItem {
-    /// The agent to resume: only a known one, so an edited file can't make Templum type anything
-    /// else.
-    pub fn agent(&self) -> Option<templum_terminal::Agent> {
-        self.agent
-            .as_deref()
-            .and_then(templum_terminal::Agent::from_name)
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -253,6 +244,8 @@ pub(crate) struct Layout {
     pub focused: Option<usize>,
     /// Folders agents were opened in, newest first.
     pub recent: Vec<PathBuf>,
+    /// The agents to look for in the terminals.
+    pub agents: std::sync::Arc<Vec<templum_terminal::Detect>>,
 }
 
 pub(crate) enum LayoutBlock {
@@ -273,7 +266,7 @@ impl Layout {
                 LayoutBlock::Kanban(..) => None,
             })
             .collect();
-        let mut found = templum_terminal::inspect(&processes).into_iter();
+        let mut found = templum_terminal::inspect(&processes, &self.agents).into_iter();
         Saved {
             version: VERSION,
             camera: SavedCamera {
@@ -291,7 +284,7 @@ impl Layout {
                         Item::Terminal(TerminalItem {
                             rect: (*rect).into(),
                             folder: found.folder.and_then(utf8),
-                            agent: found.agent.map(|a| a.name().to_string()),
+                            agent: found.agent,
                         })
                     }
                     LayoutBlock::Kanban(rect, board) => Item::Kanban(KanbanItem {
@@ -501,30 +494,6 @@ mod tests {
     }
 
     #[test]
-    fn only_known_agents_are_resumed() {
-        let item = |agent: Option<&str>| TerminalItem {
-            rect: SavedRect {
-                x: 0.0,
-                y: 0.0,
-                w: 1.0,
-                h: 1.0,
-            },
-            folder: None,
-            agent: agent.map(String::from),
-        };
-        assert_eq!(
-            item(Some("claude")).agent(),
-            Some(templum_terminal::Agent::CLAUDE)
-        );
-        assert_eq!(
-            item(Some("codex")).agent(),
-            Some(templum_terminal::Agent::CODEX)
-        );
-        assert_eq!(item(Some("rm -rf ~")).agent(), None);
-        assert_eq!(item(None).agent(), None);
-    }
-
-    #[test]
     fn no_file_is_a_first_run() {
         let d = tempfile::tempdir().unwrap();
         assert_eq!(load(d.path(), DEFAULT_ID), Loaded::Nothing);
@@ -713,6 +682,7 @@ mod tests {
             ],
             focused: Some(1),
             recent: vec![PathBuf::from("/a"), PathBuf::from("/b")],
+            agents: Default::default(),
         };
         let saved = layout.snapshot();
         assert_eq!(saved.recent, ["/a", "/b"], "recent folders, newest first");

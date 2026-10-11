@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use crate::agents::AgentEntry;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputState};
@@ -16,7 +17,6 @@ use gpui_kit::{
     div, px,
 };
 use templum_canvas::Point;
-use templum_terminal::Agent;
 
 use crate::grid::hsla;
 use crate::workspace::{Workspace, show_notification};
@@ -49,7 +49,7 @@ fn label(folder: &Path) -> (String, String) {
 /// `installed`: its command was found; if not, the dialog says how to install it.
 pub(crate) fn ask_folder(
     ws: &Workspace,
-    agent: Agent,
+    agent: AgentEntry,
     at: Point,
     installed: bool,
     window: &mut Window,
@@ -57,6 +57,20 @@ pub(crate) fn ask_folder(
 ) {
     let entity = cx.entity();
     let ui = ws.ui;
+    let title = agent.title.clone();
+    let program = agent.program().to_string();
+    // One of Templum's own says how to install it; for one of the user's, the command may be off.
+    let help = match agent.install {
+        Some(install) => (
+            format!("{program} isn't installed on this computer. To install it:"),
+            install.to_string(),
+        ),
+        None => (
+            format!("{program} wasn't found on this computer. Its command, in Settings ▸ Agents:"),
+            agent.command.clone(),
+        ),
+    };
+    let command = agent.command.clone();
     let warn = hsla(ws.theme.palette.ansi[3], 1.0);
     // The terminal's font: the install command is to copy into one.
     let mono = ws.cell.font.family.clone();
@@ -72,7 +86,9 @@ pub(crate) fn ask_folder(
     let open = {
         let entity = entity.clone();
         Rc::new(move |folder: &Path, window: &mut Window, cx: &mut App| {
-            entity.update(cx, |ws, cx| ws.launch_agent(agent, folder, at, window, cx))
+            entity.update(cx, |ws, cx| {
+                ws.launch_agent(&command, folder, at, window, cx)
+            })
         })
     };
     let typed = {
@@ -155,7 +171,7 @@ pub(crate) fn ask_folder(
         let typed = typed.clone();
         alert
             .confirm()
-            .title(format!("Open {}", agent.title()))
+            .title(format!("Open {title}"))
             .w(px(480.0))
             .button_props(DialogButtonProps::default().ok_text("Open"))
             .child(
@@ -171,11 +187,8 @@ pub(crate) fn ask_folder(
                                 .rounded(px(8.0))
                                 .bg(ui.card)
                                 .text_size(px(12.0))
-                                .child(div().text_color(warn).child(format!(
-                                    "{} isn't installed on this computer. To install it:",
-                                    agent.program()
-                                )))
-                                .child(div().font_family(mono.clone()).child(agent.install())),
+                                .child(div().text_color(warn).child(help.0.clone()))
+                                .child(div().font_family(mono.clone()).child(help.1.clone())),
                         )
                     })
                     .when(!recent.is_empty(), |el| {

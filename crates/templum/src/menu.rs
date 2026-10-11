@@ -2,16 +2,16 @@
 //! Each right-clickable element opens its target's menu and stops the event, so the innermost
 //! one wins. See docs/specs/context-menus.md.
 
+use crate::agents::AgentEntry;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Context, DismissEvent, Entity, Focusable as _, Pixels, Point as PixelPoint,
-    ScrollWheelEvent, Subscription, Window, anchored, deferred, div, px,
+    ScrollWheelEvent, SharedString, Subscription, Window, anchored, deferred, div, px,
 };
 use templum_canvas::{BlockId, Point};
-use templum_terminal::Agent;
 
 use crate::kanban;
 use crate::launcher;
@@ -88,8 +88,11 @@ impl Workspace {
         match *target {
             Target::Canvas(at) => Items::Canvas {
                 at,
-                agents: Agent::all()
-                    .map(|a| (a, templum_terminal::installed(a.program())))
+                agents: self
+                    .agents
+                    .iter()
+                    .filter(|a| a.show)
+                    .map(|a| (a.clone(), templum_terminal::installed(a.program())))
                     .collect(),
             },
             Target::Terminal(block) => Items::Terminal {
@@ -146,8 +149,8 @@ impl Workspace {
 enum Items {
     Canvas {
         at: Point,
-        /// Each agent, and whether its command was found.
-        agents: Vec<(Agent, bool)>,
+        /// Each agent the menu lists, and whether its program was found.
+        agents: Vec<(AgentEntry, bool)>,
     },
     Terminal {
         block: BlockId,
@@ -184,7 +187,7 @@ enum Items {
 /// An item whose click updates the workspace.
 fn item(
     ws: &Entity<Workspace>,
-    label: &'static str,
+    label: impl Into<SharedString>,
     icon: Option<IconName>,
     act: impl Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
 ) -> PopupMenuItem {
@@ -224,11 +227,12 @@ impl Items {
                         // Installed first; the others say how to install them when chosen.
                         let (found, missing): (Vec<_>, Vec<_>) = agents
                             .iter()
-                            .copied()
+                            .cloned()
                             .partition(|(_, installed)| *installed);
-                        let entry = |menu: PopupMenu, (agent, installed): (Agent, bool)| {
-                            menu.item(item(&ws, agent.title(), None, move |ws, window, cx| {
-                                launcher::ask_folder(ws, agent, at, installed, window, cx)
+                        let entry = |menu: PopupMenu, (agent, installed): (AgentEntry, bool)| {
+                            let title = SharedString::from(agent.title.clone());
+                            menu.item(item(&ws, title, None, move |ws, window, cx| {
+                                launcher::ask_folder(ws, agent.clone(), at, installed, window, cx)
                             }))
                         };
                         // Twenty agents: the list scrolls in a short window.

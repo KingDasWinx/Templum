@@ -206,6 +206,17 @@ const SPECS: [Spec; 20] = [
     },
 ];
 
+/// How to tell an agent from its processes: one of Templum's, or one the user set up.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Detect {
+    /// What the saved canvas records.
+    pub id: String,
+    /// Process or script names.
+    pub names: Vec<String>,
+    /// Pieces of an npm package's path, in a `node` process's script argument.
+    pub packages: Vec<String>,
+}
+
 /// An agent Templum knows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Agent(usize);
@@ -254,14 +265,34 @@ impl Agent {
     pub fn resume_command(self) -> &'static str {
         self.spec().resume.unwrap_or(self.command())
     }
+
+    /// How to tell it from its processes.
+    pub fn detect(self) -> Detect {
+        let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect();
+        Detect {
+            id: self.name().to_string(),
+            names: owned(self.spec().names),
+            packages: owned(self.spec().packages),
+        }
+    }
 }
 
-/// The agent a process is, from its name and arguments (`args[0]` is the program). An agent
-/// installed with npm runs as `node` with its script first: the package's file, or the bin link
-/// the shell found. One installed with pip or uv runs as its script, by name.
-pub fn agent_of(name: &str, args: &[&str]) -> Option<Agent> {
+/// The program a command runs, as process names compare: `"~/bin/My-Agent --tui"` is `my-agent`.
+pub fn program_name(command: &str) -> String {
+    stem(command.split_whitespace().next().unwrap_or_default())
+}
+
+/// The agent among `known` a process is, by its id, from its name and arguments (`args[0]` is
+/// the program). An agent installed with npm runs as `node` with its script first: the package's
+/// file, or the bin link the shell found. One installed with pip or uv runs as its script, by
+/// name.
+pub fn agent_of(name: &str, args: &[&str], known: &[Detect]) -> Option<String> {
+    agent_index(name, args, known).map(|i| known[i].id.clone())
+}
+
+fn agent_index(name: &str, args: &[&str], known: &[Detect]) -> Option<usize> {
     let program = args.first().map_or_else(String::new, |a| stem(a));
-    let by_name = |n: &str| Agent::all().find(|a| a.spec().names.contains(&n));
+    let by_name = |n: &str| known.iter().position(|a| a.names.iter().any(|x| x == n));
     // The name, or the first argument: on macOS an npm agent's `process.title` replaces it.
     if let Some(agent) = by_name(&stem(name)).or_else(|| by_name(&program)) {
         return Some(agent);
@@ -271,7 +302,9 @@ pub fn agent_of(name: &str, args: &[&str]) -> Option<Agent> {
     let interpreter = |n: &str| matches!(n, "node" | "node-mainthread" | "bun");
     let script = args.iter().skip(1).find(|a| !a.starts_with('-'))?;
     let script = script.replace('\\', "/");
-    if let Some(agent) = Agent::all().find(|a| a.spec().packages.iter().any(|p| script.contains(p)))
+    if let Some(agent) = known
+        .iter()
+        .position(|a| a.packages.iter().any(|p| script.contains(p.as_str())))
     {
         return Some(agent);
     }
@@ -361,13 +394,17 @@ fn stem(path: &str) -> String {
 mod tests {
     use super::*;
 
-    fn named(id: &str) -> Option<Agent> {
-        Some(Agent::from_name(id).unwrap())
+    fn named(id: &str) -> Option<String> {
+        Agent::from_name(id).map(|a| a.name().to_string())
+    }
+
+    fn builtins() -> Vec<Detect> {
+        Agent::all().map(Agent::detect).collect()
     }
 
     #[test]
     fn agents_are_known_by_name_or_by_the_script_node_runs() {
-        let cases: &[(&str, &[&str], Option<Agent>)] = &[
+        let cases: &[(&str, &[&str], Option<String>)] = &[
             ("claude", &["claude"], named("claude")),
             (
                 "claude.exe",
@@ -484,9 +521,34 @@ mod tests {
             ("vim", &["vim", "claude.md"], None),
             ("zsh", &["-zsh"], None),
         ];
+        let known = builtins();
         for (name, args, want) in cases {
-            assert_eq!(agent_of(name, args), *want, "{name} {args:?}");
+            assert_eq!(agent_of(name, args, &known), *want, "{name} {args:?}");
         }
+    }
+
+    #[test]
+    fn an_agent_the_user_set_up_is_known_by_its_program() {
+        let mut known = builtins();
+        known.push(Detect {
+            id: "mine".into(),
+            names: vec![program_name("~/bin/My-Agent --tui")],
+            packages: Vec::new(),
+        });
+        assert_eq!(
+            agent_of("my-agent", &["my-agent"], &known),
+            Some("mine".into())
+        );
+        assert_eq!(
+            agent_of("node", &["node", "/usr/bin/my-agent"], &known),
+            Some("mine".into())
+        );
+        assert_eq!(agent_of("claude", &["claude"], &known), named("claude"));
+        assert_eq!(
+            agent_of("my-agent", &["my-agent"], &builtins()),
+            None,
+            "unknown elsewhere"
+        );
     }
 
     #[test]
@@ -520,8 +582,9 @@ mod tests {
         assert_eq!(Agent::CLAUDE.resume_command(), "claude --continue");
         assert_eq!(Agent::CODEX.resume_command(), "codex resume --last");
         // Copilot's resume may reopen another folder's session: a new one instead.
-        assert_eq!(named("copilot").unwrap().resume_command(), "copilot");
-        assert_eq!(named("goose").unwrap().resume_command(), "goose session");
+        let by = |id| Agent::from_name(id).unwrap();
+        assert_eq!(by("copilot").resume_command(), "copilot");
+        assert_eq!(by("goose").resume_command(), "goose session");
     }
 
     #[test]

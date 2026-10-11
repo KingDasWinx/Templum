@@ -6,7 +6,7 @@ pub mod palette;
 mod snapshot;
 mod terminal;
 
-pub use agent::{Agent, agent_of, installed};
+pub use agent::{Agent, Detect, agent_of, installed, program_name};
 pub use alacritty_terminal::index::Side;
 pub use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Rgb};
 pub use input::{KeyInput, encode_key, paste_bytes};

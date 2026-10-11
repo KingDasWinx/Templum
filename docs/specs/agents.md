@@ -81,6 +81,41 @@ Interpreter, Qodo Command. Each is one more row in `templum-terminal/src/agent.r
   in the folder, and types the agent's command and Enter. When the agent exits, the shell is still there.
 - The folder becomes the workspace's newest recent folder.
 
+## Changing ours, adding yours
+
+**Settings ▸ Agents** lists every agent: Templum's, then the user's.
+
+- **A row** shows the agent's name and its command (the user's say "Yours"). It has:
+  - a switch: whether the canvas's menu lists it;
+  - **Edit**, which opens a dialog;
+  - **↺**, for one of Templum's the user changed: it goes back to Templum's defaults.
+- **Reset all** next to the heading puts every changed agent of Templum's back. The user's agents stay.
+- **Add an agent** under the list opens the same dialog, empty.
+- **The dialog** has Name, Command and Resume command.
+  - For one of Templum's, each field shows Templum's value under it.
+  - An empty resume command means a new session when the canvas comes back.
+  - Save needs a name and a command; otherwise a notification says which is missing and the dialog stays.
+  - One of the user's has **Delete this agent**.
+- **Restoring a canvas** types the resume command in effect, so a changed one is used.
+- **Recognizing it** in a terminal: a user's agent by the program its command runs (`~/bin/My-Agent --tui` is
+  `my-agent`); one of Templum's by its usual names, plus the program of a changed command (a wrapper).
+
+**config.toml** holds them under `[agents]`, one entry per agent, keyed by id:
+
+```toml
+[agents]
+claude = { command = "claude --model opus" }   # only what differs from Templum's
+codex = { show = false }
+my-agent = { name = "My agent", command = "my-agent --tui", resume = "my-agent --continue" }
+```
+
+- `[agents.claude]` tables written by hand work too.
+- For one of Templum's, each missing key keeps its default, and saving it back at its defaults removes its entry.
+- An id is letters, digits, `-` and `_`. A new agent's id comes from its name (`My Agent` is `my-agent`, then
+  `my-agent-2`), never one of Templum's.
+- One of the user's needs `name` and `command`; a `command` that is set can't be empty. A file breaking these
+  rules is reported like any other config error, and the last valid config stays.
+
 ## Files
 
 A canvas file gets the workspace's recent folders, newest first:
@@ -95,7 +130,10 @@ Missing means none. Folders that aren't valid UTF-8 are left out. An older Templ
 
 | File | Change |
 |---|---|
-| `templum-terminal/src/agent.rs` | The agents as a table (`Spec`), `Agent` an index into it; `agent_of` by names and packages; `installed` |
+| `templum-terminal/src/agent.rs` | Templum's agents as a table (`Spec`); `Detect` and `agent_of`, given the agents to look for; `installed` |
+| `templum/src/agents.rs` (new) | The agents in effect (ours with `[agents]` changes, then the user's), the dialog's `Draft`, ids |
+| `templum/src/config.rs` | `[agents]`, validated; an edit's key can be an agent's id |
+| `templum/src/settings.rs` | The Agents section and its dialog |
 | `templum/src/launcher.rs` (new) | The folder dialog; the system folder picker; typed paths |
 | `templum/src/menu.rs` | **AI agent ▸** in the canvas menu |
 | `templum/src/workspace.rs` | `launch_agent`; `Space::recent` and `remember` |

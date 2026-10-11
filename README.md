@@ -126,7 +126,8 @@ Right-click the canvas, **AI agent ▸**, and pick one: Claude Code, Codex, Gemi
 CLI, OpenCode, Amp, Kiro, Qwen Code, Grok Build, Kimi Code, Mistral Vibe, Aider, Goose, Crush, Droid, Auggie, Kilo
 Code, Cline or Pi. Templum asks which folder it runs in: one of this workspace's recent folders, a folder you choose,
 or a path you type. It opens a terminal there and starts the agent; agents you haven't installed show their install
-command instead. The full list, with how each one resumes, is in [docs/specs/agents.md](docs/specs/agents.md).
+command instead. **Settings ▸ Agents** changes any agent's command or resume command (↺ puts it back), hides
+the ones you don't use from the menu, and adds your own agents. The full list, with how each one resumes, is in [docs/specs/agents.md](docs/specs/agents.md).
 
 ## Configuration
 

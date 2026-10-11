@@ -203,13 +203,15 @@ fn inspect_reads_several_terminals_at_once() {
     let processes: Vec<Processes> = terms.iter().map(Terminal::processes).collect();
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let found: Vec<_> = inspect(&processes)
+        let found: Vec<_> = inspect(&processes, &known())
             .into_iter()
             .map(|i| i.folder.and_then(|f| f.canonicalize().ok()))
             .collect();
         if found == want.iter().cloned().map(Some).collect::<Vec<_>>() {
             assert!(
-                inspect(&processes).iter().all(|i| i.agent.is_none()),
+                inspect(&processes, &known())
+                    .iter()
+                    .all(|i| i.agent.is_none()),
                 "a shell isn't an agent"
             );
             break;
@@ -217,7 +219,7 @@ fn inspect_reads_several_terminals_at_once() {
         assert!(Instant::now() < deadline, "found {found:?}, want {want:?}");
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(inspect(&[]).is_empty());
+    assert!(inspect(&[], &known()).is_empty());
 }
 
 #[test]
@@ -245,9 +247,9 @@ fn inspect_finds_an_agent_and_its_folder() {
     let want = work.path().canonicalize().unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let found = inspect(&[term.processes()]).pop().unwrap();
+        let found = inspect(&[term.processes()], &known()).pop().unwrap();
         let folder = found.folder.as_ref().and_then(|f| f.canonicalize().ok());
-        if found.agent == Some(Agent::CLAUDE) && folder.as_ref() == Some(&want) {
+        if found.agent.as_deref() == Some("claude") && folder.as_ref() == Some(&want) {
             break;
         }
         assert!(Instant::now() < deadline, "found {found:?}");
@@ -322,12 +324,17 @@ fn inspect_finds_an_agent_the_shell_started() {
     let want = sub.canonicalize().unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let found = inspect(&[term.processes()]).pop().unwrap();
+        let found = inspect(&[term.processes()], &known()).pop().unwrap();
         let folder = found.folder.as_ref().and_then(|f| f.canonicalize().ok());
-        if found.agent == Some(Agent::CLAUDE) && folder.as_ref() == Some(&want) {
+        if found.agent.as_deref() == Some("claude") && folder.as_ref() == Some(&want) {
             break;
         }
         assert!(Instant::now() < deadline, "found {found:?}");
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Templum's own agents, as the app gives them to `inspect`.
+fn known() -> Vec<templum_terminal::Detect> {
+    Agent::all().map(Agent::detect).collect()
 }

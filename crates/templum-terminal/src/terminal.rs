@@ -18,7 +18,7 @@ use alacritty_terminal::term::{Config, Term, TermMode, viewport_to_point};
 use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::CursorStyle;
 
-use crate::agent::{Agent, agent_of};
+use crate::agent::{Detect, agent_of};
 use crate::input::{KeyInput, encode_key, paste_bytes};
 use crate::palette::{self, Palette};
 
@@ -215,13 +215,13 @@ pub struct Processes {
 pub struct Inspection {
     /// The current folder of the program in the foreground (see [`Terminal::cwd`]).
     pub folder: Option<PathBuf>,
-    /// Claude Code or Codex, when one is open in the terminal.
-    pub agent: Option<Agent>,
+    /// The id of the agent open in the terminal, among those [`inspect`] was given.
+    pub agent: Option<String>,
 }
 
 /// Reads several terminals' processes in one pass over the OS's process table: slow enough to
 /// keep off the UI thread when there are many terminals.
-pub fn inspect(terminals: &[Processes]) -> Vec<Inspection> {
+pub fn inspect(terminals: &[Processes], known: &[Detect]) -> Vec<Inspection> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let kind = ProcessRefreshKind::new()
         .with_cwd(UpdateKind::Always)
@@ -239,10 +239,13 @@ pub fn inspect(terminals: &[Processes]) -> Vec<Inspection> {
             .collect();
         system.refresh_processes_specifics(ProcessesToUpdate::Some(&pids), kind);
     }
-    terminals.iter().map(|p| inspect_one(&system, p)).collect()
+    terminals
+        .iter()
+        .map(|p| inspect_one(&system, p, known))
+        .collect()
 }
 
-fn inspect_one(system: &sysinfo::System, p: &Processes) -> Inspection {
+fn inspect_one(system: &sysinfo::System, p: &Processes, known: &[Detect]) -> Inspection {
     use sysinfo::Pid;
     let cwd = |pid: Pid| {
         system
@@ -253,7 +256,7 @@ fn inspect_one(system: &sysinfo::System, p: &Processes) -> Inspection {
     };
     let found = candidates(system, p)
         .into_iter()
-        .find_map(|pid| Some((pid, agent_in(system.process(pid)?)?)));
+        .find_map(|pid| Some((pid, agent_in(system.process(pid)?, known)?)));
     match found {
         // Its folder: under PowerShell, the shell's own doesn't follow `cd`, but programs it starts do.
         Some((pid, agent)) => Inspection {
@@ -271,14 +274,14 @@ fn inspect_one(system: &sysinfo::System, p: &Processes) -> Inspection {
     }
 }
 
-fn agent_in(process: &sysinfo::Process) -> Option<Agent> {
+fn agent_in(process: &sysinfo::Process, known: &[Detect]) -> Option<String> {
     let args: Vec<String> = process
         .cmd()
         .iter()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    agent_of(&process.name().to_string_lossy(), &args)
+    agent_of(&process.name().to_string_lossy(), &args, known)
 }
 
 /// Where an agent may be: the foreground process (Unix); without one (Windows), the shell and
@@ -424,7 +427,10 @@ impl Terminal {
     /// started; None when the OS won't say (another user, already gone). With Claude Code or Codex
     /// open, its folder.
     pub fn cwd(&self) -> Option<PathBuf> {
-        inspect(&[self.processes()]).pop().and_then(|i| i.folder)
+        let known: Vec<Detect> = crate::Agent::all().map(crate::Agent::detect).collect();
+        inspect(&[self.processes()], &known)
+            .pop()
+            .and_then(|i| i.folder)
     }
 
     /// The shell's and the foreground's process ids: cheap, for [`inspect`] elsewhere.

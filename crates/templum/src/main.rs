@@ -1,3 +1,4 @@
+mod agents;
 mod bench;
 mod block;
 mod board;

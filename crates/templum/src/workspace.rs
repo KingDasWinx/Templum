@@ -27,6 +27,7 @@ use templum_canvas::{
 };
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
+use crate::agents::{self, AgentEntry};
 use crate::block::{self, Content};
 use crate::board::{self, Boards};
 use crate::config::{self, Config, Edit, ThemeConfig, WorkingDirectory};
@@ -131,7 +132,7 @@ pub(crate) struct Space {
 
 impl Space {
     /// The canvas as a snapshot needs it: rects and process ids, cheap on the UI thread.
-    fn layout(&self) -> session::Layout {
+    fn layout(&self, agents: Arc<Vec<templum_terminal::Detect>>) -> session::Layout {
         let blocks = self.canvas.blocks();
         session::Layout {
             camera: self.canvas.camera,
@@ -149,14 +150,18 @@ impl Space {
                 .focused
                 .and_then(|id| blocks.iter().position(|b| b.id == id)),
             recent: self.recent.clone(),
+            agents,
         }
     }
 
-    /// The last snapshot found Claude Code or Codex running in one of its terminals.
-    pub fn has_agent(&self) -> bool {
+    /// The last snapshot found one of `agents` running in one of its terminals.
+    pub fn has_agent(&self, agents: &[AgentEntry]) -> bool {
         self.saved.as_ref().is_some_and(|saved| {
             saved.items.iter().any(|item| match item {
-                session::Item::Terminal(t) => t.agent().is_some(),
+                session::Item::Terminal(t) => t
+                    .agent
+                    .as_ref()
+                    .is_some_and(|id| agents.iter().any(|a| a.id == *id)),
                 session::Item::Kanban(_) => false,
             })
         })
@@ -223,6 +228,8 @@ pub struct Workspace {
     pub(crate) config: Config,
     /// Its shortcuts.
     pub(crate) keymap: Keymap,
+    /// The AI agents in effect: Templum's, with the config's changes, and the user's.
+    pub(crate) agents: Vec<AgentEntry>,
     /// What config.toml looked like at the last read, for polling.
     config_stamp: config::Stamp,
     /// The last read failed: the next good one says so.
@@ -320,6 +327,7 @@ impl Workspace {
             eprintln!("templum: {warning}");
             show_notification(window, cx, Notification::warning(warning));
         }
+        let effective_agents = agents::effective(&config.agents);
         let (keymap, key_warnings) = Keymap::new(&config.keys, cfg!(target_os = "macos"))
             .expect("config::parse validated the shortcuts");
         for warning in key_warnings {
@@ -426,6 +434,7 @@ impl Workspace {
             _blink: blink,
             config,
             keymap,
+            agents: effective_agents,
             _wake: wake,
         };
         ws.load_spaces(window, cx);
@@ -729,11 +738,12 @@ impl Workspace {
         self.open(Rect::new(at.x, at.y, size.w, size.h), window, cx);
     }
 
-    /// A terminal in `folder`, its top-left corner at `at`, with `agent` typed into its shell;
+    /// A terminal in `folder`, its top-left corner at `at`, with an agent's `command` typed into
+    /// its shell;
     /// the folder becomes this workspace's newest recent one.
     pub(crate) fn launch_agent(
         &mut self,
-        agent: templum_terminal::Agent,
+        command: &str,
         folder: &std::path::Path,
         at: Point,
         window: &mut Window,
@@ -750,11 +760,58 @@ impl Workspace {
         let rect = Rect::new(at.x, at.y, size.w, size.h);
         let id = self.spawn_block(rect, Some(folder.to_path_buf()), window, cx)?;
         // The shell reads it once it is ready.
-        let line = format!("{}\r", agent.command());
+        let line = format!("{command}\r");
         self.space.terminals[&id].term.write(line.into_bytes());
         remember(&mut self.space.recent, folder.to_path_buf());
         window.focus(&self.focus_handle, cx);
         Some(id)
+    }
+
+    /// Saves an agent from the settings: `id` names one already known (one of Templum's, or of
+    /// the user's), None a new one of the user's. One of Templum's back at its defaults leaves
+    /// config.toml. Returns its id.
+    pub(crate) fn save_agent(
+        &mut self,
+        id: Option<&str>,
+        draft: &agents::Draft,
+        cx: &mut Context<Self>,
+    ) -> Result<String, &'static str> {
+        if let Some(problem) = draft.problem() {
+            return Err(problem);
+        }
+        let builtin = id.and_then(templum_terminal::Agent::from_name);
+        let pending = self.pending.as_ref().unwrap_or(&self.config);
+        let id = match id {
+            Some(id) => id.to_string(),
+            None => agents::new_id(&draft.name, |x| pending.agents.contains_key(x)),
+        };
+        match draft.to_config(builtin) {
+            Some(set) => {
+                let value = agents::to_value(&set);
+                let key = id.clone();
+                self.edit(
+                    Edit::set("agents", id.clone(), value),
+                    |c| {
+                        c.agents.insert(key, set);
+                    },
+                    cx,
+                );
+            }
+            None => self.remove_agent(&id, cx),
+        }
+        Ok(id)
+    }
+
+    /// One of Templum's agents back to its defaults, or one of the user's deleted.
+    pub(crate) fn remove_agent(&mut self, id: &str, cx: &mut Context<Self>) {
+        let key = id.to_string();
+        self.edit(
+            Edit::remove("agents", id.to_string()),
+            |c| {
+                c.agents.remove(&key);
+            },
+            cx,
+        );
     }
 
     /// A right-click on the empty canvas: its menu adds blocks there.
@@ -900,7 +957,11 @@ impl Workspace {
             let id = self.spawn_block(rect, folder, window, cx);
             failed |= id.is_none();
             // The shell reads it once it is ready.
-            if let (Some(id), Some(agent), true) = (id, t.agent(), in_its_folder) {
+            let agent = t
+                .agent
+                .as_ref()
+                .and_then(|a| self.agents.iter().find(|known| known.id == *a));
+            if let (Some(id), Some(agent), true) = (id, agent, in_its_folder) {
                 let line = format!("{}\r", agent.resume_command());
                 self.space.terminals[&id].term.write(line.into_bytes());
             }
@@ -928,6 +989,11 @@ impl Workspace {
         }
         self.space.recent = saved.recent.iter().map(PathBuf::from).collect();
         self.space.saved = Some(saved);
+    }
+
+    /// The agents to look for in terminals, for a snapshot's background read.
+    fn known_agents(&self) -> Arc<Vec<templum_terminal::Detect>> {
+        Arc::new(self.agents.iter().map(AgentEntry::detect).collect())
     }
 
     /// Every workspace: the active one, then the hidden ones.
@@ -960,10 +1026,11 @@ impl Workspace {
         self.snapshotting = true;
         self.generation += 1;
         let generation = self.generation;
+        let known = self.known_agents();
         let jobs: Vec<_> = self
             .spaces()
             .filter(|s| !s.frozen)
-            .map(|s| (s.id.clone(), s.layout(), s.saved.clone()))
+            .map(|s| (s.id.clone(), s.layout(known.clone()), s.saved.clone()))
             .collect();
         let boards = (!self.boards_frozen && self.boards_saved.as_ref() != Some(&self.boards))
             .then(|| self.boards.clone());
@@ -1056,11 +1123,12 @@ impl Workspace {
                 Err(err) => eprintln!("templum: couldn't save the boards: {err}"),
             }
         }
+        let known = self.known_agents();
         for space in std::iter::once(&mut self.space).chain(&mut self.others) {
             if space.frozen {
                 continue;
             }
-            let saved = space.layout().snapshot();
+            let saved = space.layout(known.clone()).snapshot();
             if space.saved.as_ref() == Some(&saved) {
                 continue;
             }
@@ -1212,6 +1280,9 @@ impl Workspace {
                 pane.term.shared().set_options(options);
             }
         }
+        if self.config.agents != old.agents {
+            self.agents = agents::effective(&self.config.agents);
+        }
         if self.config.keys != old.keys {
             let (keymap, warnings) = Keymap::new(&self.config.keys, cfg!(target_os = "macos"))
                 .expect("config::parse validated the shortcuts");
@@ -1233,7 +1304,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         // Back to the default: what was half-typed for the key goes too (drafts are keyed by it).
-        if edit.value.is_none() && self.drafts.remove(edit.key).is_some() {
+        if edit.value.is_none() && self.drafts.remove(&*edit.key).is_some() {
             cx.notify();
         }
         let current = self.pending.as_ref().unwrap_or(&self.config);
@@ -1244,7 +1315,7 @@ impl Workspace {
         }
         self.pending = Some(config);
         self.unsaved
-            .retain(|e| (e.table, e.key) != (edit.table, edit.key));
+            .retain(|e| e.table != edit.table || e.key != edit.key);
         self.unsaved.push(edit);
         cx.notify();
     }
@@ -1396,7 +1467,7 @@ impl Workspace {
         match saved {
             Ok(()) => {
                 // A panel change of the same theme, not written yet, would write over this choice.
-                self.unsaved.retain(|e| (e.table, e.key) != ("theme", key));
+                self.unsaved.retain(|e| e.table != "theme" || e.key != key);
                 self.picker = None;
             }
             Err(err) => {
@@ -2559,10 +2630,17 @@ mod tests {
             }),
             ..super::Space::default()
         };
-        assert!(with(Some("claude")).has_agent());
-        assert!(!with(Some("vim")).has_agent());
-        assert!(!with(None).has_agent());
-        assert!(!super::Space::default().has_agent(), "no snapshot yet");
+        let known = crate::agents::effective(&Default::default());
+        assert!(with(Some("claude")).has_agent(&known));
+        assert!(
+            !with(Some("vim")).has_agent(&known),
+            "not an agent Templum knows"
+        );
+        assert!(!with(None).has_agent(&known));
+        assert!(
+            !super::Space::default().has_agent(&known),
+            "no snapshot yet"
+        );
     }
 
     #[test]
@@ -4124,6 +4202,74 @@ mod tests {
         let text =
             std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap_or_default();
         assert!(!text.contains("blink"), "{text}");
+    }
+
+    #[gpui_kit::test]
+    fn the_agents_tab_resets_ours_and_deletes_yours(cx: &mut TestAppContext) {
+        use crate::agents::Draft;
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        ws.update(cx, |ws, cx| {
+            let claude = ws.agents.iter().find(|a| a.id == "claude").unwrap();
+            let draft = Draft {
+                command: "claude --model opus".into(),
+                ..Draft::of(claude)
+            };
+            ws.save_agent(Some("claude"), &draft, cx).unwrap();
+            let mine = Draft {
+                name: "Mine".into(),
+                command: "mine".into(),
+                resume: String::new(),
+                show: true,
+            };
+            ws.save_agent(None, &mine, cx).unwrap();
+        });
+        cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+            .unwrap();
+        settle_slide(handle, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.click("settings-tab-agents", cx);
+            window.render_frame(cx);
+            assert!(
+                window.try_find("field-agents.mine").is_some(),
+                "yours is listed"
+            );
+            assert!(
+                window.try_find("reset-agents.codex").is_none(),
+                "unchanged: no ↺"
+            );
+            window.click("reset-agents.claude", cx);
+            window.render_frame(cx);
+            window.render_frame(cx);
+            let claude = ws
+                .read(cx)
+                .agents
+                .iter()
+                .find(|a| a.id == "claude")
+                .unwrap()
+                .clone();
+            assert_eq!(claude.command, "claude", "back to Templum's");
+            // Yours is last: scroll down to it.
+            window.scroll(
+                "settings-scroll",
+                ScrollDelta::Pixels(point(px(0.), px(-5000.))),
+                cx,
+            );
+            window.render_frame(cx);
+            window.click("edit-agent-mine", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        // The dialog slides in for 0.25 s first: presses meanwhile are lost.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("delete-agent", cx);
+            window.render_frame(cx);
+            window.render_frame(cx);
+            assert!(ws.read(cx).agents.iter().all(|a| a.id != "mine"), "deleted");
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]
@@ -5884,14 +6030,14 @@ mod tests {
     #[gpui_kit::test]
     fn an_agent_opens_in_its_folder_and_the_folder_becomes_recent(cx: &mut TestAppContext) {
         use std::time::{Duration, Instant};
-        use templum_terminal::{Agent, Snapshot};
+        use templum_terminal::Snapshot;
         let (handle, ws) = open(cx);
         let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let id = cx
             .update_window(handle, |_, window, cx| {
                 ws.update(cx, |ws, cx| {
-                    ws.launch_agent(Agent::CODEX, b.path(), Point::new(0.0, 900.0), window, cx);
-                    ws.launch_agent(Agent::CLAUDE, a.path(), Point::new(40.0, 0.0), window, cx)
+                    ws.launch_agent("codex", b.path(), Point::new(0.0, 900.0), window, cx);
+                    ws.launch_agent("claude", a.path(), Point::new(40.0, 0.0), window, cx)
                 })
             })
             .unwrap()
@@ -5914,6 +6060,112 @@ mod tests {
                 snap.text()
             });
             if shown.contains("claude") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "not typed: {shown:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[gpui_kit::test]
+    fn agents_are_changed_reset_added_and_deleted_from_the_settings(cx: &mut TestAppContext) {
+        use crate::agents::Draft;
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        let frame = |cx: &mut TestAppContext| {
+            cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+                .unwrap()
+        };
+        let mine = ws.update(cx, |ws, cx| {
+            let claude = ws.agents.iter().find(|a| a.id == "claude").unwrap();
+            let mut draft = Draft::of(claude);
+            draft.command = "claude --model opus".into();
+            ws.save_agent(Some("claude"), &draft, cx).unwrap();
+            let new = Draft {
+                name: "My Agent".into(),
+                command: "my-agent --tui".into(),
+                resume: String::new(),
+                show: true,
+            };
+            assert_eq!(
+                ws.save_agent(
+                    None,
+                    &Draft {
+                        command: " ".into(),
+                        ..new.clone()
+                    },
+                    cx
+                ),
+                Err("An agent needs a command")
+            );
+            ws.save_agent(None, &new, cx).unwrap()
+        });
+        assert_eq!(mine, "my-agent");
+        frame(cx);
+        ws.update(cx, |ws, _| ws.save());
+        let text = std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap();
+        assert!(
+            text.contains("claude --model opus") && text.contains("my-agent --tui"),
+            "{text}"
+        );
+        ws.read_with(cx, |ws, _| {
+            let claude = ws.agents.iter().find(|a| a.id == "claude").unwrap();
+            assert_eq!(
+                (claude.command.as_str(), claude.changed),
+                ("claude --model opus", true)
+            );
+            assert_eq!(ws.agents.last().unwrap().title, "My Agent");
+        });
+        ws.update(cx, |ws, cx| {
+            ws.remove_agent("claude", cx);
+            ws.remove_agent("my-agent", cx);
+        });
+        frame(cx);
+        ws.update(cx, |ws, _| ws.save());
+        let text = std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap();
+        assert!(
+            !text.contains("claude --model") && !text.contains("my-agent"),
+            "{text}"
+        );
+        ws.read_with(cx, |ws, _| {
+            let claude = ws.agents.iter().find(|a| a.id == "claude").unwrap();
+            assert_eq!((claude.command.as_str(), claude.changed), ("claude", false));
+            assert!(ws.agents.iter().all(|a| a.id != "my-agent"));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_changed_resume_command_is_what_comes_back(cx: &mut TestAppContext) {
+        use std::time::{Duration, Instant};
+        use templum_terminal::Snapshot;
+        let (config, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        write_config(
+            config.path(),
+            "[agents.claude]\nresume = \"claude -c --fast\"\n",
+        );
+        let folder = tempfile::tempdir().unwrap();
+        let folder = folder.path().display().to_string().replace('\\', "\\\\");
+        write_canvas(
+            data.path(),
+            &format!(
+                r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
+                  {{"kind":"terminal","rect":{{"x":0,"y":0,"w":700,"h":450}},"folder":"{folder}","agent":"claude"}}]}}"#
+            ),
+        );
+        let (_, ws) = open_in(
+            cx,
+            Some(config.path().to_path_buf()),
+            Some(data.path().to_path_buf()),
+        );
+        let id = first_id(&ws, cx);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let shown = ws.read_with(cx, |ws, _| {
+                let mut snap = Snapshot::default();
+                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.text()
+            });
+            if shown.contains("claude -c --fast") {
                 break;
             }
             assert!(Instant::now() < deadline, "not typed: {shown:?}");

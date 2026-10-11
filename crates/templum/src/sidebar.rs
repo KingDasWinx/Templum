@@ -106,7 +106,7 @@ fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) ->
                     .bg(ui.accent),
             )
         })
-        .when(space.has_agent(), |el| {
+        .when(space.has_agent(&ws.agents), |el| {
             el.child(
                 div()
                     .absolute()

@@ -1,5 +1,7 @@
 //! config.toml: every setting, typed and validated; polling for changes; saving edits.
 
+use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::io;
@@ -33,6 +35,31 @@ pub(crate) struct Config {
     pub cursor: Cursor,
     pub terminal: TerminalConfig,
     pub keys: KeysConfig,
+    /// `[agents.<id>]`: changes to one of Templum's AI agents (only what differs), or an agent of
+    /// the user's own.
+    pub agents: BTreeMap<String, AgentConfig>,
+}
+
+/// One AI agent's settings. For Templum's own, each missing key keeps its default; one of the
+/// user's needs a name and a command.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct AgentConfig {
+    pub name: Option<String>,
+    /// Typed into the shell to start it.
+    pub command: Option<String>,
+    /// Typed to bring it back when the canvas is restored; empty: a new session.
+    pub resume: Option<String>,
+    /// Listed in the canvas's menu.
+    pub show: Option<bool>,
+}
+
+/// Letters, digits, `-` and `_`: an agent's id is a key in the saved canvas and in this file.
+pub(crate) fn valid_agent_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -214,6 +241,25 @@ pub(crate) fn parse(text: &str) -> Result<Config, String> {
     )?;
     // Shortcuts are part of the file's validity: an invalid one keeps the last valid config.
     Keymap::new(&config.keys, cfg!(target_os = "macos"))?;
+    for (id, agent) in &config.agents {
+        if !valid_agent_id(id) {
+            return Err(format!(
+                "{FILE}: agents.{id:?}: an agent's id is letters, digits, - and _"
+            ));
+        }
+        let ours = templum_terminal::Agent::from_name(id).is_some();
+        let blank = |v: &Option<String>| v.as_deref().is_none_or(|v| v.trim().is_empty());
+        if (!ours || agent.command.is_some()) && blank(&agent.command) {
+            return Err(format!(
+                "{FILE}: agents.{id}.command is needed (what starts it)"
+            ));
+        }
+        if !ours && blank(&agent.name) {
+            return Err(format!(
+                "{FILE}: agents.{id}.name is needed (what menus show)"
+            ));
+        }
+    }
     Ok(config)
 }
 
@@ -311,23 +357,28 @@ impl fmt::Display for SaveError {
 #[derive(Clone, Debug)]
 pub(crate) struct Edit {
     pub table: &'static str,
-    pub key: &'static str,
+    /// Fixed for a setting; an agent's id under `[agents]`.
+    pub key: Cow<'static, str>,
     pub value: Option<toml_edit::Value>,
 }
 
 impl Edit {
-    pub fn set(table: &'static str, key: &'static str, value: impl Into<toml_edit::Value>) -> Self {
+    pub fn set(
+        table: &'static str,
+        key: impl Into<Cow<'static, str>>,
+        value: impl Into<toml_edit::Value>,
+    ) -> Self {
         Self {
             table,
-            key,
+            key: key.into(),
             value: Some(value.into()),
         }
     }
 
-    pub fn remove(table: &'static str, key: &'static str) -> Self {
+    pub fn remove(table: &'static str, key: impl Into<Cow<'static, str>>) -> Self {
         Self {
             table,
-            key,
+            key: key.into(),
             value: None,
         }
     }
@@ -357,18 +408,21 @@ pub(crate) fn save_edits(dir: &Path, edits: &[Edit]) -> Result<(), SaveError> {
                     .as_table_like_mut()
                     .ok_or(SaveError::NotATable(edit.table))?;
                 // A new value in place keeps the key's comment lines and its `# …` on the line.
-                match table.get_mut(edit.key).and_then(|item| item.as_value_mut()) {
+                match table
+                    .get_mut(&edit.key)
+                    .and_then(|item| item.as_value_mut())
+                {
                     Some(old) => {
                         let mut value = value.clone();
                         *value.decor_mut() = old.decor().clone();
                         *old = value;
                     }
                     None => {
-                        table.insert(edit.key, toml_edit::Item::Value(value.clone()));
+                        table.insert(&edit.key, toml_edit::Item::Value(value.clone()));
                     }
                 }
             }
-            None => remove_key(&mut doc, edit.table, edit.key)?,
+            None => remove_key(&mut doc, edit.table, &edit.key)?,
         }
     }
     // toml_edit writes LF and drops a byte-order mark: put the file's own back.
@@ -998,6 +1052,67 @@ scrollback = 500
             std::fs::read_to_string(d.path().join(FILE)).unwrap(),
             "font = 3\n"
         );
+    }
+
+    #[test]
+    fn agents_change_ours_and_add_the_users() {
+        let c = parse(concat!(
+            "[agents.claude]\n",
+            "command = \"claude --model opus\"\n",
+            "[agents]\n",
+            "codex = { show = false }\n",
+            "mine = { name = \"Mine\", command = \"mine --tui\", resume = \"\" }\n",
+        ))
+        .unwrap();
+        let claude = &c.agents["claude"];
+        assert_eq!(claude.command.as_deref(), Some("claude --model opus"));
+        assert_eq!(claude.name, None, "unchanged: the default");
+        assert_eq!(c.agents["codex"].show, Some(false));
+        let mine = &c.agents["mine"];
+        assert_eq!(mine.name.as_deref(), Some("Mine"));
+        assert_eq!(
+            mine.resume.as_deref(),
+            Some(""),
+            "empty: a new session on restore"
+        );
+    }
+
+    #[test]
+    fn an_agent_of_the_users_needs_a_name_and_a_command() {
+        let err = parse("[agents.mine]\nname = \"Mine\"\n").unwrap_err();
+        assert!(err.contains("agents.mine.command"), "{err}");
+        let err = parse("[agents.mine]\ncommand = \"mine\"\n").unwrap_err();
+        assert!(err.contains("agents.mine.name"), "{err}");
+        let err = parse("[agents.claude]\ncommand = \"  \"\n").unwrap_err();
+        assert!(err.contains("agents.claude.command"), "{err}");
+        let err = parse("[agents.\"my agent\"]\nname = \"x\"\ncommand = \"x\"\n").unwrap_err();
+        assert!(err.contains("my agent"), "{err}");
+        let err = parse("[agents.claude]\nmodel = \"x\"\n").unwrap_err();
+        assert!(err.contains("model"), "unknown keys still fail: {err}");
+    }
+
+    #[test]
+    fn an_agent_is_saved_and_removed_whole() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "[agents]\n# mine\ncodex = { show = false }\n");
+        let mut value = toml_edit::InlineTable::new();
+        value.insert("command", "claude --model opus".into());
+        save_edits(
+            d.path(),
+            &[Edit::set("agents", "claude".to_string(), value)],
+        )
+        .unwrap();
+        let c = load(Some(d.path())).unwrap();
+        assert_eq!(
+            c.agents["claude"].command.as_deref(),
+            Some("claude --model opus")
+        );
+        assert_eq!(c.agents["codex"].show, Some(false), "the others stay");
+        save_edits(d.path(), &[Edit::remove("agents", "claude".to_string())]).unwrap();
+        let c = load(Some(d.path())).unwrap();
+        assert!(!c.agents.contains_key("claude"), "back to the default");
+        let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
+        assert!(text.contains("# mine"), "{text}");
     }
 
     #[test]
