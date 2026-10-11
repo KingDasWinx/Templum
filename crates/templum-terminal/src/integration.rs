@@ -433,8 +433,27 @@ mod tests {
         }
 
         fn wait(term: &Terminal, what: &str, done: impl Fn(&Terminal) -> bool) {
+            wait_pressing(term, what, None, done)
+        }
+
+        /// `wait`, typing `again` every 3 s until `done`. PowerShell (.NET) can drop an Enter
+        /// typed while it switches the terminal to raw mode for its first prompt: the line stays
+        /// typed and never runs. An empty line runs nothing, in every shell tested here.
+        fn wait_pressing(
+            term: &Terminal,
+            what: &str,
+            again: Option<&'static [u8]>,
+            done: impl Fn(&Terminal) -> bool,
+        ) {
             let deadline = Instant::now() + Duration::from_secs(30);
+            let mut next = Instant::now() + Duration::from_secs(3);
             while !done(term) {
+                if let Some(bytes) = again
+                    && Instant::now() > next
+                {
+                    term.write(bytes);
+                    next = Instant::now() + Duration::from_secs(3);
+                }
                 if Instant::now() > deadline {
                     let mut screen = crate::Snapshot::default();
                     screen.refresh(term.shared(), &Palette::default());
@@ -456,7 +475,7 @@ mod tests {
             });
             if commands {
                 term.write(&b"false\r"[..]);
-                wait(&term, "false to end", |t| {
+                wait_pressing(&term, "false to end", Some(b"\r"), |t| {
                     let s = t.status();
                     s.finished == 1 && s.last.map(|o| o.code) == Some(Some(1))
                 });
