@@ -7,6 +7,7 @@ use serde::Deserialize;
 pub(crate) enum Command {
     NewTerminal,
     NewKanban,
+    NewNote,
     CloseTerminal,
     Copy,
     Paste,
@@ -28,9 +29,10 @@ pub(crate) enum Command {
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 19] = [
+    pub const ALL: [Command; 20] = [
         Command::NewTerminal,
         Command::NewKanban,
+        Command::NewNote,
         Command::CloseTerminal,
         Command::Copy,
         Command::Paste,
@@ -55,6 +57,7 @@ impl Command {
         match self {
             Command::NewTerminal => "new_terminal",
             Command::NewKanban => "new_kanban",
+            Command::NewNote => "new_note",
             Command::CloseTerminal => "close_terminal",
             Command::Copy => "copy",
             Command::Paste => "paste",
@@ -80,6 +83,7 @@ impl Command {
         match self {
             Command::NewTerminal => "New terminal",
             Command::NewKanban => "New kanban board",
+            Command::NewNote => "New note",
             Command::CloseTerminal => "Close terminal",
             Command::Copy => "Copy",
             Command::Paste => "Paste",
@@ -107,6 +111,8 @@ impl Command {
             (Command::NewTerminal, true) => &["cmd-t"],
             (Command::NewKanban, false) => &["ctrl-shift-k"],
             (Command::NewKanban, true) => &["cmd-shift-k"],
+            (Command::NewNote, false) => &["ctrl-shift-m"],
+            (Command::NewNote, true) => &["cmd-shift-m"],
             (Command::CloseTerminal, false) => &["ctrl-shift-w"],
             (Command::CloseTerminal, true) => &["cmd-w"],
             (Command::Copy, false) => &["ctrl-shift-c"],
@@ -155,6 +161,7 @@ pub(crate) enum Keys {
 pub(crate) struct KeysConfig {
     pub new_terminal: Option<Keys>,
     pub new_kanban: Option<Keys>,
+    pub new_note: Option<Keys>,
     pub close_terminal: Option<Keys>,
     pub copy: Option<Keys>,
     pub paste: Option<Keys>,
@@ -179,6 +186,7 @@ impl KeysConfig {
         match command {
             Command::NewTerminal => self.new_terminal.as_ref(),
             Command::NewKanban => self.new_kanban.as_ref(),
+            Command::NewNote => self.new_note.as_ref(),
             Command::CloseTerminal => self.close_terminal.as_ref(),
             Command::Copy => self.copy.as_ref(),
             Command::Paste => self.paste.as_ref(),
@@ -203,6 +211,7 @@ impl KeysConfig {
         let slot = match command {
             Command::NewTerminal => &mut self.new_terminal,
             Command::NewKanban => &mut self.new_kanban,
+            Command::NewNote => &mut self.new_note,
             Command::CloseTerminal => &mut self.close_terminal,
             Command::Copy => &mut self.copy,
             Command::Paste => &mut self.paste,

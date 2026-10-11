@@ -8,8 +8,9 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Context, DismissEvent, Entity, Focusable as _, Pixels, Point as PixelPoint,
-    ScrollWheelEvent, SharedString, Subscription, Window, anchored, deferred, div, px,
+    AnyElement, App, ClipboardItem, Context, DismissEvent, Entity, Focusable as _, Pixels,
+    Point as PixelPoint, ScrollWheelEvent, SharedString, Subscription, Window, anchored, deferred,
+    div, px,
 };
 use templum_canvas::{BlockId, Point};
 
@@ -106,6 +107,10 @@ impl Workspace {
                     block,
                     listing: k.shown(self).is_none() && k.board.is_some(),
                 },
+                Body::Note(n) => Items::Note {
+                    block,
+                    preview: n.preview,
+                },
             },
             Target::Board { block, board } => Items::Board {
                 block,
@@ -156,6 +161,11 @@ enum Items {
         block: BlockId,
         /// The board list shows over a board the block has.
         listing: bool,
+    },
+    Note {
+        block: BlockId,
+        /// It shows rendered.
+        preview: bool,
     },
     Board {
         block: BlockId,
@@ -262,6 +272,12 @@ impl Items {
                             Some(IconName::LayoutDashboard),
                             move |ws, window, cx| ws.add_kanban_at(at, window, cx),
                         ))
+                        .item(item(
+                            ws,
+                            "Note",
+                            Some(IconName::StickyNote),
+                            move |ws, window, cx| ws.add_note_at(at, window, cx),
+                        ))
                     },
                 )
             }
@@ -290,6 +306,35 @@ impl Items {
                     },
                     Some(IconName::ChevronsUpDown),
                     move |ws, _, cx| ws.pick_board(block, cx),
+                ))
+                .separator()
+                .item(item(
+                    ws,
+                    "Close",
+                    Some(IconName::Close),
+                    move |ws, _, cx| ws.close(block, cx),
+                )),
+            Items::Note { block, preview } => menu
+                .item(item(
+                    ws,
+                    if preview { "Edit" } else { "Preview" },
+                    Some(if preview {
+                        IconName::EyeOff
+                    } else {
+                        IconName::Eye
+                    }),
+                    move |ws, _, cx| ws.toggle_preview(block, cx),
+                ))
+                .item(item(
+                    ws,
+                    "Copy all",
+                    Some(IconName::Copy),
+                    move |ws, _, cx| {
+                        if let Some(note) = ws.space.blocks.get(&block).and_then(|b| b.note()) {
+                            let text = note.text(cx);
+                            cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        }
+                    },
                 ))
                 .separator()
                 .item(item(

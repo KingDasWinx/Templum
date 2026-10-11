@@ -10,6 +10,7 @@ mod keys;
 mod launcher;
 mod menu;
 mod motion;
+mod note;
 mod prompt;
 mod session;
 mod settings;

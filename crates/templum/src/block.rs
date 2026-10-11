@@ -21,6 +21,7 @@ use crate::grid::{self, hsla};
 use crate::kanban;
 use crate::menu::Target;
 use crate::motion::{self, Look};
+use crate::note;
 use crate::workspace::{Body, Pane, Workspace};
 
 /// World units, like everything in a block.
@@ -91,6 +92,7 @@ pub(crate) fn render(
                 .child(match body {
                     Body::Terminal(pane) => SharedString::from(pane.term.title()),
                     Body::Kanban(k) => k.title(ws),
+                    Body::Note(n) => n.title(cx),
                 }),
         )
         .when(live, |el| {
@@ -165,6 +167,40 @@ pub(crate) fn render(
         ),
         _ => None,
     };
+    // A note's preview toggle, on the left of its header (over the title: no move).
+    let preview = match body {
+        Body::Note(note) if live => {
+            let on = note.preview;
+            Some(
+                div()
+                    .id(("preview", n))
+                    .absolute()
+                    .top(px(4.0 * z))
+                    .left(px(4.0 * z))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(20.0 * z))
+                    .rounded(px(5.0 * z))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(ui.hover))
+                    .child(
+                        Icon::new(if on { IconName::EyeOff } else { IconName::Eye })
+                            .size(px(12.0 * z))
+                            .text_color(ui.title),
+                    )
+                    .tooltip(move |window, cx| {
+                        Tooltip::new(if on { "Edit" } else { "Preview" }).build(window, cx)
+                    })
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(
+                        cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_preview(id, cx)),
+                    )
+                    .test_support(),
+            )
+        }
+        _ => None,
+    };
     let header = div()
         .relative()
         .w_full()
@@ -172,6 +208,7 @@ pub(crate) fn render(
         .child(title)
         .children(dot)
         .children(boards)
+        .children(preview)
         .when(hovered, |el| el.child(fade_in(close, ("close-fade", n))));
 
     let frame = div()
@@ -208,6 +245,8 @@ pub(crate) fn render(
             )),
         // A fading kanban block is drawn empty: its board is still live elsewhere.
         Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, cx))),
+        // A fading note is drawn empty, like a kanban block.
+        Body::Note(n) => frame.when(live, |el| el.child(note::body(ws, id, n, z, cx))),
     }
     .test_support();
 

@@ -37,6 +37,7 @@ use crate::kanban::{self, Kanban};
 use crate::keys::{self, Command, Keymap, Keys};
 use crate::menu;
 use crate::motion;
+use crate::note::{self, Note};
 use crate::session;
 use crate::settings::{self, Panel};
 use crate::sidebar;
@@ -93,6 +94,7 @@ pub(crate) struct Ghost {
 pub(crate) enum Body {
     Terminal(Pane),
     Kanban(Kanban),
+    Note(Note),
 }
 
 impl Body {
@@ -130,6 +132,14 @@ impl Body {
         match self {
             Body::Terminal(_) => chrome::min_block_size(cell),
             Body::Kanban(_) => kanban::MIN,
+            Body::Note(_) => note::MIN,
+        }
+    }
+
+    pub fn note(&self) -> Option<&Note> {
+        match self {
+            Body::Note(note) => Some(note),
+            _ => None,
         }
     }
 }
@@ -178,7 +188,7 @@ pub(crate) struct Space {
 
 impl Space {
     /// The canvas as a snapshot needs it: rects and process ids, cheap on the UI thread.
-    fn layout(&self, agents: Arc<Vec<templum_terminal::Detect>>) -> session::Layout {
+    fn layout(&self, agents: Arc<Vec<templum_terminal::Detect>>, cx: &App) -> session::Layout {
         let blocks = self.canvas.blocks();
         session::Layout {
             camera: self.canvas.camera,
@@ -192,6 +202,13 @@ impl Space {
                         session::LayoutBlock::Saved(session::Item::Kanban(session::KanbanItem {
                             rect: b.rect.into(),
                             board: k.board,
+                        }))
+                    }
+                    Body::Note(n) => {
+                        session::LayoutBlock::Saved(session::Item::Note(session::NoteItem {
+                            rect: b.rect.into(),
+                            text: n.text(cx),
+                            preview: n.preview,
                         }))
                     }
                 })
@@ -467,13 +484,13 @@ impl Workspace {
             }
         });
         let flush = vec![
-            cx.on_release(|ws, _| {
+            cx.on_release(|ws, cx| {
                 ws.save();
-                ws.save_canvas_now();
+                ws.save_canvas_now(cx);
             }),
-            cx.on_app_quit(|ws, _| {
+            cx.on_app_quit(|ws, cx| {
                 ws.save();
-                ws.save_canvas_now();
+                ws.save_canvas_now(cx);
                 async {}
             }),
         ];
@@ -805,6 +822,51 @@ impl Workspace {
         })
     }
 
+    /// A saved note's rect made safe, like a kanban's.
+    fn note_rect(r: Rect) -> Option<Rect> {
+        [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()).then(|| {
+            Rect::new(
+                r.x,
+                r.y,
+                r.w.clamp(note::MIN.w, 20_000.0),
+                r.h.clamp(note::MIN.h, 20_000.0),
+            )
+        })
+    }
+
+    /// A note at the viewport's center, focused, in edit mode.
+    pub(crate) fn new_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let center = self.space.canvas.camera.to_world(self.center(window));
+        let size = note::SIZE;
+        let at = self
+            .space
+            .canvas
+            .place_new(
+                size,
+                Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
+            )
+            .origin();
+        self.add_note_at(at, window, cx);
+    }
+
+    /// An empty note, its top-left corner at `at` (world units), with the keyboard.
+    pub(crate) fn add_note_at(&mut self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
+        self.space.pristine = false;
+        let rect = Rect::new(at.x, at.y, note::SIZE.w, note::SIZE.h);
+        let note = Note::new("", false, window, cx);
+        note.focus(window, cx);
+        self.add_block(rect, Body::Note(note));
+        cx.notify();
+    }
+
+    /// A note shows its rendered text, or its editor again.
+    pub(crate) fn toggle_preview(&mut self, id: BlockId, cx: &mut Context<Self>) {
+        if let Some(Body::Note(note)) = self.space.blocks.get_mut(&id) {
+            note.preview = !note.preview;
+            cx.notify();
+        }
+    }
+
     /// A kanban block at the viewport's center, showing the board list.
     pub(crate) fn new_kanban(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let center = self.space.canvas.camera.to_world(self.center(window));
@@ -1060,6 +1122,14 @@ impl Workspace {
                     ids.push(id);
                     continue;
                 }
+                session::Item::Note(n) => {
+                    let id = Self::note_rect(n.rect.into()).map(|rect| {
+                        let note = Note::new(&n.text, n.preview, window, cx);
+                        self.add_block(rect, Body::Note(note))
+                    });
+                    ids.push(id);
+                    continue;
+                }
             };
             let Some(rect) = self.restorable(t.rect.into()) else {
                 ids.push(None);
@@ -1155,7 +1225,7 @@ impl Workspace {
         let jobs: Vec<_> = self
             .spaces()
             .filter(|s| !s.frozen)
-            .map(|s| (s.id.clone(), s.layout(known.clone()), s.saved.clone()))
+            .map(|s| (s.id.clone(), s.layout(known.clone(), cx), s.saved.clone()))
             .collect();
         let boards = (!self.boards_frozen && self.boards_saved.as_ref() != Some(&self.boards))
             .then(|| self.boards.clone());
@@ -1236,7 +1306,7 @@ impl Workspace {
 
     /// When the window closes or Templum quits: the last snapshot of every workspace, read and
     /// written at once.
-    fn save_canvas_now(&mut self) {
+    fn save_canvas_now(&mut self, cx: &App) {
         let Some(dir) = self.data_dir.clone() else {
             return;
         };
@@ -1253,7 +1323,7 @@ impl Workspace {
             if space.frozen {
                 continue;
             }
-            let saved = space.layout(known.clone()).snapshot();
+            let saved = space.layout(known.clone(), cx).snapshot();
             if space.saved.as_ref() == Some(&saved) {
                 continue;
             }
@@ -1889,7 +1959,11 @@ impl Workspace {
         self.space.pristine = false;
         self.space.canvas.raise(id);
         self.space.focused = Some(id);
-        window.focus(&self.focus_handle, cx);
+        // A note's editor takes the keyboard; anything else leaves it with the workspace.
+        match self.space.blocks.get(&id) {
+            Some(Body::Note(note)) if !note.preview => note.focus(window, cx),
+            _ => window.focus(&self.focus_handle, cx),
+        }
         cx.notify();
     }
 
@@ -2144,6 +2218,7 @@ impl Workspace {
             Command::OpenConfig => self.open_config(window, cx),
             Command::Settings => self.toggle_settings(window, cx),
             Command::NewKanban => self.new_kanban(window, cx),
+            Command::NewNote => self.new_note(window, cx),
             Command::NextWorkspace => self.cycle_space(1, window, cx),
             Command::PreviousWorkspace => self.cycle_space(-1, window, cx),
             Command::NewWorkspace => self.new_space(window, cx),
@@ -6134,7 +6209,7 @@ mod tests {
                 ws.space.canvas.get_mut(first).unwrap().rect = Rect::new(-50.0, 60.0, 700.0, 450.0);
                 ws.focus_block(first, window, cx);
                 ws.space.canvas.camera = Camera::at(Point::new(-40.0, 25.0), 1.25);
-                ws.save_canvas_now();
+                ws.save_canvas_now(cx);
             })
         })
         .unwrap();
@@ -6247,7 +6322,7 @@ mod tests {
                 assert_eq!(ws.others.len(), 0, "the last one stays");
                 ws.new_space(window, cx);
                 ws.open(Rect::new(0.0, 0.0, 600.0, 400.0), window, cx);
-                ws.save_canvas_now();
+                ws.save_canvas_now(cx);
                 ws.delete_space("w2", window, cx);
                 assert_eq!((ws.active, ws.others.len()), (0, 0));
                 assert_eq!(ws.space.name, "Work", "the one before it is shown");
@@ -6280,7 +6355,7 @@ mod tests {
                 ws.new_space(window, cx);
                 ws.switch_to(1, window, cx);
                 ws.toggle_sidebar(window, cx);
-                ws.save_canvas_now();
+                ws.save_canvas_now(cx);
             })
         })
         .unwrap();
@@ -6297,6 +6372,188 @@ mod tests {
     }
 
     /// The kanban block on top.
+    #[cfg(target_os = "macos")]
+    const NEW_NOTE: &str = "cmd-shift-m";
+    #[cfg(not(target_os = "macos"))]
+    const NEW_NOTE: &str = "ctrl-shift-m";
+
+    fn top_note(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {
+        ws.read_with(cx, |ws, _| {
+            let id = ws.space.canvas.top().unwrap();
+            assert!(
+                matches!(ws.space.blocks.get(&id), Some(super::Body::Note(_))),
+                "the top block is a note"
+            );
+            id
+        })
+    }
+
+    /// Opens a note with the shortcut and returns it.
+    fn new_note(
+        handle: AnyWindowHandle,
+        ws: &Entity<Workspace>,
+        cx: &mut TestAppContext,
+    ) -> BlockId {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(NEW_NOTE, cx);
+            ws.update(cx, |ws, _| ws.space.appearing.clear());
+            window.render_frame(cx);
+        })
+        .unwrap();
+        top_note(ws, cx)
+    }
+
+    #[gpui_kit::test]
+    fn new_note_adds_a_focused_note_whose_heading_titles_it(cx: &mut TestAppContext) {
+        use gpui_kit::Focusable as _;
+        let (handle, ws) = open(cx);
+        let id = new_note(handle, &ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            let ws_now = ws.read(cx);
+            assert_eq!(ws_now.space.focused, Some(id));
+            let rect = ws_now.space.canvas.get(id).unwrap().rect;
+            assert_eq!((rect.w, rect.h), (crate::note::SIZE.w, crate::note::SIZE.h));
+            let super::Body::Note(note) = &ws_now.space.blocks[&id] else {
+                unreachable!()
+            };
+            assert!(
+                note.editor.read(cx).focus_handle(cx).is_focused(window),
+                "the editor has the keyboard"
+            );
+        })
+        .unwrap();
+        // Typed text reaches the editor.
+        cx.simulate_input(handle, "hi");
+        ws.read_with(cx, |ws, cx| {
+            let super::Body::Note(note) = &ws.space.blocks[&id] else {
+                unreachable!()
+            };
+            assert_eq!(note.text(cx), "hi");
+            assert_eq!(note.title(cx).as_ref(), "Note");
+        });
+        // A heading becomes the title.
+        cx.update_window(handle, |_, window, cx| {
+            let super::Body::Note(note) = &ws.read(cx).space.blocks[&id] else {
+                unreachable!()
+            };
+            let editor = note.editor.clone();
+            editor.update(cx, |e, cx| e.set_value("# Hello\nhi", window, cx));
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, cx| {
+            let super::Body::Note(note) = &ws.space.blocks[&id] else {
+                unreachable!()
+            };
+            assert_eq!(note.title(cx).as_ref(), "Hello");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn shortcuts_run_from_inside_a_note(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        new_note(handle, &ws, cx);
+        cx.update_window(handle, |_, window, cx| window.press(NEW, cx))
+            .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.blocks.len(), 3, "terminal, note, terminal");
+            assert_eq!(ws.space.terminals().count(), 2);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn clicking_a_note_focuses_its_editor(cx: &mut TestAppContext) {
+        use gpui_kit::Focusable as _;
+        let (handle, ws) = open(cx);
+        let id = new_note(handle, &ws, cx);
+        let terminal = ws.read_with(cx, |ws, _| ws.space.terminals().next().unwrap().0);
+        cx.update_window(handle, |_, window, cx| {
+            // The terminal gets the keyboard, but stays under the note (focus_block would raise
+            // it, and it covers the note).
+            ws.update(cx, |ws, cx| {
+                ws.space.focused = Some(terminal);
+                window.focus(&ws.focus_handle, cx);
+            });
+            window.render_frame(cx);
+            let body = window.find(("note-editor", id.0 as usize)).bounds();
+            click(
+                window,
+                cx,
+                (
+                    f32::from(body.origin.x) + 20.0,
+                    f32::from(body.origin.y) + 20.0,
+                ),
+                1,
+            );
+            window.render_frame(cx);
+            let ws_now = ws.read(cx);
+            assert_eq!(ws_now.space.focused, Some(id));
+            let super::Body::Note(note) = &ws_now.space.blocks[&id] else {
+                unreachable!()
+            };
+            assert!(
+                note.editor.read(cx).focus_handle(cx).is_focused(window),
+                "the editor keeps the keyboard"
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_preview_button_shows_the_rendered_note(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = new_note(handle, &ws, cx);
+        let n = id.0 as usize;
+        cx.update_window(handle, |_, window, cx| {
+            window.find(("note-editor", n));
+            window.hover(("block", n), cx);
+            window.render_frame(cx);
+            window.click(("preview", n), cx);
+            window.render_frame(cx);
+            window.find(("note-preview", n));
+            assert!(window.try_find(("note-editor", n)).is_none());
+            let super::Body::Note(note) = &ws.read(cx).space.blocks[&id] else {
+                unreachable!()
+            };
+            assert!(note.preview);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_note_comes_back_with_its_text_and_mode(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));
+        let id = new_note(handle, &ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let super::Body::Note(note) = &ws.space.blocks[&id] else {
+                    unreachable!()
+                };
+                note.editor
+                    .update(cx, |e, cx| e.set_value("# Keep me\n- x", window, cx));
+                ws.toggle_preview(id, cx);
+                ws.save_canvas_now(cx);
+            });
+        })
+        .unwrap();
+        // As the_canvas_comes_back_as_it_was_left does: a second workspace on the same folder.
+        let (_, again) = open_in(cx, None, Some(dir.path().to_path_buf()));
+        again.read_with(cx, |ws, cx| {
+            let notes: Vec<_> = ws
+                .space
+                .blocks
+                .values()
+                .filter_map(|b| match b {
+                    super::Body::Note(n) => Some((n.text(cx), n.preview)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(notes, [("# Keep me\n- x".to_string(), true)]);
+        });
+    }
+
     fn top_kanban(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {
         ws.read_with(cx, |ws, _| {
             let id = ws.space.canvas.top().unwrap();
@@ -6798,7 +7055,7 @@ mod tests {
                     let todo = ws.boards.board(board).unwrap().columns[0].id;
                     ws.boards.add_card(board, todo);
                     ws.new_kanban(window, cx);
-                    ws.save_canvas_now();
+                    ws.save_canvas_now(cx);
                     board
                 })
             })

@@ -189,6 +189,18 @@ pub(crate) struct SavedCamera {
 pub(crate) enum Item {
     Terminal(TerminalItem),
     Kanban(KanbanItem),
+    Note(NoteItem),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct NoteItem {
+    pub rect: SavedRect,
+    /// The Markdown text.
+    #[serde(default)]
+    pub text: String,
+    /// Shown rendered instead of the editor.
+    #[serde(default)]
+    pub preview: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -517,13 +529,38 @@ mod tests {
     }
 
     #[test]
+    fn a_note_item_reads_back_and_preview_defaults_to_false() {
+        let d = tempfile::tempdir().unwrap();
+        let mut saved = sample();
+        saved.items.push(Item::Note(NoteItem {
+            rect: SavedRect {
+                x: 1.0,
+                y: 2.0,
+                w: 360.0,
+                h: 280.0,
+            },
+            text: "# Hi\n- one".into(),
+            preview: true,
+        }));
+        save(d.path(), "n", &saved, 1).unwrap();
+        assert_eq!(load(d.path(), "n"), Loaded::Saved(saved));
+        let text = r#"{"version":1,"camera":{"x":0,"y":0,"zoom":1},"items":[
+            {"kind":"note","rect":{"x":0,"y":0,"w":300,"h":200},"text":"t"}]}"#;
+        std::fs::write(path(d.path(), "m"), text).unwrap();
+        let Loaded::Saved(read) = load(d.path(), "m") else {
+            panic!("not read");
+        };
+        assert!(matches!(&read.items[0], Item::Note(n) if n.text == "t" && !n.preview));
+    }
+
+    #[test]
     fn a_file_this_templum_cant_use_is_set_aside() {
         let d = tempfile::tempdir().unwrap();
         moved(d.path(), "{nope");
         let newer = r#"{"version":2,"camera":{"x":0,"y":0,"zoom":1},"items":[]}"#;
         assert_eq!(moved(d.path(), newer), "it is from a newer Templum");
-        let note = r#"{"version":1,"camera":{"x":0,"y":0,"zoom":1},"items":[{"kind":"note","text":"hi"}]}"#;
-        moved(d.path(), note);
+        let unknown = r#"{"version":1,"camera":{"x":0,"y":0,"zoom":1},"items":[{"kind":"sticker","text":"hi"}]}"#;
+        moved(d.path(), unknown);
     }
 
     #[test]
@@ -701,6 +738,7 @@ mod tests {
             .map(|item| match item {
                 Item::Terminal(t) => t.rect,
                 Item::Kanban(k) => k.rect,
+                Item::Note(n) => n.rect,
             })
             .collect();
         assert!(matches!(&saved.items[1], Item::Kanban(k) if k.board == Some(3)));
