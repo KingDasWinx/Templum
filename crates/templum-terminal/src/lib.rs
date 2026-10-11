@@ -17,7 +17,7 @@ pub use integration::install;
 pub use palette::Palette;
 pub use shells::{ShellOption, available_shells, default_shell, default_shell_label};
 pub use snapshot::{Cursor, Row, Run, Snapshot, Span};
-pub use tap::{Outcome, Status};
+pub use tap::{Mark, Outcome, Status};
 pub use terminal::{
     Inspection, Notify, Processes, SelectionKind, SharedTerm, SpawnOptions, TermOptions, Terminal,
     inspect,

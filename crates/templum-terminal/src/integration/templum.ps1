@@ -1,9 +1,9 @@
 # Templum's shell integration for PowerShell (7 and Windows PowerShell 5.1), started with
-# `-NoExit -Command` reading this file. It tells Templum when a command starts and ends
-# (OSC 133 C and D, with the exit code) and the current folder (OSC 7): PowerShell's `cd`
-# doesn't move its process, so Templum can't ask the system for it. It wraps the prompt and,
-# with PSReadLine, reading the command line. Parts follow VS Code's shellIntegration.ps1 (MIT,
-# (c) Microsoft).
+# `-NoExit -Command` reading this file. It tells Templum when a prompt starts (OSC 133 A), when a
+# command starts and ends (C and D, with the exit code) and the current folder (OSC 7):
+# PowerShell's `cd` doesn't move its process, so Templum can't ask the system for it. It wraps
+# the prompt and, with PSReadLine, reading the command line. Parts follow VS Code's
+# shellIntegration.ps1 (MIT, (c) Microsoft).
 
 if ($null -eq $Global:__TemplumPrompt) {
     $Global:__TemplumPrompt = $function:prompt
@@ -26,6 +26,7 @@ if ($null -eq $Global:__TemplumPrompt) {
             if (-not $dir.StartsWith('/')) { $dir = "/$dir" }
             $out += "$esc]7;file://$([Environment]::MachineName)$dir$bel"
         }
+        $out += "$esc]133;A$bel"
         # The prompt it wraps sees the command's status, as VS Code does it: $? is read-only.
         $global:LASTEXITCODE = $code
         if (-not $ok) { Write-Error 'failure' -ErrorAction Ignore }

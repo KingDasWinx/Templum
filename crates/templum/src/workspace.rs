@@ -1709,10 +1709,16 @@ impl Workspace {
             return;
         }
         // Copy, paste and close act on the focused terminal, which doesn't have the keyboard now.
-        let command = self
-            .keymap
-            .command(&e.keystroke)
-            .filter(|c| !matches!(c, Command::Copy | Command::Paste | Command::CloseTerminal));
+        let command = self.keymap.command(&e.keystroke).filter(|c| {
+            !matches!(
+                c,
+                Command::Copy
+                    | Command::Paste
+                    | Command::CloseTerminal
+                    | Command::PreviousPrompt
+                    | Command::NextPrompt
+            )
+        });
         if self.picker.is_some() || command.is_some() {
             self.command_key(e, command, window, cx);
             cx.stop_propagation();
@@ -2045,6 +2051,8 @@ impl Workspace {
             Command::CloseTerminal => self.close_terminal(cx),
             Command::Copy => self.copy_selection(cx),
             Command::Paste => self.paste_clipboard(cx),
+            Command::PreviousPrompt => self.jump_to_prompt(true, cx),
+            Command::NextPrompt => self.jump_to_prompt(false, cx),
             Command::ZoomIn => self.zoom_in(window, cx),
             Command::ZoomOut => self.zoom_out(window, cx),
             Command::ZoomReset => self.zoom_reset(window, cx),
@@ -2058,6 +2066,17 @@ impl Workspace {
             Command::NewWorkspace => self.new_space(window, cx),
             Command::ToggleSidebar => self.toggle_sidebar(window, cx),
             Command::Quit => self.quit(window, cx),
+        }
+    }
+
+    /// Scrolls the focused terminal to its previous or next prompt (shell integration marks them).
+    fn jump_to_prompt(&mut self, up: bool, cx: &mut Context<Self>) {
+        let pane = self
+            .space
+            .focused
+            .and_then(|id| self.space.terminals.get(&id));
+        if pane.is_some_and(|pane| pane.term.jump_to_prompt(up)) {
+            cx.notify();
         }
     }
 
@@ -4620,6 +4639,58 @@ mod tests {
         assert!(
             !text.contains("integration") && !text.contains("notifications"),
             "{text}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    const PREVIOUS_PROMPT: &str = "cmd-up";
+    #[cfg(not(target_os = "macos"))]
+    const PREVIOUS_PROMPT: &str = "ctrl-shift-up";
+    #[cfg(target_os = "macos")]
+    const NEXT_PROMPT: &str = "cmd-down";
+    #[cfg(not(target_os = "macos"))]
+    const NEXT_PROMPT: &str = "ctrl-shift-down";
+
+    /// A command whose output scrolled its prompt out of view: the shortcut brings the prompt to
+    /// the top, the other goes back down.
+    #[cfg(unix)]
+    #[gpui_kit::test]
+    fn the_command_shortcuts_jump_between_prompts(cx: &mut TestAppContext) {
+        use std::time::{Duration, Instant};
+        use templum_terminal::Snapshot;
+        let data = tempfile::tempdir().unwrap();
+        let bash = Some(("bash".to_string(), Vec::new()));
+        let (handle, ws) = open_as(cx, bash, None, Some(data.path().to_path_buf()));
+        let id = first_id(&ws, cx);
+        let top = |cx: &mut TestAppContext| {
+            ws.read_with(cx, |ws, _| {
+                let mut snap = Snapshot::default();
+                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                (snap.rows[0].text.clone(), snap.rows[0].mark)
+            })
+        };
+        ws.read_with(cx, |ws, _| {
+            ws.space.terminals[&id].term.write(&b"seq 100\r"[..])
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while ws.read_with(cx, |ws, _| ws.space.terminals[&id].term.status().finished) < 1 {
+            assert!(Instant::now() < deadline, "seq never ended");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(PREVIOUS_PROMPT, cx);
+        })
+        .unwrap();
+        let (text, mark) = top(cx);
+        assert!(text.ends_with("seq 100"), "{text:?}");
+        assert_eq!(mark, Some(templum_terminal::Mark::Ended(Some(0))));
+        cx.update_window(handle, |_, window, cx| window.press(NEXT_PROMPT, cx))
+            .unwrap();
+        assert!(
+            !top(cx).0.contains("seq"),
+            "back at the bottom: {:?}",
+            top(cx)
         );
     }
 

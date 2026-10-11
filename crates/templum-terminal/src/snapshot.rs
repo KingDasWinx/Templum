@@ -4,10 +4,12 @@
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::Line;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::CursorShape;
 
 use crate::palette::{self, Palette};
+use crate::tap::{Mark, line_mark, mark_of};
 use crate::{Rgb, SharedTerm};
 
 const MAX_STALE: Duration = Duration::from_millis(100);
@@ -37,6 +39,8 @@ pub struct Row {
     /// Backgrounds other than the default one.
     pub bgs: Vec<(Span, Rgb)>,
     pub selected: Vec<Span>,
+    /// A prompt starts here, and the command run from it is in this state (shell integration).
+    pub mark: Option<Mark>,
 }
 
 impl Row {
@@ -112,6 +116,7 @@ impl Snapshot {
     /// when it kept them.
     pub fn refresh(&mut self, term: &SharedTerm, palette: &Palette) -> bool {
         let stale = self.taken.is_none_or(|t| t.elapsed() > MAX_STALE);
+        let heard = &term.1;
         let term = match term.0.try_lock_unfair() {
             Some(term) => term,
             None if stale => term.0.lock(),
@@ -136,11 +141,17 @@ impl Snapshot {
             }
         }
         let selection = content.selection;
+        // Each row's prompt number (see tap.rs), for the marks.
+        let mut prompts = vec![None; screen_rows];
         for item in content.display_iter {
-            let Some(row) = self.rows.get_mut((item.point.line.0 + offset) as usize) else {
+            let r = (item.point.line.0 + offset) as usize;
+            let Some(row) = self.rows.get_mut(r) else {
                 continue;
             };
             let cell = item.cell;
+            if prompts[r].is_none() && cell.extra.is_some() {
+                prompts[r] = mark_of(cell);
+            }
             let mut fg = palette::resolve(cell.fg, content.colors, palette);
             let mut bg = palette::resolve(cell.bg, content.colors, palette);
             if cell.flags.contains(Flags::INVERSE) {
@@ -173,7 +184,22 @@ impl Snapshot {
                 },
             );
         }
+        // A prompt starts on the first of its lines: the one above the view may be one of them.
+        let grid = term.grid();
+        let above = (offset < grid.history_size() as i32)
+            .then(|| line_mark(grid, Line(-offset - 1)))
+            .flatten();
         drop(term);
+        if prompts.iter().any(Option::is_some) {
+            let marks = heard.marks.lock().unwrap();
+            let mut last = above;
+            for (row, prompt) in self.rows.iter_mut().zip(prompts) {
+                if prompt.is_some() && prompt != last {
+                    row.mark = prompt.and_then(|p| marks.get(&p).copied());
+                }
+                last = prompt;
+            }
+        }
         self.rows.iter_mut().for_each(Row::trim);
         self.taken = Some(Instant::now());
         true

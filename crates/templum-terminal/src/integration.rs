@@ -459,6 +459,18 @@ mod tests {
                     let s = t.status();
                     s.finished == 1 && s.last.map(|o| o.code) == Some(Some(1))
                 });
+                // Its prompt's line is marked with how it ended, and is a prompt to jump to.
+                wait(&term, "false's mark", |t| {
+                    let mut screen = crate::Snapshot::default();
+                    screen.refresh(t.shared(), &Palette::default());
+                    screen.rows.iter().any(|r| {
+                        r.text.contains("false") && r.mark == Some(crate::Mark::Ended(Some(1)))
+                    })
+                });
+                for _ in 0..30 {
+                    term.write(&b"\r"[..]);
+                }
+                wait(&term, "a prompt above", |t| t.jump_to_prompt(true));
             }
             let then = tempfile::tempdir().unwrap();
             term.write(format!("cd '{}'\r", then.path().display()).into_bytes());
@@ -504,10 +516,39 @@ mod tests {
             }
         }
 
+        /// ble.sh, a line editor for bash, attaches after the startup files, setting
+        /// PROMPT_COMMAND back as it was.
+        #[test]
+        fn bash_with_ble_sh() {
+            let home = Home::new();
+            let found = ["/usr/share/blesh/ble.sh", "/usr/local/share/blesh/ble.sh"]
+                .into_iter()
+                .find(|p| Path::new(p).is_file());
+            let Some(ble) = found else {
+                eprintln!("skipped: ble.sh isn't installed");
+                return;
+            };
+            home.write(
+                ".bashrc",
+                format!(
+                    "source {ble} --noattach\ncd '{}'\nble-attach\n",
+                    home.start()
+                ),
+            );
+            if let Some(term) = home.spawn("bash", &[]) {
+                check(term, &home, bash_has_ps0());
+            }
+        }
+
         #[test]
         fn zsh() {
             let home = Home::new();
             home.write(".zshrc", format!("cd '{}'\n", home.start()));
+            // A zsh outside /usr (unpacked for a test run) finds its line editor through this:
+            // zsh doesn't take MODULE_PATH from the environment.
+            if let Ok(modules) = std::env::var("MODULE_PATH") {
+                home.write(".zshenv", format!("module_path=('{modules}')\n"));
+            }
             if let Some(term) = home.spawn("zsh", &[]) {
                 check(term, &home, true);
             }

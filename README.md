@@ -143,7 +143,9 @@ its files stay as they are: they are read as usual. With it:
   agent's notification), gets a dot on its block and on its workspace's tile, and a notification; click it to go
   there. With Templum in the background it's also a system notification (Settings ▸ Terminal ▸ System
   notifications);
-- new terminals open in the focused one's folder in PowerShell too.
+- new terminals open in the focused one's folder in PowerShell too;
+- each command gets a dot in the terminal's left margin, green or red by how it ended, and **Ctrl+Shift+↑** /
+  **Ctrl+Shift+↓** (**Cmd+↑** / **Cmd+↓** on macOS) jump to the previous or next command's prompt.
 
 Codex rings the bell when it needs you. For Claude Code, set `"preferredNotifChannel": "terminal_bell"` in its
 settings. Turn the integration off in Settings ▸ Shell. Details: [docs/specs/shell-integration.md](docs/specs/shell-integration.md).

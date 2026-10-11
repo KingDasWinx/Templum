@@ -1,6 +1,8 @@
-//! Hears what shells and agents tell the terminal in sequences vte drops: OSC 133 (a command
-//! starts and ends, with its exit code), OSC 7 and 9;9 (the current folder), OSC 9 and 777
-//! (notifications). The bytes reach vte unchanged: this only listens.
+//! Hears what shells and agents tell the terminal in sequences vte drops: OSC 133 (a prompt
+//! starts, a command starts and ends with its exit code), OSC 7 and 9;9 (the current folder),
+//! OSC 9 and 777 (notifications). The bytes reach vte unchanged, with one addition: from a prompt's
+//! start to its command's, a hyperlink of ours (`templum:cmd/<n>`), which marks the prompt's
+//! cells in the grid. The mark then moves with them: scrolling, the history limit, resizing.
 
 use std::io;
 use std::path::PathBuf;
@@ -8,6 +10,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{OnResize, WindowSize};
+use alacritty_terminal::grid::{Dimensions, Grid};
+use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::tty::{ChildEvent, EventedPty, EventedReadWrite};
 use polling::{Event, PollMode, Poller};
 
@@ -35,6 +40,46 @@ pub struct Outcome {
     pub took: Duration,
 }
 
+/// A command's state, by the mark on its prompt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mark {
+    Running,
+    /// With its exit code; None: the shell didn't say.
+    Ended(Option<i32>),
+}
+
+/// Our hyperlinks' prefix; the prompt's number follows.
+const URI: &str = "templum:cmd/";
+/// Ends a hyperlink.
+const CLOSE: &[u8] = b"\x1b]8;;\x1b\\";
+
+/// The number of the prompt `cell` belongs to.
+pub(crate) fn mark_of(cell: &Cell) -> Option<u32> {
+    cell.extra.as_ref()?;
+    cell.hyperlink()?.uri().strip_prefix(URI)?.parse().ok()
+}
+
+/// The number of the prompt with a cell on `line`.
+pub(crate) fn line_mark(grid: &Grid<Cell>, line: Line) -> Option<u32> {
+    let row = &grid[line];
+    (0..grid.columns()).find_map(|c| mark_of(&row[Column(c)]))
+}
+
+/// The lines where prompts start, top to bottom (history included): a line marked with another
+/// prompt than the line above.
+pub(crate) fn prompt_lines(grid: &Grid<Cell>) -> Vec<i32> {
+    let mut above = None;
+    let mut starts = Vec::new();
+    for line in -(grid.history_size() as i32)..grid.screen_lines() as i32 {
+        let mark = line_mark(grid, Line(line));
+        if mark.is_some() && mark != above {
+            starts.push(line);
+        }
+        above = mark;
+    }
+    starts
+}
+
 /// The longest sequence of ours kept; longer ones are someone else's, or garbage.
 const MAX_BODY: usize = 4096;
 /// Notification texts are cut there.
@@ -56,29 +101,60 @@ enum State {
 pub(crate) struct Scanner {
     state: State,
     body: Vec<u8>,
+    /// The next prompt's number.
+    next: u32,
+    /// The prompt being typed at (its hyperlink is open), and the command it started.
+    prompt: Option<u32>,
+    command: Option<u32>,
+    /// No line feed since the open prompt started: another A now is the same prompt's, from a
+    /// second integration (fish 4 marks its prompts itself, and so do some prompt themes).
+    same_line: bool,
+    /// Bytes to add after the ST that ends a sequence of ours, once its `\` is seen.
+    after_st: Option<Vec<u8>>,
 }
+
+/// Bytes to add to the stream, each at an offset of the scanned bytes.
+pub(crate) type Inserts = Vec<(usize, Vec<u8>)>;
 
 impl Scanner {
     pub fn new() -> Self {
         Self {
             state: State::Ground,
             body: Vec::new(),
+            next: 0,
+            prompt: None,
+            command: None,
+            same_line: false,
+            after_st: None,
         }
     }
 
-    pub fn scan(&mut self, bytes: &[u8], shared: &Shared) {
+    /// Hears `bytes`; returns what to add to them (see [`rewrite`]).
+    pub fn scan(&mut self, bytes: &[u8], shared: &Shared) -> Inserts {
+        let mut inserts = Vec::new();
         let mut i = 0;
         while i < bytes.len() {
             match self.state {
                 // Most output: a single pass to the next ESC.
-                State::Ground => match bytes[i..].iter().position(|&b| b == 0x1b) {
-                    Some(at) => {
-                        self.state = State::Esc;
-                        i += at;
+                State::Ground => {
+                    let at = bytes[i..].iter().position(|&b| b == 0x1b);
+                    let end = at.map_or(bytes.len(), |at| i + at);
+                    if self.same_line && bytes[i..end].contains(&b'\n') {
+                        self.same_line = false;
                     }
-                    None => return,
-                },
+                    if at.is_none() {
+                        return inserts;
+                    }
+                    self.state = State::Esc;
+                    i = end;
+                }
                 State::Esc => {
+                    // After a sequence of ours ended by ESC: only a whole ST gets its addition.
+                    if let Some(insert) = self.after_st.take()
+                        && bytes[i] == b'\\'
+                    {
+                        inserts.push((i + 1, insert));
+                    }
                     if bytes[i] == b']' {
                         self.body.clear();
                         self.state = State::Osc;
@@ -89,7 +165,15 @@ impl Scanner {
                 State::Osc | State::Skip => match bytes[i] {
                     0x07 | 0x18 | 0x1a | 0x1b => {
                         if self.state == State::Osc {
-                            dispatch(&self.body, shared);
+                            let body = std::mem::take(&mut self.body);
+                            if let Some(insert) = self.dispatch(&body, shared) {
+                                if bytes[i] == 0x1b {
+                                    self.after_st = Some(insert);
+                                } else {
+                                    inserts.push((i + 1, insert));
+                                }
+                            }
+                            self.body = body;
                         }
                         self.state = if bytes[i] == 0x1b {
                             State::Esc
@@ -110,7 +194,92 @@ impl Scanner {
             }
             i += 1;
         }
+        inserts
     }
+
+    /// Acts on one sequence; returns the bytes to add after it.
+    fn dispatch(&mut self, body: &[u8], shared: &Shared) -> Option<Vec<u8>> {
+        let text = String::from_utf8_lossy(body);
+        let (number, rest) = text.split_once(';')?;
+        match number {
+            "133" => match rest.as_bytes().first() {
+                // A prompt starts: its cells, and the command typed after it, get its mark.
+                Some(b'A') if self.prompt.is_some() && self.same_line => {}
+                Some(b'A') => {
+                    self.same_line = true;
+                    let id = self.next;
+                    self.next = self.next.wrapping_add(1);
+                    self.prompt = Some(id);
+                    return Some(format!("\x1b]8;;{URI}{id}\x1b\\").into_bytes());
+                }
+                Some(b'C') => {
+                    let mut status = shared.status.lock().unwrap();
+                    // Another integration's C for the same command.
+                    if status.running.is_some() {
+                        return None;
+                    }
+                    status.running = Some(Instant::now());
+                    drop(status);
+                    self.command = self.prompt.take();
+                    if let Some(id) = self.command {
+                        // ponytail: kept for the session, a few bytes per command.
+                        shared.marks.lock().unwrap().insert(id, Mark::Running);
+                        return Some(CLOSE.to_vec());
+                    }
+                }
+                Some(b'D') => {
+                    let code = rest[1..]
+                        .strip_prefix(';')
+                        .and_then(|r| r.split(';').next())
+                        .and_then(|c| c.parse().ok());
+                    let mut status = shared.status.lock().unwrap();
+                    // A D without a C: a prompt with nothing run (the first one, Ctrl+C, Enter).
+                    if let Some(since) = status.running.take() {
+                        status.finished += 1;
+                        status.last = Some(Outcome {
+                            code,
+                            took: since.elapsed(),
+                        });
+                        drop(status);
+                        if let Some(id) = self.command.take() {
+                            shared.marks.lock().unwrap().insert(id, Mark::Ended(code));
+                        }
+                        shared.wake_now();
+                    }
+                }
+                _ => {}
+            },
+            "7" => set_folder(shared, folder_of_url(rest, cfg!(windows))),
+            "9" => match rest.strip_prefix("9;") {
+                Some(path) => set_folder(shared, folder_of_path(path, cfg!(windows))),
+                // Other ConEmu commands (9;4 is a progress bar): a number, then ";" or nothing.
+                None if conemu(rest) => {}
+                None => shared.attention(message(rest)),
+            },
+            "777" => {
+                if let Some(note) = rest.strip_prefix("notify;") {
+                    let (title, body) = note.split_once(';').unwrap_or((note, ""));
+                    shared.attention(message(body).or_else(|| message(title)));
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+}
+
+/// `bytes` with `inserts` added at their offsets (in order).
+pub(crate) fn rewrite(bytes: &[u8], inserts: Inserts) -> Vec<u8> {
+    let extra: usize = inserts.iter().map(|(_, b)| b.len()).sum();
+    let mut out = Vec::with_capacity(bytes.len() + extra);
+    let mut at = 0;
+    for (offset, insert) in inserts {
+        out.extend_from_slice(&bytes[at..offset]);
+        out.extend_from_slice(&insert);
+        at = offset;
+    }
+    out.extend_from_slice(&bytes[at..]);
+    out
 }
 
 /// While the number is read, whether it can still be one of ours; then, whether it is.
@@ -121,50 +290,6 @@ fn could_be_ours(body: &[u8]) -> bool {
     match body.iter().position(|&b| b == b';') {
         Some(end) => matches!(&body[..end], b"7" | b"9" | b"133" | b"777"),
         None => body.len() <= 3 && body.iter().all(u8::is_ascii_digit),
-    }
-}
-
-fn dispatch(body: &[u8], shared: &Shared) {
-    let text = String::from_utf8_lossy(body);
-    let Some((number, rest)) = text.split_once(';') else {
-        return;
-    };
-    match number {
-        "133" => match rest.as_bytes().first() {
-            Some(b'C') => shared.status.lock().unwrap().running = Some(Instant::now()),
-            Some(b'D') => {
-                let code = rest[1..]
-                    .strip_prefix(';')
-                    .and_then(|r| r.split(';').next())
-                    .and_then(|c| c.parse().ok());
-                let mut status = shared.status.lock().unwrap();
-                // A D without a C: a prompt with nothing run (the first one, Ctrl+C, Enter).
-                if let Some(since) = status.running.take() {
-                    status.finished += 1;
-                    status.last = Some(Outcome {
-                        code,
-                        took: since.elapsed(),
-                    });
-                    drop(status);
-                    shared.wake_now();
-                }
-            }
-            _ => {}
-        },
-        "7" => set_folder(shared, folder_of_url(rest, cfg!(windows))),
-        "9" => match rest.strip_prefix("9;") {
-            Some(path) => set_folder(shared, folder_of_path(path, cfg!(windows))),
-            // Other ConEmu commands (9;4 is a progress bar): a number, then ";" or nothing.
-            None if conemu(rest) => {}
-            None => shared.attention(message(rest)),
-        },
-        "777" => {
-            if let Some(note) = rest.strip_prefix("notify;") {
-                let (title, body) = note.split_once(';').unwrap_or((note, ""));
-                shared.attention(message(body).or_else(|| message(title)));
-            }
-        }
-        _ => {}
     }
 }
 
@@ -259,6 +384,9 @@ pub(crate) struct Tap<P> {
     pty: P,
     scanner: Scanner,
     shared: Arc<Shared>,
+    /// Rewritten bytes the last read had no room for, and how many of them were given.
+    pending: Vec<u8>,
+    given: usize,
 }
 
 impl<P> Tap<P> {
@@ -267,15 +395,34 @@ impl<P> Tap<P> {
             pty,
             scanner: Scanner::new(),
             shared,
+            pending: Vec::new(),
+            given: 0,
         }
     }
 }
 
 impl<P: EventedReadWrite> io::Read for Tap<P> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = self.pty.reader().read(buf)?;
-        self.scanner.scan(&buf[..n], &self.shared);
-        Ok(n)
+        if self.pending.is_empty() {
+            // A quarter of the room: what we add (a hyperlink per prompt) then fits. Bytes left
+            // over would wait for the PTY's next output, since the event loop polls the PTY.
+            let room = (buf.len() / 4).max(1).min(buf.len());
+            let n = self.pty.reader().read(&mut buf[..room])?;
+            let inserts = self.scanner.scan(&buf[..n], &self.shared);
+            if inserts.is_empty() {
+                return Ok(n);
+            }
+            self.pending = rewrite(&buf[..n], inserts);
+            self.given = 0;
+        }
+        let left = &self.pending[self.given..];
+        let k = left.len().min(buf.len());
+        buf[..k].copy_from_slice(&left[..k]);
+        self.given += k;
+        if self.given == self.pending.len() {
+            self.pending.clear();
+        }
+        Ok(k)
     }
 }
 
@@ -475,6 +622,92 @@ mod tests {
         let s = status(&shared);
         assert_eq!(s.attention, 3);
         assert_eq!(s.message.as_deref(), Some("Only a title"));
+    }
+
+    /// What vte gets from `chunks` read one after the other, and what was heard.
+    fn through(chunks: &[&[u8]]) -> (Vec<u8>, Arc<Shared>) {
+        let shared = shared();
+        let mut scanner = Scanner::new();
+        let mut out = Vec::new();
+        for chunk in chunks {
+            let inserts = scanner.scan(chunk, &shared);
+            out.extend(rewrite(chunk, inserts));
+        }
+        (out, shared)
+    }
+
+    fn marks(shared: &Shared) -> Vec<(u32, Mark)> {
+        let mut marks: Vec<_> = shared.marks.lock().unwrap().clone().into_iter().collect();
+        marks.sort_by_key(|(id, _)| *id);
+        marks
+    }
+
+    #[test]
+    fn a_prompt_is_marked_until_its_command_starts() {
+        let (out, shared) = through(&[b"\x1b]133;A\x07$ ls\r\n\x1b]133;C\x07a b\r\n"]);
+        assert_eq!(
+            out,
+            b"\x1b]133;A\x07\x1b]8;;templum:cmd/0\x1b\\$ ls\r\n\x1b]133;C\x07\x1b]8;;\x1b\\a b\r\n"
+        );
+        assert_eq!(marks(&shared), [(0, Mark::Running)]);
+        let (_, shared) =
+            through(&[b"\x1b]133;A\x07$ \x1b]133;C\x07\x1b]133;D;3\x07\x1b]133;A\x07$ "]);
+        assert_eq!(
+            marks(&shared),
+            [(0, Mark::Ended(Some(3)))],
+            "prompt 1 runs nothing yet"
+        );
+    }
+
+    #[test]
+    fn a_command_without_a_prompt_mark_adds_nothing() {
+        let (out, shared) = through(&[b"\x1b]133;C\x07x\x1b]133;D;0\x07"]);
+        assert_eq!(out, b"\x1b]133;C\x07x\x1b]133;D;0\x07");
+        assert_eq!((marks(&shared), status(&shared).finished), (vec![], 1));
+    }
+
+    #[test]
+    fn after_an_st_the_mark_comes_after_its_backslash() {
+        let want = b"\x1b]133;A\x1b\\\x1b]8;;templum:cmd/0\x1b\\$ ".to_vec();
+        assert_eq!(through(&[b"\x1b]133;A\x1b\\$ "]).0, want);
+        assert_eq!(
+            through(&[b"\x1b]133;A\x1b", b"\\$ "]).0,
+            want,
+            "split in the ST"
+        );
+        // ESC starting another sequence: no whole ST, no mark (rather than splitting that one).
+        assert_eq!(through(&[b"\x1b]133;A\x1b[0m$ "]).0, b"\x1b]133;A\x1b[0m$ ");
+    }
+
+    #[test]
+    fn a_second_integrations_marks_are_the_same_prompts_and_command() {
+        // fish 4 with Templum's script: our A, fish's A on the same line, then both C and D.
+        let (out, shared) = through(&[
+            b"\x1b]133;A\x07\x1b]0;~\x1b\\\x1b[?2004h\x1b]133;A;click_events=1\x1b\\$ false\r\n\
+              \x1b]133;C;cmdline_url=false\x1b\\\x1b]133;C\x07\x1b]133;D;1\x1b\\\x1b]133;D;1\x07",
+        ]);
+        assert_eq!(
+            out.windows(7).filter(|w| w == b"\x1b]8;;te").count(),
+            1,
+            "one mark"
+        );
+        assert_eq!(marks(&shared), [(0, Mark::Ended(Some(1)))]);
+        assert_eq!(status(&shared).finished, 1);
+        // Enter on an empty line (or Ctrl+C): the next prompt is a new one.
+        let (_, shared) = through(&[b"\x1b]133;A\x07$ \r\n\x1b]133;A\x07$ ls\r\n\x1b]133;C\x07"]);
+        assert_eq!(marks(&shared), [(1, Mark::Running)]);
+    }
+
+    #[test]
+    fn marks_are_the_same_however_the_reads_split() {
+        let all: &[u8] =
+            b"\x1b]133;A\x07$ false\r\n\x1b]133;C\x07\x1b]133;D;1\x1b\\\x1b]133;A\x1b\\$ ";
+        let (whole, _) = through(&[all]);
+        for at in 0..=all.len() {
+            let (split, shared) = through(&[&all[..at], &all[at..]]);
+            assert_eq!(split, whole, "split at {at}");
+            assert_eq!(marks(&shared), [(0, Mark::Ended(Some(1)))], "split at {at}");
+        }
     }
 
     #[test]

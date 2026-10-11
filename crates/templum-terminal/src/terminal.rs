@@ -21,7 +21,7 @@ use alacritty_terminal::vte::ansi::CursorStyle;
 use crate::agent::{Detect, agent_of};
 use crate::input::{KeyInput, encode_key, paste_bytes};
 use crate::palette::{self, Palette};
-use crate::tap::{Status, Tap};
+use crate::tap::{Mark, Status, Tap};
 
 /// Called (coalesced) when a terminal has something new to show.
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -43,6 +43,8 @@ pub(crate) struct Shared {
     pub(crate) status: Mutex<Status>,
     /// The folder the shell last reported (OSC 7 or 9;9).
     pub(crate) folder: Mutex<Option<PathBuf>>,
+    /// Each command's state, by the number of its prompt's mark.
+    pub(crate) marks: Mutex<HashMap<u32, Mark>>,
 }
 
 impl Shared {
@@ -57,6 +59,7 @@ impl Shared {
             palette: Mutex::new(palette),
             status: Mutex::default(),
             folder: Mutex::default(),
+            marks: Mutex::default(),
         }
     }
 
@@ -133,9 +136,12 @@ impl EventListener for Listener {
     }
 }
 
-/// The terminal grid, shared with the PTY thread. Cheap to clone.
+/// The terminal grid, shared with the PTY thread, and what the PTY thread heard. Cheap to clone.
 #[derive(Clone)]
-pub struct SharedTerm(pub(crate) Arc<FairMutex<Term<Listener>>>);
+pub struct SharedTerm(
+    pub(crate) Arc<FairMutex<Term<Listener>>>,
+    pub(crate) Arc<Shared>,
+);
 
 /// Settings a running terminal can change: the history length and the default cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -446,7 +452,7 @@ impl Terminal {
         let _ = shared.pty.set(pty.clone());
         event_loop.spawn();
         Ok(Self {
-            term: SharedTerm(term),
+            term: SharedTerm(term, shared.clone()),
             pid,
             #[cfg(unix)]
             master,
@@ -573,6 +579,32 @@ impl Terminal {
         let _ = self.pty.send(Msg::Resize(size));
     }
 
+    /// Scrolls to the previous (`up`) or the next prompt (shell integration marks them): the one
+    /// above or below the top of the view goes to the top, or as near as the history allows.
+    /// False when the view didn't move: no prompt there, or a full-screen program runs.
+    pub fn jump_to_prompt(&self, up: bool) -> bool {
+        Self::jump_in(&self.term, up)
+    }
+
+    fn jump_in(term: &SharedTerm, up: bool) -> bool {
+        let mut term = term.0.lock();
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            return false;
+        }
+        let top = -(term.grid().display_offset() as i32);
+        let starts = crate::tap::prompt_lines(term.grid());
+        let target = if up {
+            starts.into_iter().rfind(|&l| l < top)
+        } else {
+            starts.into_iter().find(|&l| l > top)
+        };
+        let Some(target) = target else {
+            return false;
+        };
+        term.scroll_display(Scroll::Delta(top - target));
+        -(term.grid().display_offset() as i32) != top
+    }
+
     /// Scrolls the history (positive = up). In full-screen apps that asked for it (less,
     /// vim: alternate screen + alternate scroll), sends arrow keys instead.
     pub fn scroll(&self, lines: i32) {
@@ -646,7 +678,10 @@ pub(crate) fn headless(cols: u16, rows: u16) -> (SharedTerm, Arc<Shared>) {
         &TermSize::new(cols as usize, rows as usize),
         Listener(shared.clone()),
     );
-    (SharedTerm(Arc::new(FairMutex::new(term))), shared)
+    (
+        SharedTerm(Arc::new(FairMutex::new(term)), shared.clone()),
+        shared,
+    )
 }
 
 #[cfg(test)]
@@ -756,6 +791,81 @@ mod tests {
             ..p
         };
         assert_eq!(folder(gone), Some(mine), "a folder that isn't there");
+    }
+
+    /// Feeds `bytes` as the PTY thread would: through the tap, which marks the prompts.
+    fn feed_heard(term: &SharedTerm, bytes: &[u8]) {
+        let mut scanner = crate::tap::Scanner::new();
+        let inserts = scanner.scan(bytes, &term.1);
+        feed(term, &crate::tap::rewrite(bytes, inserts));
+    }
+
+    fn rows(term: &SharedTerm) -> Vec<(String, Option<Mark>)> {
+        let mut snap = crate::Snapshot::default();
+        snap.refresh(term, &Palette::default());
+        snap.rows.into_iter().map(|r| (r.text, r.mark)).collect()
+    }
+
+    #[test]
+    fn a_prompt_shows_its_commands_state_on_its_first_line() {
+        let (term, _) = headless(20, 5);
+        feed_heard(
+            &term,
+            b"\x1b]133;A\x07$ false\r\n\x1b]133;C\x07\x1b]133;D;1\x07\
+              \x1b]133;A\x07> two\r\nlines\r\n\x1b]133;C\x07\x1b]133;D;0\x07\
+              \x1b]133;A\x07$ ",
+        );
+        let shown = rows(&term);
+        let want = [
+            ("$ false", Some(Mark::Ended(Some(1)))),
+            ("> two", Some(Mark::Ended(Some(0)))),
+            ("lines", None),
+            ("$", None),
+        ];
+        for (row, (text, mark)) in shown.iter().zip(want) {
+            assert_eq!((row.0.as_str(), row.1), (text, mark));
+        }
+        // The output goes on: the second prompt's first line goes into the history, and its other
+        // line, now at the top, isn't a start.
+        feed(&term, b"\r\n\r\n\r\n");
+        assert_eq!(rows(&term)[0], ("lines".to_string(), None));
+        term.0.lock().scroll_display(Scroll::Delta(1));
+        assert_eq!(
+            rows(&term)[0],
+            ("> two".to_string(), Some(Mark::Ended(Some(0))))
+        );
+    }
+
+    #[test]
+    fn jumps_go_from_prompt_to_prompt() {
+        let (term, _) = headless(20, 4);
+        for i in 0..3 {
+            let mut chunk = format!("\x1b]133;A\x07$ cmd{i}\r\n\x1b]133;C\x07");
+            chunk.push_str(&"out\r\n".repeat(5));
+            chunk.push_str("\x1b]133;D;0\x07");
+            feed_heard(&term, chunk.as_bytes());
+        }
+        feed_heard(&term, b"\x1b]133;A\x07$ ");
+        let jump = |up: bool| {
+            let moved = Terminal::jump_in(&term, up);
+            (moved, rows(&term)[0].0.clone())
+        };
+        assert_eq!(jump(true), (true, "$ cmd2".to_string()));
+        assert_eq!(jump(true), (true, "$ cmd1".to_string()));
+        assert_eq!(jump(true), (true, "$ cmd0".to_string()));
+        assert_eq!(
+            jump(true),
+            (false, "$ cmd0".to_string()),
+            "the first prompt"
+        );
+        assert_eq!(jump(false), (true, "$ cmd1".to_string()));
+        assert_eq!(jump(false), (true, "$ cmd2".to_string()));
+        assert_eq!(
+            jump(false),
+            (true, "out".to_string()),
+            "the bottom: the last prompt's screen"
+        );
+        assert!(!jump(false).0, "nothing below");
     }
 
     #[test]

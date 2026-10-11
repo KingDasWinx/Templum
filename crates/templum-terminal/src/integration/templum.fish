@@ -1,6 +1,6 @@
 # Templum's shell integration for fish, started with `--init-command 'source …'` this file. It
-# tells Templum when a command starts and ends (OSC 133 C and D, with the exit code) and the
-# current folder (OSC 7), and changes nothing else.
+# tells Templum when a prompt starts (OSC 133 A), when a command starts and ends (C and D, with
+# the exit code) and the current folder (OSC 7), and changes nothing else.
 
 if status is-interactive; and not set -q __templum_installed
     set -g __templum_installed 1
@@ -11,6 +11,6 @@ if status is-interactive; and not set -q __templum_installed
         printf '\e]133;D;%s\a' $status
     end
     function __templum_prompt --on-event fish_prompt
-        printf '\e]7;file://%s%s\a' $hostname (string replace -a '%' '%25' -- $PWD)
+        printf '\e]7;file://%s%s\a\e]133;A\a' $hostname (string replace -a '%' '%25' -- $PWD)
     end
 end

@@ -8,8 +8,8 @@ use gpui_kit::{
     App, BorderStyle, Bounds, Entity, Font, FontStyle, FontWeight, Hsla, Pixels, Point, Rgba,
     TextAlign, TextRun, UnderlineStyle, Window, canvas, fill, font, outline, point, px, size,
 };
-use templum_canvas::Size;
-use templum_terminal::{CursorShape, Rgb, SharedTerm, Snapshot};
+use templum_canvas::{Size, chrome};
+use templum_terminal::{CursorShape, Mark, Rgb, SharedTerm, Snapshot};
 
 use crate::theme::Theme;
 use crate::workspace::Workspace;
@@ -193,6 +193,16 @@ fn paint(
         )
     };
     for (i, row) in snap.rows.iter().enumerate() {
+        if let Some(mark) = row.mark {
+            // In the padding left of the grid, on the line where its prompt starts.
+            let d = MARK * z;
+            let at = point(
+                origin.x - px((chrome::PAD * z + d) / 2.0),
+                origin.y + px(lh * i as f32 + (lh - d) / 2.0),
+            );
+            let dot = Bounds::new(at, size(px(d), px(d)));
+            window.paint_quad(fill(dot, mark_color(mark, theme)).corner_radii(px(d / 2.0)));
+        }
         for (span, bg) in &row.bgs {
             window.paint_quad(fill(cell(i, span.start, span.len), hsla(*bg, 1.0)));
         }
@@ -253,6 +263,19 @@ fn paint(
     Some((r, c.blinking))
 }
 
+/// A command's mark, world units across.
+const MARK: f32 = 4.0;
+
+/// Green when the command succeeded, red when it failed; dim while it runs, or when the shell
+/// didn't say.
+fn mark_color(mark: Mark, theme: &Theme) -> Hsla {
+    match mark {
+        Mark::Ended(Some(0)) => hsla(theme.palette.ansi[2], 1.0),
+        Mark::Ended(Some(_)) => hsla(theme.palette.ansi[1], 1.0),
+        Mark::Running | Mark::Ended(None) => theme.ui.title_dim,
+    }
+}
+
 /// IME pre-edit text (dead keys, compose), drawn at the cursor until committed.
 fn paint_marked(
     text: &str,
@@ -288,6 +311,19 @@ fn paint_marked(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn marks_are_green_red_or_dim() {
+        let theme = Theme::new("test", templum_terminal::Palette::default(), None, None);
+        let (green, red) = (
+            hsla(theme.palette.ansi[2], 1.0),
+            hsla(theme.palette.ansi[1], 1.0),
+        );
+        assert_eq!(mark_color(Mark::Ended(Some(0)), &theme), green);
+        assert_eq!(mark_color(Mark::Ended(Some(127)), &theme), red);
+        assert_eq!(mark_color(Mark::Running, &theme), theme.ui.title_dim);
+        assert_eq!(mark_color(Mark::Ended(None), &theme), theme.ui.title_dim);
+    }
 
     #[test]
     fn cursor_quads_per_shape() {
