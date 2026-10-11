@@ -34,7 +34,7 @@ cargo run -p templum
 | Scroll over a terminal | Scroll its history |
 | Ctrl+scroll, or pinch | Zoom |
 | Drag in a terminal (double-click: word, triple-click: line) | Select text |
-| Right-click empty canvas | Menu: **Add ▸** Terminal or Kanban board, where you clicked |
+| Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal or Kanban board, where you clicked |
 | Right-click a block, card, column, board or workspace tile | Its menu (copy, paste, rename, delete, close…) |
 
 | Linux / Windows | macOS | Action |
@@ -116,8 +116,17 @@ doesn't come back. The files are in `~/.local/share/templum/workspaces/`
 per workspace, and `index.json` listing them. If Templum can't read a file, it keeps it as `.bak` and starts that
 canvas fresh.
 
-If Claude Code or Codex was open in a terminal, Templum types `claude --continue` or `codex resume --last` there,
-which continues that folder's latest conversation.
+If an AI agent was open in a terminal, Templum brings it back there: Claude Code with `claude --continue`, Codex
+with `codex resume --last`, and so on for the 20 agents it knows, continuing that folder's latest conversation (or
+a new one, for agents that can't resume by folder).
+
+## AI agents
+
+Right-click the canvas, **AI agent ▸**, and pick one: Claude Code, Codex, Gemini CLI, GitHub Copilot CLI, Cursor
+CLI, OpenCode, Amp, Kiro, Qwen Code, Grok Build, Kimi Code, Mistral Vibe, Aider, Goose, Crush, Droid, Auggie, Kilo
+Code, Cline or Pi. Templum asks which folder it runs in: one of this workspace's recent folders, a folder you choose,
+or a path you type. It opens a terminal there and starts the agent; agents you haven't installed show their install
+command instead. The full list, with how each one resumes, is in [docs/specs/agents.md](docs/specs/agents.md).
 
 ## Configuration
 

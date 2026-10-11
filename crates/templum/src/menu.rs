@@ -11,8 +11,10 @@ use gpui_kit::{
     ScrollWheelEvent, Subscription, Window, anchored, deferred, div, px,
 };
 use templum_canvas::{BlockId, Point};
+use templum_terminal::Agent;
 
 use crate::kanban;
+use crate::launcher;
 use crate::prompt;
 use crate::workspace::Workspace;
 
@@ -84,7 +86,12 @@ impl Workspace {
     /// What the menu for `target` needs to know, read now: building it can't read the workspace.
     fn items(&self, target: &Target) -> Items {
         match *target {
-            Target::Canvas(at) => Items::Canvas(at),
+            Target::Canvas(at) => Items::Canvas {
+                at,
+                agents: Agent::all()
+                    .map(|a| (a, templum_terminal::installed(a.program())))
+                    .collect(),
+            },
             Target::Terminal(block) => Items::Terminal {
                 block,
                 selection: self
@@ -137,7 +144,11 @@ impl Workspace {
 
 /// A target's menu, with what it shows read from the workspace.
 enum Items {
-    Canvas(Point),
+    Canvas {
+        at: Point,
+        /// Each agent, and whether its command was found.
+        agents: Vec<(Agent, bool)>,
+    },
     Terminal {
         block: BlockId,
         selection: bool,
@@ -201,22 +212,52 @@ impl Items {
         cx: &mut Context<PopupMenu>,
     ) -> PopupMenu {
         match self {
-            Items::Canvas(at) => {
+            Items::Canvas { at, agents } => {
+                let add = ws.clone();
                 let ws = ws.clone();
                 menu.submenu_with_icon(
+                    Some(Icon::new(IconName::Bot)),
+                    "AI agent",
+                    window,
+                    cx,
+                    move |menu, _, _| {
+                        // Installed first; the others say how to install them when chosen.
+                        let (found, missing): (Vec<_>, Vec<_>) = agents
+                            .iter()
+                            .copied()
+                            .partition(|(_, installed)| *installed);
+                        let entry = |menu: PopupMenu, (agent, installed): (Agent, bool)| {
+                            menu.item(item(&ws, agent.title(), None, move |ws, window, cx| {
+                                launcher::ask_folder(ws, agent, at, installed, window, cx)
+                            }))
+                        };
+                        // Twenty agents: the list scrolls in a short window.
+                        let menu = found
+                            .into_iter()
+                            .fold(menu.scrollable(true).max_h(px(420.0)), entry);
+                        if missing.is_empty() {
+                            return menu;
+                        }
+                        missing
+                            .into_iter()
+                            .fold(menu.separator().label("Not installed"), entry)
+                    },
+                )
+                .submenu_with_icon(
                     Some(Icon::new(IconName::Plus)),
                     "Add",
                     window,
                     cx,
                     move |menu, _, _| {
+                        let ws = &add;
                         menu.item(item(
-                            &ws,
+                            ws,
                             "Terminal",
                             Some(IconName::SquareTerminal),
                             move |ws, window, cx| ws.add_terminal_at(at, window, cx),
                         ))
                         .item(item(
-                            &ws,
+                            ws,
                             "Kanban board",
                             Some(IconName::LayoutDashboard),
                             move |ws, window, cx| ws.add_kanban_at(at, window, cx),

@@ -171,6 +171,9 @@ pub(crate) struct Saved {
     /// The focused item's index in `items`.
     #[serde(default)]
     pub focused: Option<usize>,
+    /// The folders agents were last opened in on this canvas, newest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent: Vec<String>,
 }
 
 /// The world point at the canvas's top left, and the zoom factor.
@@ -248,6 +251,8 @@ pub(crate) struct Layout {
     /// Back to front.
     pub blocks: Vec<LayoutBlock>,
     pub focused: Option<usize>,
+    /// Folders agents were opened in, newest first.
+    pub recent: Vec<PathBuf>,
 }
 
 pub(crate) enum LayoutBlock {
@@ -296,6 +301,7 @@ impl Layout {
                 })
                 .collect(),
             focused: self.focused,
+            recent: self.recent.into_iter().filter_map(utf8).collect(),
         }
     }
 }
@@ -421,6 +427,7 @@ mod tests {
                 }),
             ],
             focused: Some(1),
+            recent: vec!["/home/u/proj".into(), "/srv/site".into()],
         }
     }
 
@@ -481,6 +488,7 @@ mod tests {
             "\"kind\":\"kanban\"",
             "\"board\":7",
             "\"focused\":1",
+            "\"recent\":[\"/home/u/proj\",\"/srv/site\"]",
         ] {
             assert!(text.contains(part), "{part} in {text}");
         }
@@ -506,11 +514,11 @@ mod tests {
         };
         assert_eq!(
             item(Some("claude")).agent(),
-            Some(templum_terminal::Agent::Claude)
+            Some(templum_terminal::Agent::CLAUDE)
         );
         assert_eq!(
             item(Some("codex")).agent(),
-            Some(templum_terminal::Agent::Codex)
+            Some(templum_terminal::Agent::CODEX)
         );
         assert_eq!(item(Some("rm -rf ~")).agent(), None);
         assert_eq!(item(None).agent(), None);
@@ -577,6 +585,7 @@ mod tests {
         };
         assert_eq!(saved.items.len(), 1);
         assert_eq!(saved.focused, None, "missing: nothing focused");
+        assert!(saved.recent.is_empty(), "missing: no recent folders");
     }
 
     #[test]
@@ -703,8 +712,10 @@ mod tests {
                 LayoutBlock::Terminal(Rect::new(20.0, 0.0, 30.0, 10.0), Processes::default()),
             ],
             focused: Some(1),
+            recent: vec![PathBuf::from("/a"), PathBuf::from("/b")],
         };
         let saved = layout.snapshot();
+        assert_eq!(saved.recent, ["/a", "/b"], "recent folders, newest first");
         assert_eq!(saved.version, VERSION);
         assert_eq!(
             saved.camera,

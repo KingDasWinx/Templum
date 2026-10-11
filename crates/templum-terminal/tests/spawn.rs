@@ -247,7 +247,7 @@ fn inspect_finds_an_agent_and_its_folder() {
     loop {
         let found = inspect(&[term.processes()]).pop().unwrap();
         let folder = found.folder.as_ref().and_then(|f| f.canonicalize().ok());
-        if found.agent == Some(Agent::Claude) && folder.as_ref() == Some(&want) {
+        if found.agent == Some(Agent::CLAUDE) && folder.as_ref() == Some(&want) {
             break;
         }
         assert!(Instant::now() < deadline, "found {found:?}");
@@ -324,7 +324,7 @@ fn inspect_finds_an_agent_the_shell_started() {
     loop {
         let found = inspect(&[term.processes()]).pop().unwrap();
         let folder = found.folder.as_ref().and_then(|f| f.canonicalize().ok());
-        if found.agent == Some(Agent::Claude) && folder.as_ref() == Some(&want) {
+        if found.agent == Some(Agent::CLAUDE) && folder.as_ref() == Some(&want) {
             break;
         }
         assert!(Instant::now() < deadline, "found {found:?}");

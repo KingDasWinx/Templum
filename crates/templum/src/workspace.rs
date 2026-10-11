@@ -44,6 +44,11 @@ use crate::title_bar;
 
 pub(crate) const DEFAULT_COLS: u16 = 80;
 pub(crate) const DEFAULT_ROWS: u16 = 24;
+/// An agent's terminal: agents draw wide interfaces.
+const AGENT_COLS: u16 = 110;
+const AGENT_ROWS: u16 = 32;
+/// How many folders a workspace remembers for agents.
+pub(crate) const RECENT: usize = 8;
 /// The largest block a saved canvas restores: a corrupt size mustn't allocate a giant grid.
 const MAX_COLS: u16 = 2000;
 const MAX_ROWS: u16 = 1000;
@@ -120,6 +125,8 @@ pub(crate) struct Space {
     pub appearing: HashMap<BlockId, Instant>,
     /// Closed blocks still fading out.
     pub ghosts: Vec<Ghost>,
+    /// The folders agents were opened in on this canvas, newest first.
+    pub recent: Vec<PathBuf>,
 }
 
 impl Space {
@@ -141,6 +148,7 @@ impl Space {
             focused: self
                 .focused
                 .and_then(|id| blocks.iter().position(|b| b.id == id)),
+            recent: self.recent.clone(),
         }
     }
 
@@ -721,6 +729,34 @@ impl Workspace {
         self.open(Rect::new(at.x, at.y, size.w, size.h), window, cx);
     }
 
+    /// A terminal in `folder`, its top-left corner at `at`, with `agent` typed into its shell;
+    /// the folder becomes this workspace's newest recent one.
+    pub(crate) fn launch_agent(
+        &mut self,
+        agent: templum_terminal::Agent,
+        folder: &std::path::Path,
+        at: Point,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<BlockId> {
+        if !folder.is_dir() {
+            let message = format!("{} isn't a folder", folder.display());
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::warning(message));
+            return None;
+        }
+        self.space.pristine = false;
+        let size = chrome::block_size(AGENT_COLS, AGENT_ROWS, self.cell.size);
+        let rect = Rect::new(at.x, at.y, size.w, size.h);
+        let id = self.spawn_block(rect, Some(folder.to_path_buf()), window, cx)?;
+        // The shell reads it once it is ready.
+        let line = format!("{}\r", agent.command());
+        self.space.terminals[&id].term.write(line.into_bytes());
+        remember(&mut self.space.recent, folder.to_path_buf());
+        window.focus(&self.focus_handle, cx);
+        Some(id)
+    }
+
     /// A right-click on the empty canvas: its menu adds blocks there.
     fn on_background_right_down(
         &mut self,
@@ -890,6 +926,7 @@ impl Workspace {
             eprintln!("templum: {message}");
             show_notification(window, cx, Notification::warning(message));
         }
+        self.space.recent = saved.recent.iter().map(PathBuf::from).collect();
         self.space.saved = Some(saved);
     }
 
@@ -2111,13 +2148,20 @@ fn missing_themes(themes: &[Entry], config: &ThemeConfig) -> Vec<String> {
 
 /// Shows a notification at the bottom right, clear of the title bar's buttons. Deferred: at
 /// startup the window's notification layer doesn't exist yet.
-fn show_notification(window: &mut Window, cx: &mut App, notification: Notification) {
+pub(crate) fn show_notification(window: &mut Window, cx: &mut App, notification: Notification) {
     let notification = notification
         .placement(Anchor::BottomRight)
         .rounded(px(10.0));
     window.defer(cx, move |window, cx| {
         window.push_notification(notification, cx)
     });
+}
+
+/// `folder` becomes the newest recent folder: once, and only the RECENT newest are kept.
+pub(crate) fn remember(recent: &mut Vec<PathBuf>, folder: PathBuf) {
+    recent.retain(|f| *f != folder);
+    recent.insert(0, folder);
+    recent.truncate(RECENT);
 }
 
 /// Ctrl+1 to Ctrl+9 (Cmd on macOS), with no other modifier: the position of a workspace.
@@ -2511,6 +2555,7 @@ mod tests {
                     agent: agent.map(String::from),
                 })],
                 focused: None,
+                recent: Vec::new(),
             }),
             ..super::Space::default()
         };
@@ -5543,8 +5588,8 @@ mod tests {
                 })
                 .unwrap();
             cx.update_window(handle, |_, window, cx| {
-                // Add ▸ Terminal or Kanban board.
-                window.within("popup-menu").click(0usize, cx);
+                // AI agent ▸, Add ▸ Terminal or Kanban board.
+                window.within("popup-menu").click(1usize, cx);
                 window.render_frame(cx);
                 window
                     .within("submenu")
@@ -5560,6 +5605,47 @@ mod tests {
                 assert!(ws.menu.is_none(), "a choice closes it");
             });
         }
+    }
+
+    #[gpui_kit::test]
+    fn the_canvas_menu_opens_an_agent_in_a_recent_folder(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let folder = tempfile::tempdir().unwrap();
+        ws.update(cx, |ws, _| {
+            ws.space.recent = vec![folder.path().to_path_buf()]
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let o = ws.read(cx).origin;
+            right_click(window, cx, (f32::from(o.x) + 20.0, f32::from(o.y) + 600.0));
+            window.render_frame(cx);
+            // AI agent ▸ its first agent.
+            window.within("popup-menu").click(0usize, cx);
+            window.render_frame(cx);
+            window
+                .within("submenu")
+                .within("popup-menu")
+                .click(0usize, cx);
+            window.render_frame(cx);
+            assert!(
+                window.try_find("choose-folder").is_some(),
+                "the folder dialog"
+            );
+        })
+        .unwrap();
+        // The dialog slides in for 0.25 s first: presses meanwhile are lost.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("recent-0", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("choose-folder").is_none(), "it closed");
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.terminals.len(), 2, "the agent's terminal");
+            assert_eq!(ws.space.recent, [folder.path()]);
+        });
     }
 
     #[gpui_kit::test]
@@ -5768,6 +5854,66 @@ mod tests {
                 snap.text()
             });
             if shown.contains("claude --continue") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "not typed: {shown:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn recent_folders_are_newest_first_without_repeats_and_few() {
+        use std::path::PathBuf;
+        let mut recent = Vec::new();
+        for i in 0..12 {
+            super::remember(&mut recent, PathBuf::from(format!("/p{i}")));
+        }
+        super::remember(&mut recent, PathBuf::from("/p8"));
+        assert_eq!(recent.len(), super::RECENT);
+        assert_eq!(recent[0], PathBuf::from("/p8"));
+        assert_eq!(recent[1], PathBuf::from("/p11"));
+        assert_eq!(
+            recent
+                .iter()
+                .filter(|p| *p == std::path::Path::new("/p8"))
+                .count(),
+            1
+        );
+    }
+
+    #[gpui_kit::test]
+    fn an_agent_opens_in_its_folder_and_the_folder_becomes_recent(cx: &mut TestAppContext) {
+        use std::time::{Duration, Instant};
+        use templum_terminal::{Agent, Snapshot};
+        let (handle, ws) = open(cx);
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let id = cx
+            .update_window(handle, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.launch_agent(Agent::CODEX, b.path(), Point::new(0.0, 900.0), window, cx);
+                    ws.launch_agent(Agent::CLAUDE, a.path(), Point::new(40.0, 0.0), window, cx)
+                })
+            })
+            .unwrap()
+            .expect("a block");
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.recent, [a.path(), b.path()]);
+            assert_eq!(
+                ws.space.canvas.get(id).unwrap().rect.origin(),
+                Point::new(40.0, 0.0)
+            );
+            assert_eq!(ws.space.focused, Some(id));
+        });
+        assert_eq!(folder_of(&ws, id, cx), a.path().canonicalize().unwrap());
+        // The test shell echoes what it is typed.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let shown = ws.read_with(cx, |ws, _| {
+                let mut snap = Snapshot::default();
+                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.text()
+            });
+            if shown.contains("claude") {
                 break;
             }
             assert!(Instant::now() < deadline, "not typed: {shown:?}");

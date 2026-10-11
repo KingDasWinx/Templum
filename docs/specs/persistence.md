@@ -2,6 +2,7 @@
 
 - **Date:** 2026-10-10
 - **Status:** Implemented
+- **Extended by:** [agents.md](agents.md), which recognizes and resumes 20 agents, not only these two.
 - **Builds on:** [walking-skeleton.md](walking-skeleton.md) (the canvas and its terminal blocks) and
   [config.md](config.md) (the shell's start folder, and how `config.toml` is written safely)
 
