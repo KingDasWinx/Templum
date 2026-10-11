@@ -16,10 +16,11 @@ use gpui_kit::component::{TITLE_BAR_HEIGHT, WindowExt, window_paddings};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Anchor, AnyElement, App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler,
-    EntityInputHandler, FocusHandle, FontWeight, Hsla, KeyBinding, KeyDownEvent, Keystroke,
-    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PinchEvent,
-    Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent, SharedString, Subscription, Task,
-    TestSupportExt, UTF16Selection, Window, WindowAppearance, canvas, div, fill, point, px, size,
+    EntityInputHandler, FocusHandle, Focusable as _, FontWeight, Hsla, KeyBinding, KeyDownEvent,
+    Keystroke, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    PinchEvent, Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent, SharedString,
+    Subscription, Task, TestSupportExt, UTF16Selection, Window, WindowAppearance, canvas, div,
+    fill, point, px, size,
 };
 use templum_canvas::{
     Block, BlockId, Camera, CameraFlight, Canvas, Gesture, Guide, Point, Rect, Size, chrome,
@@ -872,11 +873,36 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A note shows its rendered text, or its editor again.
-    pub(crate) fn toggle_preview(&mut self, id: BlockId, cx: &mut Context<Self>) {
+    /// A note shows its rendered text, or its editor again. Leaving the editor hands the keyboard
+    /// to the canvas; going back to it gives the editor the keyboard.
+    pub(crate) fn toggle_preview(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.release_focus(id, window, cx);
         if let Some(Body::Note(note)) = self.space.blocks.get_mut(&id) {
             note.preview = !note.preview;
+            if !note.preview {
+                note.focus(window, cx);
+            }
             cx.notify();
+        }
+    }
+
+    /// A block's editor is about to leave the frame: if it has the keyboard, the canvas takes it.
+    /// GPUI sends keys to the window's root when the focused element isn't drawn, and the
+    /// shortcuts would stop working until a click.
+    fn release_focus(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(Body::Note(note)) = self.space.blocks.get(&id)
+            && note
+                .editor
+                .read(cx)
+                .focus_handle(cx)
+                .contains_focused(window, cx)
+        {
+            window.focus(&self.focus_handle, cx);
         }
     }
 
@@ -1373,7 +1399,8 @@ impl Workspace {
 
     /// Removes a block and kills its shell (dropping the Terminal shuts it down).
     /// The block leaves the canvas at once; it stays on screen as a ghost while it fades out.
-    pub(crate) fn close(&mut self, id: BlockId, cx: &mut Context<Self>) {
+    pub(crate) fn close(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        self.release_focus(id, window, cx);
         let block = self.space.canvas.get(id).copied();
         self.space.canvas.remove(id);
         self.space.appearing.remove(&id);
@@ -2217,16 +2244,16 @@ impl Workspace {
         self.open(rect, window, cx);
     }
 
-    fn close_terminal(&mut self, cx: &mut Context<Self>) {
+    fn close_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.space.focused {
-            self.close(id, cx);
+            self.close(id, window, cx);
         }
     }
 
     fn run(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
         match command {
             Command::NewTerminal => self.new_terminal(window, cx),
-            Command::CloseTerminal => self.close_terminal(cx),
+            Command::CloseTerminal => self.close_terminal(window, cx),
             Command::Copy => self.copy_selection(cx),
             Command::Paste => self.paste_clipboard(cx),
             Command::PreviousPrompt => self.jump_to_prompt(true, cx),
@@ -2680,7 +2707,7 @@ impl Render for Workspace {
             .map(|(id, _)| id)
             .collect();
         for id in exited {
-            self.close(id, cx);
+            self.close(id, window, cx);
         }
         // Re-arm once per frame: output is coalesced to frame rate.
         for (_, pane) in self.space.terminals() {
@@ -6553,6 +6580,43 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn closing_a_focused_note_gives_the_keyboard_back_to_the_canvas(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        new_note(handle, &ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.press(CLOSE, cx);
+            window.render_frame(cx);
+            window.press(NEW, cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert!(
+                ws.space.blocks.values().all(|b| b.note().is_none()),
+                "closed"
+            );
+            assert_eq!(ws.space.terminals().count(), 2, "the shortcut still works");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn previewing_a_focused_note_gives_the_keyboard_back_to_the_canvas(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = new_note(handle, &ws, cx);
+        let n = id.0 as usize;
+        cx.update_window(handle, |_, window, cx| {
+            window.hover(("block", n), cx);
+            window.render_frame(cx);
+            window.click(("preview", n), cx);
+            window.render_frame(cx);
+            window.press(NEW, cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.terminals().count(), 2, "the shortcut still works");
+        });
+    }
+
+    #[gpui_kit::test]
     fn a_note_comes_back_with_its_text_and_mode(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let (handle, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));
@@ -6564,7 +6628,7 @@ mod tests {
                 };
                 note.editor
                     .update(cx, |e, cx| e.set_value("# Keep me\n- x", window, cx));
-                ws.toggle_preview(id, cx);
+                ws.toggle_preview(id, window, cx);
                 ws.save_canvas_now(cx);
             });
         })

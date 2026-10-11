@@ -121,7 +121,7 @@ pub(crate) fn render(
                 .size(px(12.0 * z))
                 .text_color(ui.title),
         )
-        .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.close(id, cx)))
+        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| ws.close(id, window, cx)))
         .test_support();
 
     // A terminal's state, on the left of its header.
@@ -193,9 +193,9 @@ pub(crate) fn render(
                         Tooltip::new(if on { "Edit" } else { "Preview" }).build(window, cx)
                     })
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(
-                        cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_preview(id, cx)),
-                    )
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        ws.toggle_preview(id, window, cx)
+                    }))
                     .test_support(),
             )
         }

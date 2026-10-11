@@ -314,7 +314,7 @@ impl Items {
                     ws,
                     "Close terminal",
                     Some(IconName::Close),
-                    move |ws, _, cx| ws.close(block, cx),
+                    move |ws, window, cx| ws.close(block, window, cx),
                 )),
             Items::Kanban { block, listing } => menu
                 .item(item(
@@ -332,7 +332,7 @@ impl Items {
                     ws,
                     "Close",
                     Some(IconName::Close),
-                    move |ws, _, cx| ws.close(block, cx),
+                    move |ws, window, cx| ws.close(block, window, cx),
                 )),
             Items::Agents { at, agents } => agent_items(ws, menu, agents, at),
             Items::Note { block, preview } => menu
@@ -344,7 +344,7 @@ impl Items {
                     } else {
                         IconName::Eye
                     }),
-                    move |ws, _, cx| ws.toggle_preview(block, cx),
+                    move |ws, window, cx| ws.toggle_preview(block, window, cx),
                 ))
                 .item(item(
                     ws,
@@ -362,7 +362,7 @@ impl Items {
                     ws,
                     "Close",
                     Some(IconName::Close),
-                    move |ws, _, cx| ws.close(block, cx),
+                    move |ws, window, cx| ws.close(block, window, cx),
                 )),
             Items::Board {
                 block,
