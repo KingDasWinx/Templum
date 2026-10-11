@@ -1941,7 +1941,8 @@ impl Workspace {
         let p = self.local(pos);
         match &mut self.drag {
             Some(Drag::Canvas(gesture)) => {
-                if let Some((id, rect)) = gesture.update(&mut self.space.canvas, p) {
+                let update = gesture.update(&mut self.space.canvas, p);
+                if let Some((id, rect)) = update.resized {
                     let (cols, rows) =
                         chrome::grid_size(chrome::content_rect(rect).size(), self.cell.size);
                     if let Some(pane) = self.space.terminal_mut(id) {
