@@ -17,8 +17,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::{
     Anchor, AnyElement, App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler,
     EntityInputHandler, FocusHandle, FontWeight, Hsla, KeyBinding, KeyDownEvent, Keystroke,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PinchEvent, Pixels,
-    Point as PixelPoint, ScrollDelta, ScrollWheelEvent, SharedString, Subscription, Task,
+    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PinchEvent,
+    Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent, SharedString, Subscription, Task,
     TestSupportExt, UTF16Selection, Window, WindowAppearance, canvas, div, fill, point, px, size,
 };
 use templum_canvas::{
@@ -268,6 +268,8 @@ pub struct Workspace {
     pub(crate) picker: Option<Picker>,
     /// The open right-click menu.
     pub(crate) menu: Option<menu::OpenMenu>,
+    /// The hand layer is drawn: Alt was held at the last frame.
+    hand: bool,
     /// The focused terminal's cursor blinks (painting reports it); and the blink phase.
     pub(crate) cursor_blinks: bool,
     pub(crate) blink_on: bool,
@@ -429,6 +431,7 @@ impl Workspace {
             resetting: Vec::new(),
             picker: None,
             menu: None,
+            hand: false,
             cursor_blinks: false,
             blink_on: true,
             _blink: blink,
@@ -812,6 +815,14 @@ impl Workspace {
             },
             cx,
         );
+    }
+
+    /// Starts moving the canvas with the pointer, wherever it is (the hand, the middle button).
+    pub(crate) fn begin_pan(&mut self, pos: PixelPoint<Pixels>) {
+        self.space.pristine = false;
+        self.drag = Some(Drag::Canvas(Gesture::pan(self.local(pos))));
+        // Not a click on the canvas: letting go keeps the focus where it is.
+        self.press = None;
     }
 
     /// A right-click on the empty canvas: its menu adds blocks there.
@@ -2032,6 +2043,15 @@ impl Workspace {
                         pill("Double-click").into_any_element(),
                         "Open one where you click",
                     ))
+                    .child(row(
+                        pill(if cfg!(target_os = "macos") {
+                            "Hold Option"
+                        } else {
+                            "Hold Alt"
+                        })
+                        .into_any_element(),
+                        "Move the canvas over blocks",
+                    ))
                     .child(row(keys(settings), "Settings")),
             )
             .test_support()
@@ -2429,7 +2449,13 @@ impl Render for Workspace {
                 window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
                     if phase == DispatchPhase::Bubble {
                         on_move.update(cx, |ws, cx| {
-                            if e.pressed_button == Some(MouseButton::Left) {
+                            // Alt let go while the window wasn't listening (another window had
+                            // the keyboard): the next move puts the hand right.
+                            if e.modifiers.alt != ws.hand {
+                                cx.notify();
+                            }
+                            // Any button: the middle one pans too.
+                            if e.pressed_button.is_some() {
                                 ws.drag_to(e.position, cx);
                             } else {
                                 ws.end_drag();
@@ -2439,8 +2465,12 @@ impl Render for Workspace {
                 });
                 let on_up = entity.clone();
                 window.on_mouse_event(move |e: &MouseUpEvent, phase, _, cx| {
-                    if phase == DispatchPhase::Bubble && e.button == MouseButton::Left {
-                        on_up.update(cx, |ws, cx| ws.release(e.position, cx));
+                    if phase == DispatchPhase::Bubble {
+                        on_up.update(cx, |ws, cx| match e.button {
+                            MouseButton::Left => ws.release(e.position, cx),
+                            MouseButton::Middle => ws.end_drag(),
+                            _ => {}
+                        });
                     }
                 });
             },
@@ -2448,6 +2478,9 @@ impl Render for Workspace {
         .absolute()
         .size_full();
 
+        let hand = window.modifiers().alt;
+        self.hand = hand;
+        let panning = matches!(self.drag, Some(Drag::Canvas(Gesture::Pan { .. })));
         let area = div()
             .id("workspace")
             .relative()
@@ -2460,10 +2493,43 @@ impl Render for Workspace {
                 MouseButton::Right,
                 cx.listener(Self::on_background_right_down),
             )
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(|ws, e: &MouseDownEvent, _, _| ws.begin_pan(e.position)),
+            )
             .on_scroll_wheel(cx.listener(Self::on_background_scroll))
             .on_pinch(cx.listener(Self::on_pinch))
             .child(layer)
             .children(blocks)
+            // The hand: while Alt is held, a layer over the blocks takes the pointer, and a drag
+            // or the wheel moves the canvas wherever it is.
+            .when(hand, |el| {
+                el.child(
+                    div()
+                        .id("hand")
+                        .absolute()
+                        .size_full()
+                        .map(|el| {
+                            if panning {
+                                el.cursor_grabbing()
+                            } else {
+                                el.cursor_grab()
+                            }
+                        })
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|ws, e: &MouseDownEvent, _, cx| {
+                                ws.begin_pan(e.position);
+                                cx.stop_propagation();
+                                cx.notify();
+                            }),
+                        )
+                        .on_scroll_wheel(cx.listener(Self::on_background_scroll))
+                        .on_pinch(cx.listener(Self::on_pinch))
+                        .test_support(),
+                )
+            })
             .when(self.space.canvas.blocks().is_empty(), |el| {
                 el.child(
                     div()
@@ -2489,6 +2555,8 @@ impl Render for Workspace {
             .map(|p| settings::render(self, p, now, vp.w, window, cx));
         div()
             .id("window")
+            // Alt held or let go: the hand comes or goes.
+            .on_modifiers_changed(cx.listener(|_, _: &ModifiersChangedEvent, _, cx| cx.notify()))
             .size_full()
             .flex()
             .flex_col()
@@ -2785,6 +2853,59 @@ mod tests {
             PlatformInput::MouseUp(MouseUpEvent {
                 button: MouseButton::Right,
                 position,
+                modifiers,
+                click_count: 1,
+            }),
+            cx,
+        );
+    }
+
+    /// Holds or lets go of the hand key (Alt).
+    fn hold_alt(window: &mut Window, cx: &mut gpui_kit::App, held: bool) {
+        window.dispatch_event(
+            PlatformInput::ModifiersChanged(gpui_kit::ModifiersChangedEvent {
+                modifiers: Modifiers {
+                    alt: held,
+                    ..Default::default()
+                },
+                capslock: Default::default(),
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+    }
+
+    fn press_with(
+        window: &mut Window,
+        cx: &mut gpui_kit::App,
+        button: MouseButton,
+        modifiers: Modifiers,
+        from: (f32, f32),
+        to: (f32, f32),
+    ) {
+        let at = |p: (f32, f32)| point(px(p.0), px(p.1));
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button,
+                position: at(from),
+                modifiers,
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: at(to),
+                pressed_button: Some(button),
+                modifiers,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button,
+                position: at(to),
                 modifiers,
                 click_count: 1,
             }),
@@ -5710,6 +5831,124 @@ mod tests {
         .unwrap();
         ws.read_with(cx, |ws, _| {
             assert_eq!(ws.space.canvas.camera.zoom(), 1.1, "Ctrl zooms")
+        });
+    }
+
+    #[gpui_kit::test]
+    fn holding_alt_moves_the_canvas_over_blocks(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        let alt = Modifiers {
+            alt: true,
+            ..Default::default()
+        };
+        let before = ws.read_with(cx, |ws, _| ws.space.canvas.camera.origin);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("hand").is_none(), "not without Alt");
+            hold_alt(window, cx, true);
+            assert!(
+                window.try_find("hand").is_some(),
+                "the hand covers the canvas"
+            );
+            // A drag over the terminal: the canvas moves, nothing in the terminal is selected.
+            let body = window.find(("body", id.0 as usize)).bounds().center();
+            let from = (f32::from(body.x), f32::from(body.y));
+            press_with(
+                window,
+                cx,
+                MouseButton::Left,
+                alt,
+                from,
+                (from.0 + 100.0, from.1 + 40.0),
+            );
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            let moved = ws.space.canvas.camera.origin;
+            assert_eq!((moved.x, moved.y), (before.x - 100.0, before.y - 40.0));
+            let term = ws.space.terminals[&id].term.shared();
+            assert!(term.selection_text().is_none(), "no selection");
+            assert!(ws.drag.is_none(), "the drag ended");
+        });
+        // The wheel over the terminal pans the canvas, not the terminal's history.
+        cx.update_window(handle, |_, window, cx| {
+            let body = window.find(("body", id.0 as usize)).bounds().center();
+            window.dispatch_event(
+                PlatformInput::ScrollWheel(ScrollWheelEvent {
+                    position: body,
+                    delta: ScrollDelta::Pixels(point(px(0.), px(-60.))),
+                    modifiers: alt,
+                    touch_phase: TouchPhase::Moved,
+                }),
+                cx,
+            );
+            hold_alt(window, cx, false);
+            assert!(window.try_find("hand").is_none(), "gone when Alt is let go");
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.canvas.camera.origin.y, before.y - 40.0 + 60.0);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn alt_let_go_elsewhere_is_noticed_at_the_next_move(cx: &mut TestAppContext) {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            hold_alt(window, cx, true);
+        })
+        .unwrap();
+        let redraw = Rc::new(Cell::new(false));
+        let seen = redraw.clone();
+        cx.update(|cx| cx.observe(&ws, move |_, _| seen.set(true)).detach());
+        // Let go while another window had the keyboard: only the next move says so, and the
+        // workspace redraws without its hand.
+        cx.update_window(handle, |_, window, cx| {
+            window.dispatch_event(
+                PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                    position: point(px(300.), px(300.)),
+                    pressed_button: None,
+                    modifiers: Modifiers::default(),
+                }),
+                cx,
+            );
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(redraw.get(), "the move asks for a frame");
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("hand").is_none());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_middle_drag_moves_the_canvas_anywhere(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        let before = ws.read_with(cx, |ws, _| ws.space.canvas.camera.origin);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let body = window.find(("body", id.0 as usize)).bounds().center();
+            let from = (f32::from(body.x), f32::from(body.y));
+            press_with(
+                window,
+                cx,
+                MouseButton::Middle,
+                Modifiers::default(),
+                from,
+                (from.0 - 50.0, from.1),
+            );
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.canvas.camera.origin.x, before.x + 50.0);
+            assert!(ws.drag.is_none());
         });
     }
 

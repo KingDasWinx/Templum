@@ -267,6 +267,14 @@ pub(crate) fn render(
                         cx.stop_propagation();
                     }),
                 )
+                // The middle button moves the canvas, over blocks too.
+                .on_mouse_down(
+                    MouseButton::Middle,
+                    cx.listener(|ws, e: &MouseDownEvent, _, cx| {
+                        ws.begin_pan(e.position);
+                        cx.stop_propagation();
+                    }),
+                )
                 // Its menu acts on it: it is focused first (copy, paste).
                 .on_mouse_down(
                     MouseButton::Right,

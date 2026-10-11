@@ -31,6 +31,8 @@ cargo run -p templum
 | Double-click empty canvas | New terminal there |
 | Drag a title bar / the bottom-right handle | Move / resize the block |
 | Drag empty canvas, or scroll over it | Pan |
+| Hold Alt (Option on macOS), then drag or scroll anywhere | Pan, even over blocks: they don't react while Alt is held |
+| Drag with the middle button, anywhere | Pan |
 | Scroll over a terminal | Scroll its history |
 | Ctrl+scroll, or pinch | Zoom |
 | Drag in a terminal (double-click: word, triple-click: line) | Select text |
