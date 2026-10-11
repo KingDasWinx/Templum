@@ -22,8 +22,8 @@ use gpui_kit::{
     TestSupportExt, UTF16Selection, Window, WindowAppearance, canvas, div, fill, point, px, size,
 };
 use templum_canvas::{
-    Block, BlockId, Camera, CameraFlight, Canvas, Gesture, Point, Rect, Size, chrome, dot_grid,
-    dot_size,
+    Block, BlockId, Camera, CameraFlight, Canvas, Gesture, Guide, Point, Rect, Size, chrome,
+    dot_grid, dot_size,
 };
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
@@ -162,6 +162,8 @@ pub(crate) struct Space {
     pub frozen: bool,
     /// The block under the pointer: it shows its close button and resize grip.
     pub hovered: Option<BlockId>,
+    /// The snaps in effect during a drag, drawn as lines; empty otherwise.
+    pub guides: Vec<Guide>,
     /// The camera drawn this frame: `canvas.camera` (where it is going), or a frame of `flight`.
     pub view: Camera,
     /// The view gliding to `canvas.camera`, since when.
@@ -654,6 +656,7 @@ impl Workspace {
         left.ghosts.clear();
         left.appearing.clear();
         left.hovered = None;
+        left.guides.clear();
         left.flight = None;
         left.view = left.canvas.camera;
         self.drag = None;
@@ -1942,6 +1945,7 @@ impl Workspace {
         match &mut self.drag {
             Some(Drag::Canvas(gesture)) => {
                 let update = gesture.update(&mut self.space.canvas, p);
+                self.space.guides = update.guides;
                 if let Some((id, rect)) = update.resized {
                     let (cols, rows) =
                         chrome::grid_size(chrome::content_rect(rect).size(), self.cell.size);
@@ -2088,6 +2092,7 @@ impl Workspace {
     fn end_drag(&mut self) {
         self.drag = None;
         self.press = None;
+        self.space.guides.clear();
     }
 
     /// Mouse up: a press on the empty canvas that didn't pan is a click, and leaves no terminal
@@ -2504,6 +2509,28 @@ fn paint_dots(camera: &Camera, color: Hsla, bounds: Bounds<Pixels>, window: &mut
     }
 }
 
+/// The snap guides: 1 px lines in the accent color, world units to screen.
+fn paint_guides(
+    camera: &Camera,
+    color: Hsla,
+    bounds: Bounds<Pixels>,
+    guides: &[Guide],
+    window: &mut Window,
+) {
+    for guide in guides {
+        let (a, b) = match *guide {
+            Guide::Vertical { x, y0, y1 } => (Point::new(x, y0), Point::new(x, y1)),
+            Guide::Horizontal { y, x0, x1 } => (Point::new(x0, y), Point::new(x1, y)),
+        };
+        let (a, b) = (camera.to_screen(a), camera.to_screen(b));
+        let rect = Bounds::new(
+            point(bounds.origin.x + px(a.x), bounds.origin.y + px(a.y)),
+            size(px((b.x - a.x).max(1.0)), px((b.y - a.y).max(1.0))),
+        );
+        window.paint_quad(fill(rect, color));
+    }
+}
+
 fn is_dark(appearance: WindowAppearance) -> bool {
     matches!(
         appearance,
@@ -2633,12 +2660,15 @@ impl Render for Workspace {
         let focus = self.focus_handle.clone();
         let camera = self.space.view;
         let dot = self.ui.dot;
+        let guides = self.space.guides.clone();
+        let accent = self.ui.accent;
         // A full-size layer under the blocks: the IME handler, the workspace origin, and
         // window-wide drag listeners (drags keep working outside the window).
         let layer = canvas(
             |_, _, _| {},
             move |bounds, _, window, cx| {
                 paint_dots(&camera, dot, bounds, window);
+                paint_guides(&camera, accent, bounds, &guides, window);
                 window.handle_input(&focus, ElementInputHandler::new(bounds, entity.clone()), cx);
                 entity.update(cx, |ws, _| ws.origin = bounds.origin);
                 let on_move = entity.clone();
@@ -3407,6 +3437,74 @@ mod tests {
         let after = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
         assert_eq!((after.x - before.x, after.y - before.y), (100.0, 50.0));
         assert_eq!((after.w, after.h), (before.w, before.h));
+    }
+
+    #[gpui_kit::test]
+    fn a_dragged_block_snaps_to_a_neighbour_and_shows_a_guide_until_release(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, ws) = open(cx);
+        let first = first_id(&ws, cx);
+        // A small second block over the first one's top, its horizontal lines (30, 80 and 130
+        // below the first's top) clear of the first's (0, half its height, its height).
+        let second = cx
+            .update_window(handle, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    let r = ws.space.canvas.get(first).unwrap().rect;
+                    ws.open(Rect::new(r.x + 300.0, r.y + 30.0, 200.0, 100.0), window, cx);
+                    ws.space.appearing.clear();
+                    ws.space.canvas.top().unwrap()
+                })
+            })
+            .unwrap();
+        let (first_rect, second_rect) = ws.read_with(cx, |ws, _| {
+            (
+                ws.space.canvas.get(first).unwrap().rect,
+                ws.space.canvas.get(second).unwrap().rect,
+            )
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let from = window.find(("title", second.0 as usize)).bounds().center();
+            // Left, so the second's left edge lands 5 px right of the first's: it snaps there.
+            let to = point(from.x + px(first_rect.x - second_rect.x + 5.0), from.y);
+            let modifiers = Modifiers::default();
+            window.dispatch_event(
+                PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: from,
+                    modifiers,
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                    position: to,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers,
+                }),
+                cx,
+            );
+            let ws_now = ws.read(cx);
+            assert_eq!(
+                ws_now.space.canvas.get(second).unwrap().rect.x,
+                first_rect.x
+            );
+            assert_eq!(ws_now.space.guides.len(), 1, "a vertical guide");
+            window.dispatch_event(
+                PlatformInput::MouseUp(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: to,
+                    modifiers,
+                    click_count: 1,
+                }),
+                cx,
+            );
+            assert!(ws.read(cx).space.guides.is_empty(), "gone on release");
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]
