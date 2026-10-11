@@ -44,6 +44,7 @@ use crate::sidebar;
 use crate::theme::{self, Entry, Theme, Ui};
 use crate::theme_picker::{self, Picker};
 use crate::title_bar;
+use crate::toolbar;
 
 pub(crate) const DEFAULT_COLS: u16 = 80;
 pub(crate) const DEFAULT_ROWS: u16 = 24;
@@ -264,6 +265,15 @@ impl Space {
     }
 }
 
+/// What the pointer does on the canvas. Block tools act at once and don't stay on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Tool {
+    #[default]
+    Select,
+    /// Pans with any drag or wheel, over blocks too, like holding Alt.
+    Hand,
+}
+
 /// Called at the start of every render; returning false removes it (the bench drives frames).
 pub(crate) type FrameHook =
     Box<dyn FnMut(&mut Workspace, &mut Window, &mut Context<Workspace>) -> bool>;
@@ -369,8 +379,10 @@ pub struct Workspace {
     pub(crate) picker: Option<Picker>,
     /// The open right-click menu.
     pub(crate) menu: Option<menu::OpenMenu>,
-    /// The hand layer is drawn: Alt was held at the last frame.
+    /// Alt was held at the last frame (the hand layer is drawn).
     hand: bool,
+    /// The toolbar's active tool.
+    pub(crate) tool: Tool,
     /// The focused terminal's cursor blinks (painting reports it); and the blink phase.
     pub(crate) cursor_blinks: bool,
     pub(crate) blink_on: bool,
@@ -548,6 +560,7 @@ impl Workspace {
             picker: None,
             menu: None,
             hand: false,
+            tool: Tool::default(),
             cursor_blinks: false,
             blink_on: true,
             _blink: blink,
@@ -981,6 +994,14 @@ impl Workspace {
             },
             cx,
         );
+    }
+
+    /// The toolbar's tool; the keyboard goes back to the canvas.
+    pub(crate) fn set_tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
+        self.tool = tool;
+        self.menu = None;
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
     }
 
     /// Starts moving the canvas with the pointer, wherever it is (the hand, the middle button).
@@ -2089,7 +2110,7 @@ impl Workspace {
         )
     }
 
-    fn center(&self, window: &Window) -> Point {
+    pub(crate) fn center(&self, window: &Window) -> Point {
         let vp = self.viewport(window);
         Point::new(vp.w / 2.0, vp.h / 2.0)
     }
@@ -2353,6 +2374,15 @@ impl Workspace {
         if self.picker.is_some() || command.is_some() {
             // While the picker is open, typing and shortcuts don't reach the terminal.
             self.command_key(e, command, window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        // Esc puts a tool that stays on back to Select.
+        if e.keystroke.key == "escape"
+            && !e.keystroke.modifiers.modified()
+            && self.tool != Tool::Select
+        {
+            self.set_tool(Tool::Select, window, cx);
             cx.stop_propagation();
             return;
         }
@@ -2779,8 +2809,8 @@ impl Render for Workspace {
         .absolute()
         .size_full();
 
-        let hand = window.modifiers().alt;
-        self.hand = hand;
+        self.hand = window.modifiers().alt;
+        let hand = self.hand || self.tool == Tool::Hand;
         let panning = matches!(self.drag, Some(Drag::Canvas(Gesture::Pan { .. })));
         let area = div()
             .id("workspace")
@@ -2841,7 +2871,8 @@ impl Render for Workspace {
                         .justify_center()
                         .child(self.hint()),
                 )
-            });
+            })
+            .child(toolbar::render(self, cx));
         let picker = self
             .picker
             .as_ref()
@@ -4028,7 +4059,7 @@ mod tests {
             window.render_frame(cx);
             window.click("zoom-level", cx);
             window.render_frame(cx);
-            window.click("new-terminal", cx);
+            window.click("tool-terminal", cx);
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {
@@ -6563,11 +6594,94 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn the_toolbar_adds_blocks_and_the_title_bar_lost_its_add_buttons(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find("toolbar");
+            assert!(
+                window.try_find("new-terminal").is_none(),
+                "no + in the title bar"
+            );
+            assert!(window.try_find("new-kanban").is_none());
+            window.click("tool-terminal", cx);
+            window.render_frame(cx);
+            window.click("tool-note", cx);
+            window.render_frame(cx);
+            window.click("tool-kanban", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.terminals().count(), 2);
+            let kinds =
+                |f: fn(&super::Body) -> bool| ws.space.blocks.values().filter(|b| f(b)).count();
+            assert_eq!(kinds(|b| b.note().is_some()), 1);
+            assert_eq!(kinds(|b| b.kanban().is_some()), 1);
+            assert_eq!(ws.tool, super::Tool::Select, "block tools don't stay on");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn the_hand_tool_pans_over_blocks_until_escape(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        let before = ws.read_with(cx, |ws, _| {
+            (
+                ws.space.canvas.camera.origin,
+                ws.space.canvas.get(id).unwrap().rect,
+            )
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-hand", cx);
+            window.render_frame(cx);
+            window.find("hand");
+            let from = window.find(("title", id.0 as usize)).bounds().center();
+            press_with(
+                window,
+                cx,
+                MouseButton::Left,
+                Modifiers::default(),
+                (f32::from(from.x), f32::from(from.y)),
+                (f32::from(from.x) + 40.0, f32::from(from.y) + 10.0),
+            );
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.tool, super::Tool::Hand);
+            assert_eq!(ws.space.canvas.get(id).unwrap().rect, before.1, "not moved");
+            assert_ne!(ws.space.canvas.camera.origin, before.0, "panned");
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.press("escape", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("hand").is_none(), "the layer is gone");
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.tool, super::Tool::Select));
+    }
+
+    #[gpui_kit::test]
+    fn the_toolbar_agent_button_lists_the_agents(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-agent", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.menu.is_some(), "the agents menu is open")
+        });
+    }
+
+    #[gpui_kit::test]
     fn the_board_button_opens_a_block_with_the_board_list(cx: &mut TestAppContext) {
         let (handle, ws) = open(cx);
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
-            window.click("new-kanban", cx);
+            window.click("tool-kanban", cx);
             window.render_frame(cx);
         })
         .unwrap();
