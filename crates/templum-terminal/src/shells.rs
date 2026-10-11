@@ -141,7 +141,13 @@ fn unix_shells(listed: &str, exists: impl Fn(&str) -> bool) -> Vec<ShellOption> 
         // Not shells to type into.
         if matches!(
             name,
-            "nologin" | "false" | "git-shell" | "rbash" | "tmux" | "screen"
+            "nologin"
+                | "false"
+                | "git-shell"
+                | "rbash"
+                | "tmux"
+                | "screen"
+                | "systemd-home-fallback-shell"
         ) || shells.iter().any(|s| s.label == name)
             || !exists(path)
         {
@@ -220,8 +226,10 @@ mod tests {
 
     #[test]
     fn unix_shells_come_from_etc_shells_once_each() {
+        // As Arch lists them, plus a few.
         let listed = "# /etc/shells\n/bin/sh\n/bin/bash\n/usr/bin/bash\n/usr/bin/zsh\n\
-                      /usr/bin/git-shell\n/usr/bin/nologin\n/usr/bin/fish\n/opt/gone/ksh\n";
+                      /usr/bin/git-shell\n/usr/bin/nologin\n/usr/bin/fish\n/opt/gone/ksh\n\
+                      /usr/bin/systemd-home-fallback-shell\n";
         let shells = unix_shells(listed, |p| p != "/opt/gone/ksh");
         assert_eq!(labels(&shells), ["sh", "bash", "zsh", "fish"]);
         assert_eq!(shells[1].program, "/bin/bash", "the first listed");

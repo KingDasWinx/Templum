@@ -34,7 +34,7 @@ Git for Windows' login profile doesn't change folder (its `/etc/profile`, checke
 in the terminal's folder, which agents opened in a project need.
 
 **Linux and macOS:** the shells `/etc/shells` lists that exist, once each by name, in its order, leaving out
-`nologin`, `false`, `git-shell`, `rbash`, `tmux` and `screen`.
+`nologin`, `false`, `git-shell`, `rbash`, `tmux`, `screen` and `systemd-home-fallback-shell`.
 
 ## Settings
 
