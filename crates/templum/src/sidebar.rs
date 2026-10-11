@@ -3,16 +3,15 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
-use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, ElementId, FontWeight, SharedString, TestSupportExt, Window,
-    div, px,
+    AnyElement, ClickEvent, Context, ElementId, FontWeight, MouseButton, MouseDownEvent,
+    SharedString, TestSupportExt, div, px,
 };
 
 use crate::grid::hsla;
-use crate::prompt;
+use crate::menu::Target;
 use crate::workspace::{Space, Workspace};
 
 /// The sidebar's width; the canvas gets the rest.
@@ -22,11 +21,10 @@ const TILE: f32 = 40.0;
 pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
     let ui = ws.ui;
     let order = ws.order();
-    let only_one = order.len() == 1;
     let tiles: Vec<AnyElement> = order
         .into_iter()
         .enumerate()
-        .map(|(i, space)| tile(ws, i, space, only_one, cx))
+        .map(|(i, space)| tile(ws, i, space, cx))
         .collect();
     let plus = div()
         .id("new-workspace")
@@ -66,13 +64,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
 }
 
 /// One workspace: its initials, an accent bar when active, a dot while an agent runs in it.
-fn tile(
-    ws: &Workspace,
-    i: usize,
-    space: &Space,
-    only_one: bool,
-    cx: &mut Context<Workspace>,
-) -> AnyElement {
+fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) -> AnyElement {
     let ui = ws.ui;
     let active = i == ws.active;
     let name = SharedString::from(space.name.clone());
@@ -125,39 +117,17 @@ fn tile(
                     .bg(hsla(ws.theme.palette.ansi[2], 1.0)),
             )
         })
-        .tooltip({
-            let name = name.clone();
-            move |window, cx| Tooltip::new(name.clone()).build(window, cx)
-        })
+        .tooltip(move |window, cx| Tooltip::new(name.clone()).build(window, cx))
         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| ws.switch_to(i, window, cx)))
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                ws.open_menu(Target::Space(id.clone()), e.position, window, cx);
+                cx.stop_propagation();
+            }),
+        )
         .test_support();
-    let entity = cx.entity();
-    // The menu sits on a wrapper: an element observed for tests can't carry one.
-    div()
-        .id(ElementId::Name(
-            format!("workspace-menu-{}", space.id).into(),
-        ))
-        .child(inner)
-        .context_menu(move |menu, _, _| {
-            let (rename, delete) = (entity.clone(), entity.clone());
-            let (rename_id, delete_id) = (id.clone(), id.clone());
-            let (rename_name, delete_name) = (name.clone(), name.clone());
-            menu.item(
-                PopupMenuItem::new("Rename…").on_click(move |_, window, cx| {
-                    rename.update(cx, |_, cx| {
-                        ask_rename(rename_id.clone(), rename_name.clone(), window, cx)
-                    })
-                }),
-            )
-            .item(PopupMenuItem::new("Delete…").disabled(only_one).on_click(
-                move |_, window, cx| {
-                    delete.update(cx, |_, cx| {
-                        ask_delete(delete_id.clone(), delete_name.clone(), window, cx)
-                    })
-                },
-            ))
-        })
-        .into_any_element()
+    inner.into_any_element()
 }
 
 /// "Side project" is "SP", "main" is "M".
@@ -169,34 +139,6 @@ pub(crate) fn initials(name: &str) -> String {
         .chain(first(words.next()))
         .flat_map(char::to_uppercase)
         .collect()
-}
-
-/// Enter or Rename applies the name; an empty one keeps the dialog open.
-fn ask_rename(id: String, name: SharedString, window: &mut Window, cx: &mut Context<Workspace>) {
-    let ws = cx.entity();
-    prompt::ask_text(
-        "Rename workspace",
-        "Rename",
-        name,
-        move |text, window, cx| {
-            ws.update(cx, |ws, cx| ws.rename_space(&id, &text, window, cx))
-                .is_ok()
-        },
-        window,
-        cx,
-    );
-}
-
-fn ask_delete(id: String, name: SharedString, window: &mut Window, cx: &mut Context<Workspace>) {
-    let ws = cx.entity();
-    prompt::confirm(
-        format!("Delete {name}?"),
-        "Its terminals will close.",
-        "Delete",
-        move |window, cx| ws.update(cx, |ws, cx| ws.delete_space(&id, window, cx)),
-        window,
-        cx,
-    );
 }
 
 #[cfg(test)]

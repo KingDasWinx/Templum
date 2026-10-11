@@ -34,6 +34,8 @@ cargo run -p templum
 | Scroll over a terminal | Scroll its history |
 | Ctrl+scroll, or pinch | Zoom |
 | Drag in a terminal (double-click: word, triple-click: line) | Select text |
+| Right-click empty canvas | Menu: **Add ▸** Terminal or Kanban board, where you clicked |
+| Right-click a block, card, column, board or workspace tile | Its menu (copy, paste, rename, delete, close…) |
 
 | Linux / Windows | macOS | Action |
 |---|---|---|

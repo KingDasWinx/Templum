@@ -5,18 +5,17 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::{Icon, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, Entity, FontWeight, Render,
-    ScrollWheelEvent, SharedString, TestSupportExt, Window, div, point, px,
+    AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, FontWeight, MouseButton,
+    MouseDownEvent, Render, ScrollWheelEvent, SharedString, TestSupportExt, Window, div, point, px,
 };
 use templum_canvas::{BlockId, Size};
 
 use crate::board::{Board, Card, Column, Label};
 use crate::grid::hsla;
-use crate::prompt;
+use crate::menu::Target;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
 
@@ -125,7 +124,6 @@ pub(crate) fn body(
 fn list_view(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) -> AnyElement {
     let ui = ws.ui;
     let n = block.0 as usize;
-    let entity = cx.entity();
     let rows: Vec<AnyElement> = ws
         .boards
         .boards
@@ -165,51 +163,15 @@ fn list_view(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>
                 .on_click(
                     cx.listener(move |ws, _: &ClickEvent, _, cx| ws.show_board(block, id, cx)),
                 )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                        ws.open_menu(Target::Board { block, board: id }, e.position, window, cx);
+                        cx.stop_propagation();
+                    }),
+                )
                 .test_support();
-            let (rename, delete) = (entity.clone(), entity.clone());
-            let board_name = SharedString::from(board.name.clone());
-            div()
-                .id(name("board-menu", n, id))
-                .child(row)
-                .context_menu(move |menu, _, _| {
-                    let (rename, delete, board_name) =
-                        (rename.clone(), delete.clone(), board_name.clone());
-                    let delete_name = board_name.clone();
-                    menu.item(
-                        PopupMenuItem::new("Rename…").on_click(move |_, window, cx| {
-                            let ws = rename.clone();
-                            rename.update(cx, |_, cx| {
-                                prompt::ask_text(
-                                    "Rename board",
-                                    "Rename",
-                                    board_name.clone(),
-                                    move |text, _, cx| rename_board(&ws, id, &text, cx),
-                                    window,
-                                    cx,
-                                )
-                            })
-                        }),
-                    )
-                    .item(
-                        PopupMenuItem::new("Delete…").on_click(move |_, window, cx| {
-                            let ws = delete.clone();
-                            let what = if cards == 1 {
-                                "Its card is deleted too.".to_string()
-                            } else {
-                                format!("Its {cards} cards are deleted too.")
-                            };
-                            prompt::confirm(
-                                format!("Delete {delete_name}?"),
-                                what,
-                                "Delete",
-                                move |_, cx| ws.update(cx, |ws, cx| ws.delete_board(id, cx)),
-                                window,
-                                cx,
-                            )
-                        }),
-                    )
-                })
-                .into_any_element()
+            row.into_any_element()
         })
         .collect();
     let new = div()
@@ -259,18 +221,6 @@ fn list_view(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>
         )
         .test_support()
         .into_any_element()
-}
-
-fn rename_board(ws: &Entity<Workspace>, board: u64, text: &str, cx: &mut App) -> bool {
-    let name = text.trim();
-    if name.is_empty() {
-        return false;
-    }
-    ws.update(cx, |ws, cx| {
-        ws.boards.rename_board(board, name);
-        cx.notify();
-    });
-    true
 }
 
 fn board_view(
@@ -338,7 +288,6 @@ fn column_view(
 ) -> AnyElement {
     let ui = ws.ui;
     let col = column.id;
-    let entity = cx.entity();
     let title = SharedString::from(column.title.clone());
     let preview_title = title.clone();
     let count = column.cards.len();
@@ -377,62 +326,14 @@ fn column_view(
                 ui,
             })
         })
-        .context_menu({
-            let entity = entity.clone();
-            move |menu, _, _| {
-                let (rename, delete, title) = (entity.clone(), entity.clone(), title.clone());
-                menu.item(
-                    PopupMenuItem::new("Rename…").on_click(move |_, window, cx| {
-                        let ws = rename.clone();
-                        rename.update(cx, |_, cx| {
-                            prompt::ask_text(
-                                "Rename column",
-                                "Rename",
-                                title.clone(),
-                                move |text, _, cx| {
-                                    let title = text.trim().to_string();
-                                    if title.is_empty() {
-                                        return false;
-                                    }
-                                    ws.update(cx, |ws, cx| {
-                                        ws.boards.rename_column(board, col, &title);
-                                        cx.notify();
-                                    });
-                                    true
-                                },
-                                window,
-                                cx,
-                            )
-                        })
-                    }),
-                )
-                .item(PopupMenuItem::new("Delete").on_click(move |_, window, cx| {
-                    let ws = delete.clone();
-                    let remove = move |_: &mut Window, cx: &mut App| {
-                        ws.update(cx, |ws, cx| {
-                            ws.boards.remove_column(board, col);
-                            cx.notify();
-                        })
-                    };
-                    if count == 0 {
-                        remove(window, cx);
-                    } else {
-                        prompt::confirm(
-                            "Delete this column?",
-                            if count == 1 {
-                                "Its card is deleted too.".to_string()
-                            } else {
-                                format!("Its {count} cards are deleted too.")
-                            },
-                            "Delete",
-                            remove,
-                            window,
-                            cx,
-                        );
-                    }
-                }))
-            }
-        });
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                let target = Target::Column { board, column: col };
+                ws.open_menu(target, e.position, window, cx);
+                cx.stop_propagation();
+            }),
+        );
     let cards: Vec<AnyElement> = column
         .cards
         .iter()
@@ -455,14 +356,9 @@ fn column_view(
         .active(move |s| s.bg(ui.pressed))
         .child(Icon::new(IconName::Plus).size(px(13.0 * z)))
         .child("Add a card")
-        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-            if let Some(card) = ws.boards.add_card(board, col)
-                && let Some(current) = ws.boards.card(board, card).cloned()
-            {
-                cx.notify();
-                open_card(board, current, true, window, cx);
-            }
-        }))
+        .on_click(
+            cx.listener(move |ws, _: &ClickEvent, window, cx| add_card(ws, board, col, window, cx)),
+        )
         .test_support();
     div()
         .id(name("column", n, col))
@@ -592,8 +488,31 @@ fn card_view(
                 open_card(board, current, false, window, cx)
             }
         }))
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                ws.open_menu(Target::Card { board, card: id }, e.position, window, cx);
+                cx.stop_propagation();
+            }),
+        )
         .test_support()
         .into_any_element()
+}
+
+/// "New card" at the end of `column`, opened with its title selected.
+pub(crate) fn add_card(
+    ws: &mut Workspace,
+    board: u64,
+    column: u64,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    if let Some(card) = ws.boards.add_card(board, column)
+        && let Some(current) = ws.boards.card(board, card).cloned()
+    {
+        cx.notify();
+        open_card(board, current, true, window, cx);
+    }
 }
 
 /// The open card: title, description and labels apply as they change. `new`: the title is

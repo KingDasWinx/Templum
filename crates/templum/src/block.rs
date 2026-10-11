@@ -17,6 +17,7 @@ use templum_canvas::{Block, Rect, chrome};
 
 use crate::grid;
 use crate::kanban::{self, Kanban};
+use crate::menu::Target;
 use crate::motion::{self, Look};
 use crate::workspace::{Pane, Workspace};
 
@@ -54,6 +55,10 @@ pub(crate) fn render(
         full.h * look.scale,
     );
     let focused = live && ws.space.focused == Some(id);
+    let target = match &content {
+        Content::Terminal(_) => Target::Terminal(id),
+        Content::Kanban(_) => Target::Kanban(id),
+    };
     let hovered = live && ws.space.hovered == Some(id);
     let ui = ws.ui;
     // 0 at rest, 1 hovered; eased both ways.
@@ -259,6 +264,15 @@ pub(crate) fn render(
                     MouseButton::Left,
                     cx.listener(move |ws, _: &MouseDownEvent, window, cx| {
                         ws.focus_block(id, window, cx);
+                        cx.stop_propagation();
+                    }),
+                )
+                // Its menu acts on it: it is focused first (copy, paste).
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                        ws.focus_block(id, window, cx);
+                        ws.open_menu(target.clone(), e.position, window, cx);
                         cx.stop_propagation();
                     }),
                 )

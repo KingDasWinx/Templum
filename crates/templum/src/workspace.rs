@@ -33,6 +33,7 @@ use crate::config::{self, Config, Edit, ThemeConfig, WorkingDirectory};
 use crate::grid::CellMetrics;
 use crate::kanban::{self, Kanban};
 use crate::keys::{self, Command, Keymap, Keys};
+use crate::menu;
 use crate::motion;
 use crate::session;
 use crate::settings::{self, Panel};
@@ -182,7 +183,7 @@ pub struct Workspace {
     drag: Option<Drag>,
     /// Where a press on the empty canvas started: released in place, it's a click.
     press: Option<Point>,
-    focus_handle: FocusHandle,
+    pub(crate) focus_handle: FocusHandle,
     /// Window position of the workspace's top-left: screen coordinates are relative to it.
     origin: PixelPoint<Pixels>,
     notify: Notify,
@@ -250,6 +251,8 @@ pub struct Workspace {
     resetting: Vec<Command>,
     /// The open theme picker.
     pub(crate) picker: Option<Picker>,
+    /// The open right-click menu.
+    pub(crate) menu: Option<menu::OpenMenu>,
     /// The focused terminal's cursor blinks (painting reports it); and the blink phase.
     pub(crate) cursor_blinks: bool,
     pub(crate) blink_on: bool,
@@ -409,6 +412,7 @@ impl Workspace {
             key_note: None,
             resetting: Vec::new(),
             picker: None,
+            menu: None,
             cursor_blinks: false,
             blink_on: true,
             _blink: blink,
@@ -526,6 +530,8 @@ impl Workspace {
         if to == self.active || to > self.others.len() {
             return;
         }
+        // A menu for something on the canvas left behind.
+        self.menu = None;
         let left = &mut self.space;
         // Their shells close now.
         left.ghosts.clear();
@@ -681,16 +687,49 @@ impl Workspace {
 
     /// A kanban block at the viewport's center, showing the board list.
     pub(crate) fn new_kanban(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.space.pristine = false;
         let center = self.space.canvas.camera.to_world(self.center(window));
         let size = kanban::SIZE;
-        let rect = self.space.canvas.place_new(
-            size,
-            Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
-        );
+        let at = self
+            .space
+            .canvas
+            .place_new(
+                size,
+                Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
+            )
+            .origin();
+        self.add_kanban_at(at, window, cx);
+    }
+
+    /// A kanban block showing the board list, its top-left corner at `at` (world units).
+    pub(crate) fn add_kanban_at(&mut self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
+        self.space.pristine = false;
+        let rect = Rect::new(at.x, at.y, kanban::SIZE.w, kanban::SIZE.h);
         self.add_kanban(rect, Kanban::default());
         window.focus(&self.focus_handle, cx);
         cx.notify();
+    }
+
+    /// A terminal of the default size, its top-left corner at `at` (world units).
+    pub(crate) fn add_terminal_at(
+        &mut self,
+        at: Point,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.space.pristine = false;
+        let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
+        self.open(Rect::new(at.x, at.y, size.w, size.h), window, cx);
+    }
+
+    /// A right-click on the empty canvas: its menu adds blocks there.
+    fn on_background_right_down(
+        &mut self,
+        e: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let at = self.space.canvas.camera.to_world(self.local(e.position));
+        self.open_menu(menu::Target::Canvas(at), e.position, window, cx);
     }
 
     /// The kanban block `block` shows `board`.
@@ -1627,7 +1666,7 @@ impl Workspace {
         self.drag = Some(Drag::Select(id));
     }
 
-    fn copy_selection(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn copy_selection(&mut self, cx: &mut Context<Self>) {
         let text = self
             .space
             .focused
@@ -1715,7 +1754,7 @@ impl Workspace {
         self.fly(to, self.center(window), cx);
     }
 
-    fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
@@ -1972,8 +2011,7 @@ impl Workspace {
         let p = self.local(e.position);
         if e.click_count == 2 {
             let at = self.space.canvas.camera.to_world(p);
-            let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
-            self.open(Rect::new(at.x, at.y, size.w, size.h), window, cx);
+            self.add_terminal_at(at, window, cx);
         } else {
             self.drag = Some(Drag::Canvas(Gesture::pan(p)));
             self.press = Some(p);
@@ -2303,6 +2341,10 @@ impl Render for Workspace {
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_background_down))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(Self::on_background_right_down),
+            )
             .on_scroll_wheel(cx.listener(Self::on_background_scroll))
             .on_pinch(cx.listener(Self::on_pinch))
             .child(layer)
@@ -2349,6 +2391,7 @@ impl Render for Workspace {
             )
             .children(panel)
             .children(picker)
+            .children(self.menu.as_ref().map(|m| menu::render(m, window)))
     }
 }
 
@@ -2597,6 +2640,30 @@ mod tests {
                 position,
                 modifiers,
                 click_count: count,
+            }),
+            cx,
+        );
+    }
+
+    fn right_click(window: &mut Window, cx: &mut gpui_kit::App, at: (f32, f32)) {
+        let position = point(px(at.0), px(at.1));
+        let modifiers = Modifiers::default();
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Right,
+                position,
+                modifiers,
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Right,
+                position,
+                modifiers,
+                click_count: 1,
             }),
             cx,
         );
@@ -5453,6 +5520,94 @@ mod tests {
         ws.read_with(cx, |ws, _| {
             assert_eq!(ws.space.canvas.camera.zoom(), 1.1, "Ctrl zooms")
         });
+    }
+
+    #[gpui_kit::test]
+    fn the_canvas_menu_adds_blocks_where_it_was_opened(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        // Left of the startup terminal, then right of it: empty canvas both times.
+        for (item, at) in [(0usize, (20.0, 600.0)), (1, (1100.0, 20.0))] {
+            let world = cx
+                .update_window(handle, |_, window, cx| {
+                    window.render_frame(cx);
+                    let o = ws.read(cx).origin;
+                    let at = (f32::from(o.x) + at.0, f32::from(o.y) + at.1);
+                    right_click(window, cx, at);
+                    window.render_frame(cx);
+                    assert!(ws.read(cx).menu.is_some(), "the menu opened");
+                    let ws = ws.read(cx);
+                    ws.space
+                        .canvas
+                        .camera
+                        .to_world(ws.local(point(px(at.0), px(at.1))))
+                })
+                .unwrap();
+            cx.update_window(handle, |_, window, cx| {
+                // Add ▸ Terminal or Kanban board.
+                window.within("popup-menu").click(0usize, cx);
+                window.render_frame(cx);
+                window
+                    .within("submenu")
+                    .within("popup-menu")
+                    .click(item, cx);
+                window.render_frame(cx);
+            })
+            .unwrap();
+            ws.read_with(cx, |ws, _| {
+                let top = ws.space.canvas.top().unwrap();
+                assert_eq!(ws.space.canvas.get(top).unwrap().rect.origin(), world);
+                assert_eq!(ws.space.kanbans.contains_key(&top), item == 1);
+                assert!(ws.menu.is_none(), "a choice closes it");
+            });
+        }
+    }
+
+    #[gpui_kit::test]
+    fn the_innermost_menu_opens_and_acts_on_what_was_clicked(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let terminal = first_id(&ws, cx);
+        let (block, board, card) = cx
+            .update_window(handle, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.add_kanban_at(Point::new(900.0, 0.0), window, cx);
+                    let block = ws.space.canvas.top().unwrap();
+                    ws.new_board(block, cx);
+                    let board = ws.space.kanbans[&block].board.unwrap();
+                    let todo = ws.boards.board(board).unwrap().columns[0].id;
+                    let card = ws.boards.add_card(board, todo).unwrap();
+                    ws.space.appearing.clear();
+                    (block, board, card)
+                })
+            })
+            .unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let card_el = gpui_kit::ElementId::Name(format!("card-{}-{card}", block.0).into());
+            window.right_click(card_el, cx);
+            window.render_frame(cx);
+            // Open, —, Delete card: the card's menu, not its block's (Board list, —, Close).
+            window.within("popup-menu").click(2usize, cx);
+            window.render_frame(cx);
+            let ws = ws.read(cx);
+            assert!(ws.boards.card(board, card).is_none(), "the card went");
+            assert!(ws.space.kanbans.contains_key(&block), "its block stayed");
+        })
+        .unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            window.right_click(("body", terminal.0 as usize), cx);
+            window.render_frame(cx);
+            // A second right-click replaces the menu.
+            window.right_click(("body", terminal.0 as usize), cx);
+            window.render_frame(cx);
+            // Copy, Paste, —, Close terminal.
+            window.within("popup-menu").click(3usize, cx);
+            window.render_frame(cx);
+            assert!(
+                !ws.read(cx).space.terminals.contains_key(&terminal),
+                "the terminal closed"
+            );
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]

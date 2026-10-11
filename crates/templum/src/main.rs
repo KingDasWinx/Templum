@@ -5,6 +5,7 @@ mod config;
 mod grid;
 mod kanban;
 mod keys;
+mod menu;
 mod motion;
 mod prompt;
 mod session;

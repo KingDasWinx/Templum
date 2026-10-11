@@ -47,7 +47,8 @@ Shown by a new block, by the ⇅ button, and when its board was deleted.
 
 - **Columns** sit side by side, 260 wide, and scroll sideways when they don't fit. Each has its title and its
   number of cards. **+ Add a column** after the last one adds "New column".
-  - **Right-click a column's title:** Rename… and Delete…. Deleting a column with cards asks first.
+  - **Right-click a column's title:** Rename…, Add a card and Delete. Deleting a column with cards asks first.
+    Every menu is listed in [context-menus.md](context-menus.md).
   - **Dragging a column's title** onto another column moves it to that column's place.
 - **Cards** stack in their column, which scrolls when they don't fit.
   - A card shows its labels as small colored bars, its title, and a line icon when it has a description.
