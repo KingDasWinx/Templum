@@ -36,16 +36,16 @@ pub(crate) fn render(
 ) -> AnyElement {
     let id = block.id;
     let n = id.0 as usize;
-    let z = ws.view.zoom() * look.scale;
-    let full = ws.view.rect_to_screen(block.rect);
+    let z = ws.space.view.zoom() * look.scale;
+    let full = ws.space.view.rect_to_screen(block.rect);
     let r = Rect::new(
         full.x + full.w * (1.0 - look.scale) / 2.0,
         full.y + full.h * (1.0 - look.scale) / 2.0,
         full.w * look.scale,
         full.h * look.scale,
     );
-    let focused = live && ws.focused == Some(id);
-    let hovered = live && ws.hovered == Some(id);
+    let focused = live && ws.space.focused == Some(id);
+    let hovered = live && ws.space.hovered == Some(id);
     let ui = ws.ui;
     // 0 at rest, 1 hovered; eased both ways.
     let lift = transition(

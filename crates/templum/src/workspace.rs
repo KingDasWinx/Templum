@@ -81,14 +81,37 @@ enum Drag {
     Select(BlockId),
 }
 
+/// One canvas and everything on it: its blocks, their terminals, the focus, and what is
+/// animating.
+#[derive(Default)]
+pub(crate) struct Space {
+    pub canvas: Canvas,
+    pub terminals: HashMap<BlockId, Pane>,
+    pub focused: Option<BlockId>,
+    /// True until the user first moves the camera or touches a block: meanwhile the startup
+    /// terminal stays centered, since tiling compositors resize the window after it opens.
+    pub pristine: bool,
+    /// The canvas as last read or written, to write only what changed.
+    pub saved: Option<session::Saved>,
+    /// The block under the pointer: it shows its close button and resize grip.
+    pub hovered: Option<BlockId>,
+    /// The camera drawn this frame: `canvas.camera` (where it is going), or a frame of `flight`.
+    pub view: Camera,
+    /// The view gliding to `canvas.camera`, since when.
+    pub flight: Option<(CameraFlight, Instant)>,
+    /// Blocks still popping in, since when.
+    pub appearing: HashMap<BlockId, Instant>,
+    /// Closed blocks still fading out.
+    pub ghosts: Vec<Ghost>,
+}
+
 /// Called at the start of every render; returning false removes it (the bench drives frames).
 pub(crate) type FrameHook =
     Box<dyn FnMut(&mut Workspace, &mut Window, &mut Context<Workspace>) -> bool>;
 
 pub struct Workspace {
-    pub(crate) canvas: Canvas,
-    pub(crate) terminals: HashMap<BlockId, Pane>,
-    pub(crate) focused: Option<BlockId>,
+    /// The workspace on screen.
+    pub(crate) space: Space,
     pub(crate) cell: CellMetrics,
     /// IME pre-edit text, drawn at the cursor until committed.
     pub(crate) marked: Option<String>,
@@ -106,15 +129,10 @@ pub struct Workspace {
     scroll_acc: f32,
     /// Program for new terminals instead of the login shell (tests).
     command: Option<(String, Vec<String>)>,
-    /// True until the user first moves the camera or touches a block: meanwhile the startup
-    /// terminal stays centered, since tiling compositors resize the window after it opens.
-    pub(crate) pristine: bool,
     /// Where config.toml and the themes folder live (None: defaults only, nothing saved).
     pub(crate) config_dir: Option<PathBuf>,
     /// Where the canvas is saved (None: it isn't kept).
     pub(crate) data_dir: Option<PathBuf>,
-    /// The canvas as last read or written, to write only what changed.
-    saved: Option<session::Saved>,
     /// Counts snapshots: a write older than the last one done is dropped (session::save).
     generation: u64,
     /// A background snapshot is reading or writing: the next waits for the next period.
@@ -168,18 +186,8 @@ pub struct Workspace {
     pub(crate) key_note: Option<String>,
     /// Shortcut resets asked for in this event ("Reset All" asks for several), decided together.
     resetting: Vec<Command>,
-    /// The block under the pointer: it shows its close button and resize grip.
-    pub(crate) hovered: Option<BlockId>,
-    /// The camera drawn this frame: `canvas.camera` (where it is going), or a frame of `flight`.
-    pub(crate) view: Camera,
-    /// The view gliding to `canvas.camera`, since when.
-    pub(crate) flight: Option<(CameraFlight, Instant)>,
     /// The open theme picker.
     pub(crate) picker: Option<Picker>,
-    /// Blocks still popping in, since when.
-    pub(crate) appearing: HashMap<BlockId, Instant>,
-    /// Closed blocks still fading out.
-    pub(crate) ghosts: Vec<Ghost>,
     /// The focused terminal's cursor blinks (painting reports it); and the blink phase.
     pub(crate) cursor_blinks: bool,
     pub(crate) blink_on: bool,
@@ -291,9 +299,10 @@ impl Workspace {
             }),
         ];
         let mut ws = Self {
-            canvas: Canvas::default(),
-            terminals: HashMap::new(),
-            focused: None,
+            space: Space {
+                pristine: true,
+                ..Space::default()
+            },
             cell,
             marked: None,
             ime_cursor: None,
@@ -306,10 +315,8 @@ impl Workspace {
             zoom_acc: 0.0,
             scroll_acc: 0.0,
             command,
-            pristine: true,
             config_dir,
             data_dir,
-            saved: None,
             generation: 0,
             snapshotting: false,
             canvas_save_failed: false,
@@ -335,12 +342,7 @@ impl Workspace {
             recording: None,
             key_note: None,
             resetting: Vec::new(),
-            hovered: None,
-            view: Camera::default(),
-            flight: None,
             picker: None,
-            appearing: HashMap::new(),
-            ghosts: Vec::new(),
             cursor_blinks: false,
             blink_on: true,
             _blink: blink,
@@ -413,16 +415,16 @@ impl Workspace {
         };
         let id = match Terminal::spawn(opts, self.notify.clone()) {
             Ok(term) => {
-                let id = self.canvas.add(rect);
-                self.terminals.insert(
+                let id = self.space.canvas.add(rect);
+                self.space.terminals.insert(
                     id,
                     Pane {
                         term,
                         snapshot: Rc::default(),
                     },
                 );
-                self.focused = Some(id);
-                self.appearing.insert(id, Instant::now());
+                self.space.focused = Some(id);
+                self.space.appearing.insert(id, Instant::now());
                 Some(id)
             }
             Err(err) => {
@@ -438,10 +440,10 @@ impl Workspace {
 
     /// Puts a saved canvas back: the camera, then each block back to front, each in its folder.
     fn restore(&mut self, saved: session::Saved, window: &mut Window, cx: &mut Context<Self>) {
-        self.pristine = false;
+        self.space.pristine = false;
         let c = saved.camera;
         if c.x.is_finite() && c.y.is_finite() {
-            self.canvas.camera = Camera::at(Point::new(c.x, c.y), c.zoom);
+            self.space.canvas.camera = Camera::at(Point::new(c.x, c.y), c.zoom);
         }
         let mut ids = Vec::new();
         let mut gone = Vec::new();
@@ -467,11 +469,11 @@ impl Workspace {
             // The shell reads it once it is ready.
             if let (Some(id), Some(agent), true) = (id, t.agent(), in_its_folder) {
                 let line = format!("{}\r", agent.resume_command());
-                self.terminals[&id].term.write(line.into_bytes());
+                self.space.terminals[&id].term.write(line.into_bytes());
             }
             ids.push(id);
         }
-        self.focused = saved.focused.and_then(|i| ids.get(i).copied().flatten());
+        self.space.focused = saved.focused.and_then(|i| ids.get(i).copied().flatten());
         if failed {
             // A shell setting with a typo: fixing it must bring the canvas back, so it isn't
             // written over with the blocks that couldn't start.
@@ -490,19 +492,20 @@ impl Workspace {
             eprintln!("templum: {message}");
             show_notification(window, cx, Notification::warning(message));
         }
-        self.saved = Some(saved);
+        self.space.saved = Some(saved);
     }
 
     /// The canvas as a snapshot needs it: rects and process ids, cheap on the UI thread.
     fn layout(&self) -> session::Layout {
-        let blocks = self.canvas.blocks();
+        let blocks = self.space.canvas.blocks();
         session::Layout {
-            camera: self.canvas.camera,
+            camera: self.space.canvas.camera,
             blocks: blocks
                 .iter()
-                .map(|b| (b.rect, self.terminals[&b.id].term.processes()))
+                .map(|b| (b.rect, self.space.terminals[&b.id].term.processes()))
                 .collect(),
             focused: self
+                .space
                 .focused
                 .and_then(|id| blocks.iter().position(|b| b.id == id)),
         }
@@ -519,7 +522,7 @@ impl Workspace {
         }
         self.snapshotting = true;
         self.generation += 1;
-        let (layout, generation, last) = (self.layout(), self.generation, self.saved.clone());
+        let (layout, generation, last) = (self.layout(), self.generation, self.space.saved.clone());
         cx.spawn_in(window, async move |ws, cx| {
             let done = cx
                 .background_executor()
@@ -553,7 +556,7 @@ impl Workspace {
                         Notification::info("The canvas is saved again".to_string()),
                     );
                 }
-                self.saved = Some(saved);
+                self.space.saved = Some(saved);
             }
             Some(Err(err)) => {
                 eprintln!("templum: couldn't save the canvas: {err}");
@@ -572,11 +575,11 @@ impl Workspace {
         };
         self.generation += 1;
         let saved = self.layout().snapshot();
-        if self.saved.as_ref() == Some(&saved) {
+        if self.space.saved.as_ref() == Some(&saved) {
             return;
         }
         match session::save(&dir, &saved, self.generation) {
-            Ok(()) => self.saved = Some(saved),
+            Ok(()) => self.space.saved = Some(saved),
             Err(err) => eprintln!("templum: couldn't save the canvas: {err}"),
         }
     }
@@ -600,21 +603,21 @@ impl Workspace {
     /// Removes a block and kills its shell (dropping the Terminal shuts it down).
     /// The block leaves the canvas at once; it stays on screen as a ghost while it fades out.
     pub(crate) fn close(&mut self, id: BlockId, cx: &mut Context<Self>) {
-        let block = self.canvas.get(id).copied();
-        self.canvas.remove(id);
-        self.appearing.remove(&id);
-        if let (Some(block), Some(pane)) = (block, self.terminals.remove(&id)) {
-            self.ghosts.push(Ghost {
+        let block = self.space.canvas.get(id).copied();
+        self.space.canvas.remove(id);
+        self.space.appearing.remove(&id);
+        if let (Some(block), Some(pane)) = (block, self.space.terminals.remove(&id)) {
+            self.space.ghosts.push(Ghost {
                 block,
                 pane,
                 since: Instant::now(),
             });
         }
-        if self.hovered == Some(id) {
-            self.hovered = None;
+        if self.space.hovered == Some(id) {
+            self.space.hovered = None;
         }
-        if self.focused == Some(id) {
-            self.focused = self.canvas.top();
+        if self.space.focused == Some(id) {
+            self.space.focused = self.space.canvas.top();
         }
         // A gesture on a block that's gone would do nothing anyway; end it.
         self.drag = None;
@@ -623,7 +626,7 @@ impl Workspace {
 
     /// Draws with `theme` from the next frame on, in every terminal and gpui-kit widget.
     pub(crate) fn apply(&mut self, theme: Rc<Theme>, cx: &mut Context<Self>) {
-        for pane in self.terminals.values() {
+        for pane in self.space.terminals.values() {
             pane.term.set_palette(theme.palette);
         }
         theme::apply_to_kit(&theme, cx);
@@ -714,7 +717,7 @@ impl Workspace {
         }
         if self.config.cursor != old.cursor || self.config.terminal != old.terminal {
             let options = self.config.term_options();
-            for pane in self.terminals.values() {
+            for pane in self.space.terminals.values() {
                 pane.term.shared().set_options(options);
             }
         }
@@ -803,8 +806,8 @@ impl Workspace {
             show_notification(window, cx, Notification::warning(warning));
         }
         self.cell = cell;
-        for (id, pane) in self.terminals.iter_mut() {
-            if let Some(block) = self.canvas.get(*id) {
+        for (id, pane) in self.space.terminals.iter_mut() {
+            if let Some(block) = self.space.canvas.get(*id) {
                 let content = chrome::content_rect(block.rect).size();
                 let (cols, rows) = chrome::grid_size(content, self.cell.size);
                 pane.term.resize(cols, rows, self.cell.px());
@@ -816,8 +819,9 @@ impl Workspace {
     fn start_dir(&self, window: &mut Window, cx: &mut App) -> Option<PathBuf> {
         match &self.config.shell.working_directory {
             WorkingDirectory::Inherit => self
+                .space
                 .focused
-                .and_then(|id| self.terminals.get(&id))
+                .and_then(|id| self.space.terminals.get(&id))
                 .and_then(|pane| pane.term.cwd()),
             WorkingDirectory::Home => None,
             WorkingDirectory::Path(path) if path.is_dir() => Some(path.clone()),
@@ -1103,9 +1107,9 @@ impl Workspace {
     }
 
     pub(crate) fn focus_block(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        self.pristine = false;
-        self.canvas.raise(id);
-        self.focused = Some(id);
+        self.space.pristine = false;
+        self.space.canvas.raise(id);
+        self.space.focused = Some(id);
         window.focus(&self.focus_handle, cx);
         cx.notify();
     }
@@ -1122,13 +1126,13 @@ impl Workspace {
     pub(crate) fn hover_block(&mut self, id: BlockId, hovered: bool, cx: &mut Context<Self>) {
         let next = if hovered {
             Some(id)
-        } else if self.hovered == Some(id) {
+        } else if self.space.hovered == Some(id) {
             None
         } else {
-            self.hovered
+            self.space.hovered
         };
-        if next != self.hovered {
-            self.hovered = next;
+        if next != self.space.hovered {
+            self.space.hovered = next;
             cx.notify();
         }
     }
@@ -1142,23 +1146,23 @@ impl Workspace {
 
     pub(crate) fn begin_move(&mut self, id: BlockId, pos: PixelPoint<Pixels>) {
         let p = self.local(pos);
-        self.drag = Gesture::move_block(&self.canvas, id, p).map(Drag::Canvas);
+        self.drag = Gesture::move_block(&self.space.canvas, id, p).map(Drag::Canvas);
     }
 
     pub(crate) fn begin_resize(&mut self, id: BlockId, pos: PixelPoint<Pixels>) {
         let p = self.local(pos);
         let min = chrome::min_block_size(self.cell.size);
-        self.drag = Gesture::resize_block(&self.canvas, id, p, min).map(Drag::Canvas);
+        self.drag = Gesture::resize_block(&self.space.canvas, id, p, min).map(Drag::Canvas);
     }
 
     fn drag_to(&mut self, pos: PixelPoint<Pixels>, cx: &mut Context<Self>) {
         let p = self.local(pos);
         match &mut self.drag {
             Some(Drag::Canvas(gesture)) => {
-                if let Some((id, rect)) = gesture.update(&mut self.canvas, p) {
+                if let Some((id, rect)) = gesture.update(&mut self.space.canvas, p) {
                     let (cols, rows) =
                         chrome::grid_size(chrome::content_rect(rect).size(), self.cell.size);
-                    if let Some(pane) = self.terminals.get_mut(&id) {
+                    if let Some(pane) = self.space.terminals.get_mut(&id) {
                         pane.term.resize(cols, rows, self.cell.px());
                     }
                 }
@@ -1166,7 +1170,7 @@ impl Workspace {
             Some(Drag::Select(id)) => {
                 let id = *id;
                 if let (Some((row, col, side)), Some(pane)) =
-                    (self.cell_under(id, pos), self.terminals.get(&id))
+                    (self.cell_under(id, pos), self.space.terminals.get(&id))
                 {
                     pane.term.shared().select_update(row, col, side);
                 }
@@ -1178,8 +1182,8 @@ impl Workspace {
 
     /// The terminal cell under a window position: (row, col, side), clamped by the terminal.
     fn cell_under(&self, id: BlockId, pos: PixelPoint<Pixels>) -> Option<(usize, usize, Side)> {
-        let block = self.canvas.get(id)?;
-        let world = self.canvas.camera.to_world(self.local(pos));
+        let block = self.space.canvas.get(id)?;
+        let world = self.space.canvas.camera.to_world(self.local(pos));
         let (row, col, right) = chrome::cell_at(block.rect, world, self.cell.size);
         let side = if right { Side::Right } else { Side::Left };
         Some((row, col, side))
@@ -1190,7 +1194,7 @@ impl Workspace {
         let Some((row, col, side)) = self.cell_under(id, e.position) else {
             return;
         };
-        let Some(pane) = self.terminals.get(&id) else {
+        let Some(pane) = self.space.terminals.get(&id) else {
             return;
         };
         let kind = match e.click_count {
@@ -1204,8 +1208,9 @@ impl Workspace {
 
     fn copy_selection(&mut self, cx: &mut Context<Self>) {
         let text = self
+            .space
             .focused
-            .and_then(|id| self.terminals.get(&id))
+            .and_then(|id| self.space.terminals.get(&id))
             .and_then(|pane| pane.term.shared().selection_text());
         if let Some(text) = text {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -1220,34 +1225,34 @@ impl Workspace {
     /// Moves the camera to `to`: the view glides there from where it is drawn, pivoting on the
     /// screen point `pivot`.
     fn fly(&mut self, to: Camera, pivot: Point, cx: &mut Context<Self>) {
-        self.pristine = false;
-        if to == self.canvas.camera {
+        self.space.pristine = false;
+        if to == self.space.canvas.camera {
             return;
         }
         // Mid-flight, from where it is drawn; otherwise the camera is what was last drawn (or
         // moved since, by a drag).
-        let from = if self.flight.is_some() {
-            self.view
+        let from = if self.space.flight.is_some() {
+            self.space.view
         } else {
-            self.canvas.camera
+            self.space.canvas.camera
         };
-        self.canvas.camera = to;
+        self.space.canvas.camera = to;
         let flight = CameraFlight { from, to, pivot };
-        self.flight = Some((flight, Instant::now()));
+        self.space.flight = Some((flight, Instant::now()));
         cx.notify();
     }
 
     /// `delta` zoom steps, keeping the world point under `anchor` (screen units) still.
     pub(crate) fn zoom_to(&mut self, delta: i32, anchor: Point, cx: &mut Context<Self>) {
-        let mut to = self.canvas.camera;
+        let mut to = self.space.canvas.camera;
         to.zoom_step(delta, anchor);
         self.fly(to, anchor, cx);
     }
 
     /// Pans the camera, and the flight under way with it, so the view doesn't jump.
     pub(crate) fn pan_by(&mut self, screen_delta: Point) {
-        self.canvas.camera.pan_by(screen_delta);
-        if let Some((flight, _)) = &mut self.flight {
+        self.space.canvas.camera.pan_by(screen_delta);
+        if let Some((flight, _)) = &mut self.space.flight {
             flight.pan_by(screen_delta);
         }
     }
@@ -1262,15 +1267,15 @@ impl Workspace {
 
     pub(crate) fn zoom_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let center = Self::center(window);
-        let mut to = self.canvas.camera;
+        let mut to = self.space.canvas.camera;
         to.zoom_reset(center);
         self.fly(to, center, cx);
     }
 
     fn fit_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let vp = viewport(window);
-        let mut to = self.canvas.camera;
-        match self.canvas.bounds() {
+        let mut to = self.space.canvas.camera;
+        match self.space.canvas.bounds() {
             Some(bounds) => to.fit(bounds, vp),
             None => to.zoom_reset(Point::new(vp.w / 2.0, vp.h / 2.0)),
         }
@@ -1281,7 +1286,11 @@ impl Workspace {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
-        if let Some(pane) = self.focused.and_then(|id| self.terminals.get(&id)) {
+        if let Some(pane) = self
+            .space
+            .focused
+            .and_then(|id| self.space.terminals.get(&id))
+        {
             pane.term.paste(&text);
         }
     }
@@ -1297,7 +1306,7 @@ impl Workspace {
         if let Some(start) = self.press {
             let p = self.local(pos);
             let moved = (p.x - start.x).abs().max((p.y - start.y).abs());
-            if moved < CLICK_SLOP && self.focused.take().is_some() {
+            if moved < CLICK_SLOP && self.space.focused.take().is_some() {
                 cx.notify();
             }
         }
@@ -1305,20 +1314,21 @@ impl Workspace {
     }
 
     pub(crate) fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.pristine = false;
+        self.space.pristine = false;
         let vp = viewport(window);
         let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
         let center = self
+            .space
             .canvas
             .camera
             .to_world(Point::new(vp.w / 2.0, vp.h / 2.0));
         let near = Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0);
-        let rect = self.canvas.place_new(size, near);
+        let rect = self.space.canvas.place_new(size, near);
         self.open(rect, window, cx);
     }
 
     fn close_terminal(&mut self, cx: &mut Context<Self>) {
-        if let Some(id) = self.focused {
+        if let Some(id) = self.space.focused {
             self.close(id, cx);
         }
     }
@@ -1452,7 +1462,11 @@ impl Workspace {
             cx.stop_propagation();
             return;
         }
-        let Some(pane) = self.focused.and_then(|id| self.terminals.get(&id)) else {
+        let Some(pane) = self
+            .space
+            .focused
+            .and_then(|id| self.space.terminals.get(&id))
+        else {
             return;
         };
         let k = &e.keystroke;
@@ -1509,10 +1523,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus_handle, cx);
-        self.pristine = false;
+        self.space.pristine = false;
         let p = self.local(e.position);
         if e.click_count == 2 {
-            let at = self.canvas.camera.to_world(p);
+            let at = self.space.canvas.camera.to_world(p);
             let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
             self.open(Rect::new(at.x, at.y, size.w, size.h), window, cx);
         } else {
@@ -1527,7 +1541,7 @@ impl Workspace {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.pristine = false;
+        self.space.pristine = false;
         let p = self.local(e.position);
         if e.modifiers.control {
             self.zoom_acc += match e.delta {
@@ -1547,7 +1561,7 @@ impl Workspace {
     }
 
     pub(crate) fn on_pinch(&mut self, e: &PinchEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.pristine = false;
+        self.space.pristine = false;
         self.zoom_acc += e.delta;
         if self.zoom_acc.abs() >= 0.15 {
             let p = self.local(e.position);
@@ -1568,12 +1582,12 @@ impl Workspace {
             return;
         }
         cx.stop_propagation();
-        let line = self.cell.size.h * self.canvas.camera.zoom();
+        let line = self.cell.size.h * self.space.canvas.camera.zoom();
         self.scroll_acc += f32::from(e.delta.pixel_delta(px(line)).y) / line;
         let lines = self.scroll_acc.trunc();
         self.scroll_acc -= lines;
         if lines != 0.0 {
-            if let Some(pane) = self.terminals.get(&id) {
+            if let Some(pane) = self.space.terminals.get(&id) {
                 pane.term.scroll(lines as i32);
             }
             cx.notify();
@@ -1700,6 +1714,7 @@ impl Render for Workspace {
         // The focused terminal's painting sets it again this frame, if its cursor blinks.
         self.cursor_blinks = false;
         let exited: Vec<BlockId> = self
+            .space
             .terminals
             .iter()
             .filter(|(_, pane)| pane.term.exited())
@@ -1709,25 +1724,27 @@ impl Render for Workspace {
             self.close(id, cx);
         }
         // Re-arm once per frame: output is coalesced to frame rate.
-        for pane in self.terminals.values() {
+        for pane in self.space.terminals.values() {
             pane.term.rearm();
         }
 
         let vp = viewport(window);
-        if self.pristine
-            && let Some(b) = self.canvas.bounds()
+        if self.space.pristine
+            && let Some(b) = self.space.canvas.bounds()
         {
-            let z = self.canvas.camera.zoom();
-            self.canvas.camera.origin = Point::new(
+            let z = self.space.canvas.camera.zoom();
+            self.space.canvas.camera.origin = Point::new(
                 b.x + b.w / 2.0 - vp.w / 2.0 / z,
                 b.y + b.h / 2.0 - vp.h / 2.0 / z,
             );
         }
         // Animations: drop the finished ones, and keep frames coming while any runs.
         let now = Instant::now();
-        self.appearing
+        self.space
+            .appearing
             .retain(|_, since| motion::progress(*since, now, motion::OPEN) < 1.0);
-        self.ghosts
+        self.space
+            .ghosts
             .retain(|g| motion::progress(g.since, now, motion::CLOSE) < 1.0);
         if let Some(panel) = &self.settings {
             let t = motion::progress(panel.since, now, motion::SLIDE);
@@ -1737,49 +1754,63 @@ impl Render for Workspace {
                 self.settings = None;
             }
         }
-        if !self.appearing.is_empty() || !self.ghosts.is_empty() {
+        if !self.space.appearing.is_empty() || !self.space.ghosts.is_empty() {
             window.request_animation_frame();
         }
         // The view glides to the camera. Anything that moved the camera itself (a drag, the
         // startup centering) ends the flight: the view is then the camera.
-        self.view = match self.flight {
-            Some((flight, since)) if flight.to == self.canvas.camera => {
+        self.space.view = match self.space.flight {
+            Some((flight, since)) if flight.to == self.space.canvas.camera => {
                 let t = motion::progress(since, now, motion::FLIGHT);
                 if t < 1.0 {
                     window.request_animation_frame();
                     flight.at(motion::slide(t))
                 } else {
-                    self.flight = None;
-                    self.canvas.camera
+                    self.space.flight = None;
+                    self.space.canvas.camera
                 }
             }
             _ => {
-                self.flight = None;
-                self.canvas.camera
+                self.space.flight = None;
+                self.space.canvas.camera
             }
         };
-        let visible: Vec<_> = self.canvas.visible_from(&self.view, vp).copied().collect();
+        let visible: Vec<_> = self
+            .space
+            .canvas
+            .visible_from(&self.space.view, vp)
+            .copied()
+            .collect();
         let mut blocks: Vec<_> = visible
             .into_iter()
             .map(|b| {
                 let look = self
+                    .space
                     .appearing
                     .get(&b.id)
                     .map_or(motion::Look::REST, |since| {
                         motion::opening(motion::progress(*since, now, motion::OPEN))
                     });
-                block::render(self, b, &self.terminals[&b.id], look, true, window, cx)
+                block::render(
+                    self,
+                    b,
+                    &self.space.terminals[&b.id],
+                    look,
+                    true,
+                    window,
+                    cx,
+                )
             })
             .collect();
         // Ghosts fade above the blocks, where they were.
-        blocks.extend(self.ghosts.iter().map(|g| {
+        blocks.extend(self.space.ghosts.iter().map(|g| {
             let look = motion::closing(motion::progress(g.since, now, motion::CLOSE));
             block::render(self, g.block, &g.pane, look, false, window, cx)
         }));
 
         let entity = cx.entity();
         let focus = self.focus_handle.clone();
-        let camera = self.view;
+        let camera = self.space.view;
         let dot = self.ui.dot;
         // A full-size layer under the blocks: the IME handler, the workspace origin, and
         // window-wide drag listeners (drags keep working outside the window).
@@ -1824,7 +1855,7 @@ impl Render for Workspace {
             .on_pinch(cx.listener(Self::on_pinch))
             .child(layer)
             .children(blocks)
-            .when(self.canvas.blocks().is_empty(), |el| {
+            .when(self.space.canvas.blocks().is_empty(), |el| {
                 el.child(
                     div()
                         .absolute()
@@ -1903,7 +1934,11 @@ impl EntityInputHandler for Workspace {
         cx: &mut Context<Self>,
     ) {
         self.marked = None;
-        if let Some(pane) = self.focused.and_then(|id| self.terminals.get(&id)) {
+        if let Some(pane) = self
+            .space
+            .focused
+            .and_then(|id| self.space.terminals.get(&id))
+        {
             pane.term.write(text.as_bytes().to_vec());
         }
         cx.notify();
@@ -2035,7 +2070,7 @@ mod tests {
         });
         // The startup block at rest: tests that measure elements must not depend on how far its
         // pop-in got (new_terminals_pop_in_then_settle checks the animation itself).
-        opened.1.update(cx, |ws, _| ws.appearing.clear());
+        opened.1.update(cx, |ws, _| ws.space.appearing.clear());
         opened
     }
 
@@ -2088,9 +2123,9 @@ mod tests {
     fn starts_with_one_focused_terminal(cx: &mut TestAppContext) {
         let (_, ws) = open(cx);
         ws.read_with(cx, |ws, _| {
-            assert_eq!(ws.canvas.blocks().len(), 1);
-            assert_eq!(ws.focused, ws.canvas.top());
-            assert_eq!(ws.terminals.len(), 1);
+            assert_eq!(ws.space.canvas.blocks().len(), 1);
+            assert_eq!(ws.space.focused, ws.space.canvas.top());
+            assert_eq!(ws.space.terminals.len(), 1);
         });
     }
 
@@ -2109,8 +2144,9 @@ mod tests {
                 f32::from(full.width - ws.origin.x),
                 f32::from(full.height - ws.origin.y),
             );
-            let b = ws.canvas.blocks()[0].rect;
+            let b = ws.space.canvas.blocks()[0].rect;
             let center = ws
+                .space
                 .canvas
                 .camera
                 .to_screen(templum_canvas::Point::new(b.x + b.w / 2.0, b.y + b.h / 2.0));
@@ -2131,10 +2167,14 @@ mod tests {
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {
-            assert_eq!(ws.canvas.blocks().len(), 2);
-            assert_eq!(ws.focused, ws.canvas.top(), "the new terminal is focused");
+            assert_eq!(ws.space.canvas.blocks().len(), 2);
+            assert_eq!(
+                ws.space.focused,
+                ws.space.canvas.top(),
+                "the new terminal is focused"
+            );
             // The startup block already sits at the viewport center: the new one cascades.
-            let [first, second] = ws.canvas.blocks() else {
+            let [first, second] = ws.space.canvas.blocks() else {
                 unreachable!()
             };
             assert_eq!(
@@ -2149,14 +2189,14 @@ mod tests {
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {
-            assert!(ws.canvas.blocks().is_empty());
-            assert!(ws.terminals.is_empty());
-            assert_eq!(ws.focused, None);
+            assert!(ws.space.canvas.blocks().is_empty());
+            assert!(ws.space.terminals.is_empty());
+            assert_eq!(ws.space.focused, None);
         });
     }
 
     fn first_id(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> templum_canvas::BlockId {
-        ws.read_with(cx, |ws, _| ws.canvas.top().unwrap())
+        ws.read_with(cx, |ws, _| ws.space.canvas.top().unwrap())
     }
 
     #[gpui_kit::test]
@@ -2172,8 +2212,8 @@ mod tests {
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {
-            assert_eq!(ws.canvas.blocks().len(), 2);
-            let new = ws.canvas.get(ws.canvas.top().unwrap()).unwrap();
+            assert_eq!(ws.space.canvas.blocks().len(), 2);
+            let new = ws.space.canvas.get(ws.space.canvas.top().unwrap()).unwrap();
             assert_eq!((new.rect.x, new.rect.y), (40.0, 40.0));
         });
     }
@@ -2189,21 +2229,21 @@ mod tests {
             window.click(("close", id.0 as usize), cx);
         })
         .unwrap();
-        ws.read_with(cx, |ws, _| assert!(ws.canvas.blocks().is_empty()));
+        ws.read_with(cx, |ws, _| assert!(ws.space.canvas.blocks().is_empty()));
     }
 
     #[gpui_kit::test]
     fn dragging_the_title_moves_the_block(cx: &mut TestAppContext) {
         let (handle, ws) = open(cx);
         let id = first_id(&ws, cx);
-        let before = ws.read_with(cx, |ws, _| ws.canvas.get(id).unwrap().rect);
+        let before = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             let from = window.find(("title", id.0 as usize)).bounds().center();
             window.drag(from, point(from.x + px(100.), from.y + px(50.)), cx);
         })
         .unwrap();
-        let after = ws.read_with(cx, |ws, _| ws.canvas.get(id).unwrap().rect);
+        let after = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
         assert_eq!((after.x - before.x, after.y - before.y), (100.0, 50.0));
         assert_eq!((after.w, after.h), (before.w, before.h));
     }
@@ -2212,8 +2252,9 @@ mod tests {
     fn dragging_the_handle_resizes_block_and_terminal(cx: &mut TestAppContext) {
         let (handle, ws) = open(cx);
         let id = first_id(&ws, cx);
-        let (before, cell) =
-            ws.read_with(cx, |ws, _| (ws.canvas.get(id).unwrap().rect, ws.cell.size));
+        let (before, cell) = ws.read_with(cx, |ws, _| {
+            (ws.space.canvas.get(id).unwrap().rect, ws.cell.size)
+        });
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             window.hover(("block", id.0 as usize), cx);
@@ -2224,13 +2265,13 @@ mod tests {
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {
-            let rect = ws.canvas.get(id).unwrap().rect;
+            let rect = ws.space.canvas.get(id).unwrap().rect;
             assert!(rect.w > before.w && rect.h > before.h);
             let expected = templum_canvas::chrome::grid_size(
                 templum_canvas::chrome::content_rect(rect).size(),
                 cell,
             );
-            assert_eq!(ws.terminals[&id].term.grid_size(), expected);
+            assert_eq!(ws.space.terminals[&id].term.grid_size(), expected);
             assert_eq!(
                 expected,
                 (super::DEFAULT_COLS + 10, super::DEFAULT_ROWS + 3)
@@ -2253,7 +2294,9 @@ mod tests {
             );
         })
         .unwrap();
-        ws.read_with(cx, |ws, _| assert_eq!(ws.canvas.camera.origin.y, -100.0));
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.canvas.camera.origin.y, -100.0)
+        });
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             let o = ws.read(cx).origin;
@@ -2266,7 +2309,7 @@ mod tests {
             );
         })
         .unwrap();
-        ws.read_with(cx, |ws, _| assert_eq!(ws.canvas.camera.zoom(), 1.1));
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 1.1));
     }
 
     #[cfg(target_os = "macos")]
@@ -2286,13 +2329,15 @@ mod tests {
         #[cfg(windows)]
         let input = "echo hello\r";
         ws.read_with(cx, |ws, _| {
-            ws.terminals[&id].term.write(input.as_bytes().to_vec())
+            ws.space.terminals[&id]
+                .term
+                .write(input.as_bytes().to_vec())
         });
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let shown = ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
                 snap.text()
             });
             if shown.contains("hello") {
@@ -2302,7 +2347,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         ws.read_with(cx, |ws, _| {
-            let pane = &ws.terminals[&id];
+            let pane = &ws.space.terminals[&id];
             let (cols, rows) = pane.term.grid_size();
             let term = pane.term.shared();
             term.select_start(0, 0, Side::Left, SelectionKind::Simple);
@@ -2332,7 +2377,7 @@ mod tests {
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {
-            assert_eq!(ws.focused, Some(id));
+            assert_eq!(ws.space.focused, Some(id));
             assert!(ws.drag.is_none(), "the selection drag ended on mouse up");
         });
     }
@@ -2363,13 +2408,13 @@ mod tests {
             window.press(ZOOM_IN, cx);
         })
         .unwrap();
-        ws.read_with(cx, |ws, _| assert_eq!(ws.canvas.camera.zoom(), 1.25));
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 1.25));
         cx.update_window(handle, |_, window, cx| {
             window.press(ZOOM_OUT, cx);
             window.press(ZOOM_RESET, cx);
         })
         .unwrap();
-        ws.read_with(cx, |ws, _| assert_eq!(ws.canvas.camera.zoom(), 1.0));
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 1.0));
     }
 
     #[gpui_kit::test]
@@ -2386,7 +2431,7 @@ mod tests {
             window.render_frame(cx);
             window.press(FIT, cx);
             let vp = super::viewport(window);
-            assert_eq!(ws.read(cx).canvas.visible(vp).count(), 2);
+            assert_eq!(ws.read(cx).space.canvas.visible(vp).count(), 2);
         })
         .unwrap();
     }
@@ -2428,16 +2473,24 @@ mod tests {
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {
-            assert_eq!(ws.canvas.camera.zoom(), 1.1, "the target is set at once");
-            assert!(ws.flight.is_some(), "the view glides");
-            assert!(ws.view.zoom() < 1.1, "drawn on the way: {}", ws.view.zoom());
+            assert_eq!(
+                ws.space.canvas.camera.zoom(),
+                1.1,
+                "the target is set at once"
+            );
+            assert!(ws.space.flight.is_some(), "the view glides");
+            assert!(
+                ws.space.view.zoom() < 1.1,
+                "drawn on the way: {}",
+                ws.space.view.zoom()
+            );
         });
         std::thread::sleep(crate::motion::FLIGHT + std::time::Duration::from_millis(50));
         cx.update_window(handle, |_, window, cx| window.render_frame(cx))
             .unwrap();
         ws.read_with(cx, |ws, _| {
-            assert!(ws.flight.is_none(), "landed");
-            assert_eq!(ws.view, ws.canvas.camera);
+            assert!(ws.space.flight.is_none(), "landed");
+            assert_eq!(ws.space.view, ws.space.canvas.camera);
         });
     }
 
@@ -2450,11 +2503,11 @@ mod tests {
         })
         .unwrap();
         ws.update(cx, |ws, _| {
-            let (before, _) = ws.flight.unwrap();
+            let (before, _) = ws.space.flight.unwrap();
             ws.pan_by(Point::new(30.0, 0.0));
-            let (after, _) = ws.flight.expect("still gliding");
+            let (after, _) = ws.space.flight.expect("still gliding");
             assert_eq!(
-                after.to, ws.canvas.camera,
+                after.to, ws.space.canvas.camera,
                 "the glide still lands on the camera"
             );
             let z = before.from.zoom();
@@ -2470,12 +2523,14 @@ mod tests {
             window.press(ZOOM_OUT, cx);
         })
         .unwrap();
-        ws.update(cx, |ws, _| ws.canvas.camera.pan_by(Point::new(5.0, 5.0)));
+        ws.update(cx, |ws, _| {
+            ws.space.canvas.camera.pan_by(Point::new(5.0, 5.0))
+        });
         cx.update_window(handle, |_, window, cx| window.render_frame(cx))
             .unwrap();
         ws.read_with(cx, |ws, _| {
-            assert!(ws.flight.is_none());
-            assert_eq!(ws.view, ws.canvas.camera);
+            assert!(ws.space.flight.is_none());
+            assert_eq!(ws.space.view, ws.space.canvas.camera);
         });
     }
 
@@ -2493,7 +2548,7 @@ mod tests {
             window.render_frame(cx);
             window.press(FIT, cx);
             window.render_frame(cx);
-            assert!(ws.read(cx).flight.is_some());
+            assert!(ws.read(cx).space.flight.is_some());
         })
         .unwrap();
         std::thread::sleep(crate::motion::FLIGHT + std::time::Duration::from_millis(50));
@@ -2501,7 +2556,7 @@ mod tests {
             window.render_frame(cx);
             let vp = super::viewport(window);
             let ws = ws.read(cx);
-            assert_eq!(ws.canvas.visible_from(&ws.view, vp).count(), 2);
+            assert_eq!(ws.space.canvas.visible_from(&ws.space.view, vp).count(), 2);
         })
         .unwrap();
     }
@@ -2522,12 +2577,14 @@ mod tests {
             window.press(key, cx);
         })
         .unwrap();
-        ws.read_with(cx, |ws, _| ws.terminals[&id].term.write(b"x\r".to_vec()));
+        ws.read_with(cx, |ws, _| {
+            ws.space.terminals[&id].term.write(b"x\r".to_vec())
+        });
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let shown = ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
                 snap.text()
             });
             if shown.contains('x') {
@@ -2570,7 +2627,7 @@ mod tests {
             );
         })
         .unwrap();
-        ws.read_with(cx, |ws, _| assert_eq!(ws.canvas.camera.zoom(), 1.1));
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 1.1));
     }
 
     #[gpui_kit::test]
@@ -2586,8 +2643,8 @@ mod tests {
         .unwrap();
         ws.read_with(cx, |ws, _| {
             assert_eq!(ws.theme.name, "Catppuccin Mocha");
-            assert_eq!(ws.terminals.len(), 2);
-            for pane in ws.terminals.values() {
+            assert_eq!(ws.space.terminals.len(), 2);
+            for pane in ws.space.terminals.values() {
                 assert_eq!(
                     pane.term.palette(),
                     ws.theme.palette,
@@ -2633,8 +2690,8 @@ mod tests {
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {
-            assert_eq!(ws.canvas.camera.zoom(), 1.0);
-            assert_eq!(ws.canvas.blocks().len(), 2);
+            assert_eq!(ws.space.canvas.camera.zoom(), 1.0);
+            assert_eq!(ws.space.canvas.blocks().len(), 2);
         });
     }
 
@@ -2645,7 +2702,7 @@ mod tests {
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             let focused = window.find(("body", id.0 as usize)).bounds();
-            ws.update(cx, |ws, _| ws.focused = None);
+            ws.update(cx, |ws, _| ws.space.focused = None);
             window.render_frame(cx);
             let unfocused = window.find(("body", id.0 as usize)).bounds();
             assert_eq!(focused, unfocused);
@@ -2733,7 +2790,7 @@ mod tests {
             assert_eq!(ws.theme.name, "Catppuccin Latte");
             assert!(ws.picker.is_none());
             assert_eq!(
-                ws.canvas.blocks().len(),
+                ws.space.canvas.blocks().len(),
                 1,
                 "the click didn't reach the canvas"
             );
@@ -2804,9 +2861,9 @@ mod tests {
             window.render_frame(cx);
             window.press(NEW, cx);
             let ws = ws.read(cx);
-            let new = ws.canvas.top().unwrap();
+            let new = ws.space.canvas.top().unwrap();
             assert!(
-                ws.appearing.contains_key(&new),
+                ws.space.appearing.contains_key(&new),
                 "the new block is animating"
             );
         })
@@ -2814,7 +2871,9 @@ mod tests {
         std::thread::sleep(crate::motion::OPEN + std::time::Duration::from_millis(50));
         cx.update_window(handle, |_, window, cx| window.render_frame(cx))
             .unwrap();
-        ws.read_with(cx, |ws, _| assert!(ws.appearing.is_empty(), "settled"));
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.space.appearing.is_empty(), "settled")
+        });
     }
 
     #[gpui_kit::test]
@@ -2827,7 +2886,7 @@ mod tests {
             window.render_frame(cx);
             // Checked right after the frame that drew it: the ghost lives 0.18 s, and a slow
             // machine may spend longer than that on the clicks below.
-            assert_eq!(ws.read(cx).ghosts.len(), 1);
+            assert_eq!(ws.read(cx).space.ghosts.len(), 1);
             // A double click where the ghost is reaches the canvas: a terminal opens there.
             let at = window.find(("ghost", n)).bounds().center();
             let at = (f32::from(at.x), f32::from(at.y));
@@ -2837,7 +2896,7 @@ mod tests {
         .unwrap();
         ws.read_with(cx, |ws, _| {
             assert_eq!(
-                ws.canvas.blocks().len(),
+                ws.space.canvas.blocks().len(),
                 1,
                 "the click went through the ghost"
             );
@@ -2845,7 +2904,9 @@ mod tests {
         std::thread::sleep(crate::motion::CLOSE + std::time::Duration::from_millis(50));
         cx.update_window(handle, |_, window, cx| window.render_frame(cx))
             .unwrap();
-        ws.read_with(cx, |ws, _| assert!(ws.ghosts.is_empty(), "faded away"));
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.space.ghosts.is_empty(), "faded away")
+        });
     }
 
     #[gpui_kit::test]
@@ -2887,21 +2948,21 @@ mod tests {
         let id = first_id(&ws, cx);
         let (rect, cell, grid) = ws.read_with(cx, |ws, _| {
             (
-                ws.canvas.get(id).unwrap().rect,
+                ws.space.canvas.get(id).unwrap().rect,
                 ws.cell.size,
-                ws.terminals[&id].term.grid_size(),
+                ws.space.terminals[&id].term.grid_size(),
             )
         });
         write_config(dir.path(), "[font]\nsize = 28\n");
         reload(handle, &ws, cx);
         ws.read_with(cx, |ws, _| {
             assert_eq!(
-                ws.canvas.get(id).unwrap().rect,
+                ws.space.canvas.get(id).unwrap().rect,
                 rect,
                 "the block keeps its rect"
             );
             assert!(ws.cell.size.w > cell.w);
-            let now = ws.terminals[&id].term.grid_size();
+            let now = ws.space.terminals[&id].term.grid_size();
             assert!(now.0 < grid.0 && now.1 < grid.1, "{now:?} vs {grid:?}");
         });
     }
@@ -2933,7 +2994,7 @@ mod tests {
         reload(handle, &ws, cx);
         ws.read_with(cx, |ws, _| {
             let mut snap = templum_terminal::Snapshot::default();
-            snap.refresh(ws.terminals[&id].term.shared(), &ws.theme.palette);
+            snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
             let c = snap.cursor.unwrap();
             assert_eq!(
                 (c.shape, c.blinking),
@@ -3006,10 +3067,10 @@ mod tests {
             window.press(NEW, cx);
         })
         .unwrap();
-        let new = ws.read_with(cx, |ws, _| ws.canvas.top().unwrap());
+        let new = ws.read_with(cx, |ws, _| ws.space.canvas.top().unwrap());
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            let cwd = ws.read_with(cx, |ws, _| ws.terminals[&new].term.cwd());
+            let cwd = ws.read_with(cx, |ws, _| ws.space.terminals[&new].term.cwd());
             if let Some(cwd) = cwd {
                 assert_eq!(cwd.canonicalize().unwrap(), start.canonicalize().unwrap());
                 break;
@@ -3062,12 +3123,16 @@ mod tests {
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {
-            assert_eq!(ws.canvas.blocks().len(), 1, "the old shortcut is gone")
+            assert_eq!(
+                ws.space.canvas.blocks().len(),
+                1,
+                "the old shortcut is gone"
+            )
         });
         cx.update_window(handle, |_, window, cx| window.press("ctrl-alt-n", cx))
             .unwrap();
         ws.read_with(cx, |ws, _| {
-            assert_eq!(ws.canvas.blocks().len(), 2, "the new one works")
+            assert_eq!(ws.space.canvas.blocks().len(), 2, "the new one works")
         });
     }
 
@@ -3084,7 +3149,7 @@ mod tests {
         ws.read_with(cx, |ws, _| {
             assert!(ws.picker.is_some());
             assert_eq!(
-                ws.canvas.blocks().len(),
+                ws.space.canvas.blocks().len(),
                 1,
                 "no new terminal under the picker"
             );
@@ -3125,7 +3190,7 @@ mod tests {
             );
         })
         .unwrap();
-        ws.read_with(cx, |ws, _| assert_eq!(ws.focused, None));
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.focused, None));
     }
 
     #[gpui_kit::test]
@@ -3135,7 +3200,7 @@ mod tests {
         let before = cx
             .update_window(handle, |_, window, cx| {
                 window.render_frame(cx);
-                ws.read(cx).canvas.camera.origin
+                ws.read(cx).space.canvas.camera.origin
             })
             .unwrap();
         cx.update_window(handle, |_, window, cx| {
@@ -3145,8 +3210,8 @@ mod tests {
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {
-            assert_eq!(ws.focused, Some(id));
-            let after = ws.canvas.camera.origin;
+            assert_eq!(ws.space.focused, Some(id));
+            let after = ws.space.canvas.camera.origin;
             assert_eq!(
                 (before.x - after.x, before.y - after.y),
                 (100.0, 50.0),
@@ -3467,8 +3532,8 @@ mod tests {
         cx.update_window(handle, |_, window, cx| {
             let (o, r) = {
                 let ws = ws.read(cx);
-                let rect = ws.canvas.get(id).unwrap().rect;
-                (ws.origin, ws.canvas.camera.rect_to_screen(rect))
+                let rect = ws.space.canvas.get(id).unwrap().rect;
+                (ws.origin, ws.space.canvas.camera.rect_to_screen(rect))
             };
             let at = (
                 f32::from(o.x) + r.x + 20.0,
@@ -3481,7 +3546,7 @@ mod tests {
             assert!(focused, "keys go to the terminal");
         })
         .unwrap();
-        ws.read_with(cx, |ws, _| assert_eq!(ws.focused, Some(id)));
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.focused, Some(id)));
         assert!(panel_open(&ws, cx), "Esc went to the terminal");
     }
 
@@ -3944,7 +4009,7 @@ mod tests {
                 ws.key_note.as_deref(),
                 Some(format!("{shortcut} is already New terminal").as_str())
             );
-            assert_eq!(ws.canvas.blocks().len(), 1, "no shortcut ran");
+            assert_eq!(ws.space.canvas.blocks().len(), 1, "no shortcut ran");
             assert!(ws.config.keys.copy.is_none(), "nothing changed");
         });
     }
@@ -4082,12 +4147,12 @@ mod tests {
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {
-            assert_eq!(ws.canvas.blocks().len(), 1, "close didn't run");
-            assert!(ws.canvas.camera.zoom() > 1.0, "zoom did");
+            assert_eq!(ws.space.canvas.blocks().len(), 1, "close didn't run");
+            assert!(ws.space.canvas.camera.zoom() > 1.0, "zoom did");
         });
         cx.update_window(handle, |_, window, cx| window.press(NEW, cx))
             .unwrap();
-        ws.read_with(cx, |ws, _| assert_eq!(ws.canvas.blocks().len(), 2));
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.blocks().len(), 2));
         assert!(panel_open(&ws, cx));
     }
 
@@ -4176,8 +4241,8 @@ mod tests {
         cx.update_window(handle, |_, window, cx| {
             let (o, r) = {
                 let ws = ws.read(cx);
-                let rect = ws.canvas.get(id).unwrap().rect;
-                (ws.origin, ws.canvas.camera.rect_to_screen(rect))
+                let rect = ws.space.canvas.get(id).unwrap().rect;
+                (ws.origin, ws.space.canvas.camera.rect_to_screen(rect))
             };
             let at = (
                 f32::from(o.x) + r.x + 20.0,
@@ -4317,7 +4382,7 @@ mod tests {
         use std::time::{Duration, Instant};
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            if let Some(cwd) = ws.read_with(cx, |ws, _| ws.terminals[&id].term.cwd()) {
+            if let Some(cwd) = ws.read_with(cx, |ws, _| ws.space.terminals[&id].term.cwd()) {
                 return cwd.canonicalize().unwrap();
             }
             assert!(Instant::now() < deadline, "no cwd");
@@ -4343,12 +4408,12 @@ mod tests {
         );
         let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
         let (ids, rects, camera, focused) = ws.read_with(cx, |ws, _| {
-            let blocks = ws.canvas.blocks();
+            let blocks = ws.space.canvas.blocks();
             (
                 blocks.iter().map(|b| b.id).collect::<Vec<_>>(),
                 blocks.iter().map(|b| b.rect).collect::<Vec<_>>(),
-                ws.canvas.camera,
-                ws.focused,
+                ws.space.canvas.camera,
+                ws.space.focused,
             )
         });
         assert_eq!(
@@ -4374,8 +4439,8 @@ mod tests {
         );
         let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
         ws.read_with(cx, |ws, _| {
-            assert!(ws.canvas.blocks().is_empty());
-            assert_eq!(ws.focused, None);
+            assert!(ws.space.canvas.blocks().is_empty());
+            assert_eq!(ws.space.focused, None);
         });
     }
 
@@ -4411,7 +4476,7 @@ mod tests {
         let bak = crate::session::path(data.path()).with_extension("json.bak");
         assert_eq!(std::fs::read_to_string(bak).unwrap(), "{nope");
         ws.read_with(cx, |ws, _| {
-            assert_eq!(ws.canvas.blocks().len(), 1, "as on a first run")
+            assert_eq!(ws.space.canvas.blocks().len(), 1, "as on a first run")
         });
     }
 
@@ -4426,14 +4491,14 @@ mod tests {
         );
         let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
         ws.read_with(cx, |ws, _| {
-            let blocks = ws.canvas.blocks();
+            let blocks = ws.space.canvas.blocks();
             assert_eq!(blocks.len(), 1, "the infinite one is skipped");
             let min = chrome::min_block_size(ws.cell.size);
             let max = chrome::block_size(MAX_COLS, MAX_ROWS, ws.cell.size);
             assert_eq!(blocks[0].rect, Rect::new(10.0, 10.0, min.w, max.h));
-            assert_eq!(ws.focused, None, "index 7 doesn't exist");
+            assert_eq!(ws.space.focused, None, "index 7 doesn't exist");
             assert_eq!(
-                ws.canvas.camera,
+                ws.space.canvas.camera,
                 Camera::default(),
                 "an infinite camera isn't used"
             );
@@ -4455,7 +4520,7 @@ mod tests {
         assert_eq!(notification_count(handle, cx), 1);
         ws.read_with(cx, |ws, _| {
             assert_eq!(ws.data_dir, None, "this session won't be saved");
-            assert_eq!(ws.canvas.blocks().len(), 1, "as on a first run");
+            assert_eq!(ws.space.canvas.blocks().len(), 1, "as on a first run");
         });
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
@@ -4473,29 +4538,29 @@ mod tests {
         cx.update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, cx| {
                 ws.open(Rect::new(900.0, 40.0, 600.0, 400.0), window, cx);
-                let first = ws.canvas.blocks()[0].id;
-                ws.canvas.get_mut(first).unwrap().rect = Rect::new(-50.0, 60.0, 700.0, 450.0);
+                let first = ws.space.canvas.blocks()[0].id;
+                ws.space.canvas.get_mut(first).unwrap().rect = Rect::new(-50.0, 60.0, 700.0, 450.0);
                 ws.focus_block(first, window, cx);
-                ws.canvas.camera = Camera::at(Point::new(-40.0, 25.0), 1.25);
+                ws.space.canvas.camera = Camera::at(Point::new(-40.0, 25.0), 1.25);
                 ws.save_canvas_now();
             })
         })
         .unwrap();
         let before = ws.read_with(cx, |ws, _| {
-            let blocks = ws.canvas.blocks();
-            let focused = blocks.iter().position(|b| Some(b.id) == ws.focused);
+            let blocks = ws.space.canvas.blocks();
+            let focused = blocks.iter().position(|b| Some(b.id) == ws.space.focused);
             (blocks.iter().map(|b| b.rect).collect::<Vec<_>>(), focused)
         });
         let (_, again) = open_in(cx, None, Some(data.path().to_path_buf()));
         again.read_with(cx, |ws, _| {
-            let blocks = ws.canvas.blocks();
+            let blocks = ws.space.canvas.blocks();
             assert_eq!(blocks.iter().map(|b| b.rect).collect::<Vec<_>>(), before.0);
             assert_eq!(
-                blocks.iter().position(|b| Some(b.id) == ws.focused),
+                blocks.iter().position(|b| Some(b.id) == ws.space.focused),
                 before.1
             );
-            assert_eq!(ws.canvas.camera.origin, Point::new(-40.0, 25.0));
-            assert_eq!(ws.canvas.camera.zoom(), 1.25);
+            assert_eq!(ws.space.canvas.camera.origin, Point::new(-40.0, 25.0));
+            assert_eq!(ws.space.canvas.camera.zoom(), 1.25);
         });
     }
 
@@ -4509,7 +4574,9 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         tick(cx);
         assert!(!path.exists(), "nothing changed: nothing written");
-        ws.update(cx, |ws, _| ws.canvas.camera.pan_by(Point::new(30.0, 0.0)));
+        ws.update(cx, |ws, _| {
+            ws.space.canvas.camera.pan_by(Point::new(30.0, 0.0))
+        });
         tick(cx);
         assert!(path.exists(), "a pan is a change");
     }
@@ -4522,7 +4589,9 @@ mod tests {
         let blocker = data.path().join("workspaces");
         std::fs::write(&blocker, "").unwrap();
         let pan = |cx: &mut TestAppContext| {
-            ws.update(cx, |ws, _| ws.canvas.camera.pan_by(Point::new(10.0, 0.0)))
+            ws.update(cx, |ws, _| {
+                ws.space.canvas.camera.pan_by(Point::new(10.0, 0.0))
+            })
         };
         pan(cx);
         tick(cx);
@@ -4544,8 +4613,8 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
         ws.update(cx, |ws, _| {
-            let first = ws.canvas.blocks()[0].id;
-            ws.canvas.get_mut(first).unwrap().rect = Rect::new(-500.0, 0.0, 700.0, 450.0);
+            let first = ws.space.canvas.blocks()[0].id;
+            ws.space.canvas.get_mut(first).unwrap().rect = Rect::new(-500.0, 0.0, 700.0, 450.0);
         });
         // The test's handle would keep the workspace alive.
         drop(ws);
@@ -4560,7 +4629,7 @@ mod tests {
     fn without_a_data_folder_nothing_is_kept(cx: &mut TestAppContext) {
         let (_, ws) = open(cx);
         tick(cx);
-        ws.read_with(cx, |ws, _| assert_eq!(ws.saved, None));
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.saved, None));
     }
 
     #[gpui_kit::test]
@@ -4573,7 +4642,7 @@ mod tests {
         let broken = Some(("/nonexistent/templum-shell".to_string(), Vec::new()));
         let (_, ws) = open_as(cx, broken, None, Some(data.path().to_path_buf()));
         tick(cx);
-        ws.read_with(cx, |ws, _| assert!(ws.canvas.blocks().is_empty()));
+        ws.read_with(cx, |ws, _| assert!(ws.space.canvas.blocks().is_empty()));
         assert_eq!(
             std::fs::read_to_string(crate::session::path(data.path())).unwrap(),
             text,
@@ -4602,7 +4671,7 @@ mod tests {
         loop {
             let shown = ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
                 snap.text()
             });
             if shown.contains("claude --continue") {
@@ -4632,12 +4701,12 @@ mod tests {
         );
         let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
         let ids: Vec<BlockId> = ws.read_with(cx, |ws, _| {
-            ws.canvas.blocks().iter().map(|b| b.id).collect()
+            ws.space.canvas.blocks().iter().map(|b| b.id).collect()
         });
         let shown = |id: BlockId, cx: &mut TestAppContext| {
             ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
                 snap.text()
             })
         };

@@ -27,16 +27,16 @@ pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut App) 
         let idle_rss = rss_mb();
         let _ = cx.update_window(window, |_, _, cx| {
             ws.update(cx, |ws, cx| {
-                for pane in ws.terminals.values().take(5) {
+                for pane in ws.space.terminals.values().take(5) {
                     pane.term.write(&b"yes\r"[..]);
                 }
                 let center = ws
-                    .canvas
+                    .space.canvas
                     .bounds()
                     .map(|b| Point::new(b.x + b.w / 2.0, b.y + b.h / 2.0))
                     .unwrap_or_default();
                 // The bench drives the camera: stop keeping the startup terminal centered.
-                ws.pristine = false;
+                ws.space.pristine = false;
                 let start = Instant::now();
                 let mut last: Option<Instant> = None;
                 let mut intervals: Vec<f64> = Vec::new();
@@ -70,11 +70,11 @@ pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut App) 
                     let k = (t / 0.25) as usize % (2 * (n - 1));
                     let target = if k < n { k } else { 2 * (n - 1) - k };
                     // Through the workspace, as the keys and the wheel do: zoom steps glide.
-                    let step = target as i32 - ws.canvas.camera.zoom_index() as i32;
+                    let step = target as i32 - ws.space.canvas.camera.zoom_index() as i32;
                     if step != 0 {
                         ws.zoom_to(step, Point::default(), cx);
                     }
-                    let cam = ws.canvas.camera;
+                    let cam = ws.space.canvas.camera;
                     let z = cam.zoom();
                     let a = t * std::f32::consts::TAU / 4.0;
                     let vp = window.viewport_size();

@@ -14,7 +14,7 @@ use crate::workspace::Workspace;
 
 pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
     let ui = ws.ui;
-    let zoom = format!("{}%", (ws.canvas.camera.zoom() * 100.0).round());
+    let zoom = format!("{}%", (ws.space.canvas.camera.zoom() * 100.0).round());
     TitleBar::new()
         .bg(transparent_black())
         .border_color(ui.hairline)
