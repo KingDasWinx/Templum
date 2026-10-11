@@ -932,13 +932,18 @@ impl Workspace {
         self.settings = Some(match &self.settings {
             // Still sliding out: it turns back from where it is.
             Some(closing) => closing.reversed(now),
-            None => Panel {
-                since: now,
-                closing: false,
-            },
+            None => Panel::new(now),
         });
         window.focus(&self.settings_focus, cx);
         cx.notify();
+    }
+
+    /// Shows another section of the settings panel.
+    pub(crate) fn set_section(&mut self, section: settings::Section, cx: &mut Context<Self>) {
+        if let Some(panel) = &mut self.settings {
+            panel.section = section;
+            cx.notify();
+        }
     }
 
     /// Slides the panel out, saves what's pending, and gives the keyboard back to the terminals.
@@ -1385,7 +1390,7 @@ impl Workspace {
     /// effect.
     fn hint(&self) -> impl IntoElement {
         let ui = self.ui;
-        let pill = move |text: &'static str| chip(div(), ui).child(text);
+        let pill = move |text: &'static str| settings::chip(div(), ui).child(text);
         let row = |keys: AnyElement, label: &'static str| {
             div()
                 .flex()
@@ -1398,7 +1403,7 @@ impl Workspace {
         };
         let [new, settings] = hint_keys(&self.keymap);
         let keys = |stroke: Option<Keystroke>| match stroke {
-            Some(stroke) => chip(Kbd::new(stroke), ui).into_any_element(),
+            Some(stroke) => settings::chip(Kbd::new(stroke), ui).into_any_element(),
             None => pill("No shortcut").into_any_element(),
         };
         div()
@@ -1616,18 +1621,6 @@ fn show_notification(window: &mut Window, cx: &mut App, notification: Notificati
     window.defer(cx, move |window, cx| {
         window.push_notification(notification, cx)
     });
-}
-
-/// A key or a word in a small outlined pill (the empty-canvas hint).
-fn chip<E: Styled>(el: E, ui: Ui) -> E {
-    el.px(px(6.0))
-        .py(px(2.0))
-        .rounded(px(6.0))
-        .border_1()
-        .border_color(ui.hairline)
-        .bg(ui.card)
-        .text_color(ui.title)
-        .text_size(px(11.0))
 }
 
 /// The first shortcut of the commands the empty canvas shows: new terminal, then settings.
@@ -1853,7 +1846,7 @@ impl Render for Workspace {
         let panel = self
             .settings
             .as_ref()
-            .map(|p| settings::render(self, p, now, vp.w, cx));
+            .map(|p| settings::render(self, p, now, vp.w, window, cx));
         div()
             .id("window")
             .size_full()
@@ -3402,6 +3395,54 @@ mod tests {
         cx.update_window(handle, |_, window, cx| window.click("settings-close", cx))
             .unwrap();
         assert!(!panel_open(&ws, cx), "the close button closes it");
+    }
+
+    #[gpui_kit::test]
+    fn the_panel_opens_on_appearance_and_tabs_switch_sections(cx: &mut TestAppContext) {
+        let (handle, _ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+            .unwrap();
+        settle_slide(handle, cx);
+        cx.update_window(handle, |_, window, cx| {
+            assert!(window.try_find("field-theme.mode").is_some());
+            assert!(window.try_find("shortcut-new_terminal").is_none());
+            window.click("settings-tab-shortcuts", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("shortcut-new_terminal").is_some());
+            assert!(window.try_find("field-theme.mode").is_none());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_blink_switch_edits_the_config_and_its_reset_removes_the_key(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+            .unwrap();
+        settle_slide(handle, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.click("settings-tab-terminal", cx);
+            window.render_frame(cx);
+            assert!(
+                window.try_find("reset-cursor.blink").is_none(),
+                "no reset while at the default"
+            );
+            window.click("field-cursor.blink", cx);
+            window.render_frame(cx);
+            window.render_frame(cx);
+            assert!(ws.read(cx).config.cursor.blink, "the switch turned it on");
+            assert!(window.try_find("reset-cursor.blink").is_some());
+            window.click("reset-cursor.blink", cx);
+            window.render_frame(cx);
+            window.render_frame(cx);
+            assert!(!ws.read(cx).config.cursor.blink, "back to the default");
+        })
+        .unwrap();
+        ws.update(cx, |ws, _| ws.save());
+        let text =
+            std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap_or_default();
+        assert!(!text.contains("blink"), "{text}");
     }
 
     #[gpui_kit::test]

@@ -113,6 +113,8 @@ window), sliding in from the right, header with ✕, footer with the `config.tom
   - on the left, its title (13 px, semibold) and a one-line description in a dimmer color;
   - on the right, the control: a dropdown, switch, number or text field;
   - after it, a reset button that appears only while the value differs from the default.
+- **Reset all** sits next to the heading while any field of the section differs from its default. It resets them
+  together, in one event, so shortcuts reset at once may trade keys (as gpui-kit's section reset did).
 - **Rows** are separated by hairlines inside the card.
 - **Gone:** the search box and the section list on the left. The panel is too narrow for both.
 
