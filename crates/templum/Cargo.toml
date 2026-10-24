@@ -13,7 +13,7 @@ publish.workspace = true
 # Pinned exactly: upgrade only in a dedicated PR (see docs/adr/0002-ui-framework.md).
 # The grammars the editor highlights with. Not `tree-sitter-languages`: its SQL grammar pins `cc ~1.2`
 # against the tree's `cc 1.7`, so the list is the spec's curated one (docs/specs/cockpit.md, Risks).
-gpui-kit = { version = "=0.7.3", features = [
+gpui-kit = { version = "=0.8.0", features = [
     "gpui-fast",
     "tree-sitter-markdown", "tree-sitter-toml", "tree-sitter-yaml", "tree-sitter-diff", "tree-sitter-bash",
     "tree-sitter-rust", "tree-sitter-javascript", "tree-sitter-typescript", "tree-sitter-tsx",
@@ -51,7 +51,7 @@ sha1_smol = { version = "1", features = ["std"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
-gpui-kit = { version = "=0.7.3", features = ["test-support"] }
+gpui-kit = { version = "=0.8.0", features = ["test-support"] }
 tempfile = "3"
 
 # Already in the tree (GPUI's): the Windows executable's icon (build.rs).
