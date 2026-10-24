@@ -24,7 +24,7 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 # Already in the tree (GPUI's): PATH as an installer left it in the registry.
-windows-registry = "0.6"
+windows-registry = "0.100"
 # Already in the tree (GPUI's): Templum's place in the order Windows ends programs at sign-out.
 windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }
 
