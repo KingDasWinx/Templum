@@ -69,6 +69,57 @@ impl Workspace {
         Ok(id)
     }
 
+    /// Saves an instruction from Settings ▸ Instructions: `id` names one already there, None a
+    /// new one, which goes last. Refuses, with the words a notification shows, what the dialog
+    /// can't save: no name, a name over `NAME_MAX` characters, no text, or chosen agents with
+    /// none chosen (docs/specs/instructions.md). Returns its id.
+    pub(crate) fn save_instruction(
+        &mut self,
+        id: Option<u64>,
+        draft: &crate::instructions::Draft,
+        cx: &mut Context<Self>,
+    ) -> Result<u64, &'static str> {
+        let name = draft.name.trim();
+        if name.is_empty() {
+            return Err("An instruction needs a name");
+        }
+        if name.chars().count() > crate::instructions::NAME_MAX {
+            return Err("A name is at most 60 characters");
+        }
+        if crate::instructions::clean_text(&draft.text)
+            .trim()
+            .is_empty()
+        {
+            return Err("An instruction needs a text");
+        }
+        if draft.agents.as_ref().is_some_and(Vec::is_empty) {
+            return Err("Choose at least one agent, or Every agent");
+        }
+        let draft = crate::instructions::Draft {
+            name: name.to_string(),
+            ..draft.clone()
+        };
+        let id = match id.filter(|id| self.standing.get(*id).is_some()) {
+            Some(id) => {
+                self.standing.set(id, draft);
+                id
+            }
+            None => self.standing.add(draft),
+        };
+        cx.notify();
+        Ok(id)
+    }
+
+    pub(crate) fn delete_instruction(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.standing.remove(id);
+        cx.notify();
+    }
+
+    pub(crate) fn set_instruction_on(&mut self, id: u64, on: bool, cx: &mut Context<Self>) {
+        self.standing.set_on(id, on);
+        cx.notify();
+    }
+
     /// Saves an account from Settings ▸ Agents ▸ Accounts (docs/specs/accounts.md): `id` is its
     /// name, the one of an account already there or a new one's, which `agents::name_problem`
     /// checks first. Its folder then gets its choices, a real item in the way of a link kept aside
@@ -429,6 +480,7 @@ impl Workspace {
                 &agents::codex_models(),
                 self.data_dir.as_deref(),
             );
+            self.find_programs();
             let failures = self.sync_commands();
             for failure in failures {
                 tell_commands(Some(failure), window, cx);
@@ -872,6 +924,7 @@ impl Workspace {
             return;
         }
         self.load_lists(window);
+        self.find_programs();
         self.git_version = None;
         let program = self.config.git.program().to_string();
         cx.spawn_in(window, async move |ws, cx| {

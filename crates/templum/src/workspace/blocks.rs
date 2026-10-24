@@ -136,6 +136,7 @@ impl Workspace {
     pub(crate) fn edit_boards<R>(&mut self, f: impl FnOnce(&mut Boards) -> R) -> R {
         let before = self.boards.clone();
         let result = f(&mut self.boards);
+        self.boards.prune_drafts();
         if self.boards != before {
             self.boards_undo.push(before);
             if self.boards_undo.len() > BOARD_UNDO {
@@ -152,6 +153,8 @@ impl Workspace {
         };
         // Ids are never handed out twice: a block or a file may still name an undone board.
         before.next_id = before.next_id.max(self.boards.next_id);
+        // Drafts aren't board edits: the ones kept since stay.
+        before.drafts = std::mem::take(&mut self.boards.drafts);
         self.boards = before;
         cx.notify();
         true
@@ -185,10 +188,16 @@ impl Workspace {
         id
     }
 
-    /// Shows the terminal waiting for the person (it asked for attention): this workspace's
-    /// first, then the others' in the sidebar's order, the oldest block first. Going there is
-    /// seeing it, so the next time shows the next one. None waiting: a notification says so.
+    /// Opens the inbox when a request waits in this workspace. Else shows the terminal waiting
+    /// for the person (it asked for attention): this workspace's first, then the others' in the
+    /// sidebar's order, the oldest block first. Going there is seeing it, so the next time shows
+    /// the next one. None waiting: a notification says so.
     pub(crate) fn go_to_waiting(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A request waits here: the inbox has it.
+        if !self.inbox().is_empty() {
+            self.open_inbox(None, window, cx);
+            return;
+        }
         let order = self.order();
         let spaces =
             std::iter::once(&self.space).chain(order.into_iter().filter(|s| s.id != self.space.id));
@@ -262,7 +271,7 @@ impl Workspace {
         let Some(pane) = self.space.terminal(to) else {
             return;
         };
-        pane.person_typed();
+        pane.person_wrote();
         pane.term.type_in(text);
         let space = self.space.id.clone();
         self.reveal(&space, to, window, cx);
@@ -393,10 +402,34 @@ impl Workspace {
             .is_some_and(|program| templum_terminal::is_shell(program, "wsl"))
     }
 
-    /// Whether the menus, Settings and the welcome list the agent `entry` as installed: WSL is
-    /// another system, whose programs aren't on Windows' PATH, so what runs there is trusted.
+    /// Whether the menus and the welcome list the agent `entry` as installed: WSL is another
+    /// system, whose programs aren't on Windows' PATH, so what runs there is trusted.
     pub(crate) fn agent_installed(&self, entry: &AgentEntry) -> bool {
         self.in_wsl(entry) || templum_terminal::installed(entry.program())
+    }
+
+    /// `agent_installed` as Settings ▸ Agents asks it, every frame: from what `find_programs`
+    /// found (looked for now only for a program it hasn't seen).
+    pub(crate) fn agent_found(&self, entry: &AgentEntry) -> bool {
+        self.in_wsl(entry)
+            || self
+                .found
+                .get(entry.program())
+                .copied()
+                .unwrap_or_else(|| crate::agents::locate(entry.program()).is_some())
+    }
+
+    /// Looks for every agent's program again, for `agent_found`.
+    pub(crate) fn find_programs(&mut self) {
+        self.found = self
+            .agents
+            .iter()
+            .map(|a| {
+                let program = a.program().to_string();
+                let found = crate::agents::locate(&program).is_some();
+                (program, found)
+            })
+            .collect();
     }
 
     /// Why `spawn_agent` and the Templum Agent can't open the agent `entry`: it runs in WSL,
@@ -709,51 +742,7 @@ impl Workspace {
         };
         let start = folder.or_else(std::env::home_dir);
         let id = match Terminal::spawn(opts, self.notify.clone()) {
-            Ok(term) => {
-                let id = self.space.canvas.add(rect);
-                self.space.blocks.insert(
-                    id,
-                    Body::Terminal(Box::new(Pane {
-                        term,
-                        snapshot: Rc::default(),
-                        heard: (0, 0),
-                        alert: None,
-                        seen: templum_terminal::Inspection {
-                            folder: start,
-                            ..Default::default()
-                        },
-                        usage: None,
-                        find: None,
-                        state: None,
-                        handed: None,
-                        answer: None,
-                        prompt: None,
-                        looks: Default::default(),
-                        typed: Default::default(),
-                        keyed: Default::default(),
-                        scrolled: Default::default(),
-                        submitted: 0,
-                        dialogs: 0,
-                        speaks: false,
-                        keys_from: None,
-                        opened_by: None,
-                        model: None,
-                        effort: None,
-                        flags_for: None,
-                        sent: None,
-                        transcript: None,
-                        starting: None,
-                        restored: false,
-                        resuming: None,
-                        account: None,
-                        role: None,
-                        quit: None,
-                        shell,
-                    })),
-                );
-                self.added(id);
-                Some(id)
-            }
+            Ok(term) => Some(self.add_pane(rect, term, start, shell)),
             Err(err) => {
                 eprintln!("templum: couldn't start a shell: {err}");
                 let message = format!("Couldn't start a shell: {err}");
@@ -762,6 +751,67 @@ impl Workspace {
             }
         };
         cx.notify();
+        id
+    }
+
+    /// A new terminal block at `rect` showing `term`, its folder `start`, keeping `shell`: focused,
+    /// and a step of Ctrl+Z unless `quiet` (`added`).
+    pub(super) fn add_pane(
+        &mut self,
+        rect: Rect,
+        term: Terminal,
+        start: Option<PathBuf>,
+        shell: Option<ShellOption>,
+    ) -> BlockId {
+        let id = self.space.canvas.add(rect);
+        self.space.blocks.insert(
+            id,
+            Body::Terminal(Box::new(Pane {
+                term,
+                snapshot: Rc::default(),
+                heard: (0, 0),
+                alert: None,
+                seen: templum_terminal::Inspection {
+                    folder: start,
+                    ..Default::default()
+                },
+                usage: None,
+                find: None,
+                state: None,
+                handed: None,
+                answer: None,
+                prompt: None,
+                looks: Default::default(),
+                typed: Default::default(),
+                keyed: Default::default(),
+                draft: Default::default(),
+                scrolled: Default::default(),
+                submitted: 0,
+                dialogs: 0,
+                speaks: false,
+                keys_from: None,
+                opened_by: None,
+                model: None,
+                effort: None,
+                flags_for: None,
+                sent: None,
+                transcript: None,
+                starting: None,
+                typed_agent: None,
+                restored: false,
+                resuming: None,
+                account: None,
+                role: None,
+                quit: None,
+                shell,
+                subagents: Vec::new(),
+                awaits_subagents: false,
+                asked_by: None,
+                settles: None,
+                follows: None,
+            })),
+        );
+        self.added(id);
         id
     }
 
@@ -861,12 +911,13 @@ impl Workspace {
         if !self.take_step(then) {
             return;
         }
+        // A subagent's block never comes back: it belongs to a live session.
         let items: Vec<_> = self
             .space
             .canvas
             .blocks()
             .iter()
-            .filter(|b| ids.contains(&b.id))
+            .filter(|b| ids.contains(&b.id) && self.space.kept(b.id))
             .map(|b| (b.id, self.space.item_of(b)))
             .collect();
         // Their wires go with them; undoing the close brings them back.
@@ -898,10 +949,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(terminal) = self.space.terminal(id).map(|p| p.term.id().to_string()) {
+        let terminal = self.space.terminal(id).map(|p| p.term.id().to_string());
+        if let Some(terminal) = &terminal {
             let uid = self.space.uids.get(&id).cloned().unwrap_or_default();
             let why = format!("{uid} was closed before it answered.");
-            self.end_turn(&terminal, templum_mcp::Reply::err(why), cx);
+            self.end_turn(terminal, templum_mcp::Reply::err(why), cx);
         }
         if let Some((block, _, body)) = self.take_block(id, window, cx) {
             // Its notes stay in the Notes dialog, but for blank ones: nothing is lost.
@@ -916,6 +968,10 @@ impl Workspace {
                 body,
                 since: Instant::now(),
             });
+        }
+        // Its subagents' blocks go with it (docs/specs/claude-subagents.md).
+        if let Some(terminal) = terminal {
+            self.close_subagents_of(&terminal, window, cx);
         }
         cx.notify();
     }

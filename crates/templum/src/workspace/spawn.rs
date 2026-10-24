@@ -7,12 +7,11 @@ use std::time::Duration;
 use gpui_kit::{Context, Window};
 use templum_canvas::{BlockId, Rect, Size, chrome};
 use templum_mcp::{Reply, tools};
-use templum_terminal::Agent;
 
 use super::bus::{Outcome, target};
 use super::delegate::{TASK_LEAD, answer_how};
 use super::ops::Place;
-use super::{AGENT_COLS, AGENT_ROWS, Handed, Prompt, Space, Workspace};
+use super::{AGENT_COLS, AGENT_ROWS, AgentState, Handed, Prompt, Space, Workspace};
 use crate::agents::AgentEntry;
 
 /// How often a spawned agent's readiness for its prompt is looked at.
@@ -328,6 +327,7 @@ impl Workspace {
             );
             let handed = Handed {
                 id,
+                text: Handed::text_of(prompt),
                 // Its session starts with its task: all it spends is the task's.
                 usage: Some(templum_usage::Session {
                     cost_usd: Some(0.0),
@@ -337,12 +337,7 @@ impl Workspace {
                 ..Handed::new(&asker, Duration::from_secs(tools::TASK_WAIT))
             };
             if let Some(pane) = self.pane_mut(&terminal) {
-                pane.prompt = Some(Prompt {
-                    text,
-                    screen: None,
-                    gated: entry.builtin == Some(Agent::CLAUDE)
-                        || entry.builtin == Some(Agent::CODEX),
-                });
+                pane.prompt = Some(Prompt::new(text, entry.builtin));
                 pane.handed = Some(handed);
             }
             // Every agent is looked at, hooks or not: Codex's SessionStart comes only with its
@@ -386,7 +381,7 @@ impl Workspace {
 
     /// Looks, every READY_LOOK, whether the agent in `terminal` is ready for its prompt, until it
     /// is typed, its block is gone, a snapshot dropped it, or a minute (STARTS_WITHIN) passed.
-    fn watch_ready(&self, terminal: String, cx: &mut Context<Self>) {
+    pub(super) fn watch_ready(&self, terminal: String, cx: &mut Context<Self>) {
         cx.spawn(async move |ws, cx| {
             loop {
                 cx.background_executor().timer(READY_LOOK).await;
@@ -402,9 +397,10 @@ impl Workspace {
     }
 
     /// One look: once a snapshot saw the agent's process, it is still in front of its shell, its
-    /// screen is as it was a look ago, and (Claude Code, Codex; not on Windows) it takes typing,
-    /// its prompt is typed. A minute (STARTS_WITHIN) after the spawn it is dropped instead, its
-    /// task ending with the screen. False once there is nothing more to look for.
+    /// screen is as it was a look ago, it doesn't wait for its person (a hook said so), and
+    /// (Claude Code, Codex; not on Windows) it takes typing, its prompt is typed. A minute
+    /// (STARTS_WITHIN) after it was handed it is dropped instead, its task ending with the screen.
+    /// False once there is nothing more to look for.
     fn look_ready(&mut self, terminal: &str, cx: &mut Context<Self>) -> bool {
         let Some(pane) = self.pane_mut(terminal) else {
             return false;
@@ -414,12 +410,15 @@ impl Workspace {
         }
         let late = pane.handed.as_ref();
         if late.is_some_and(|h| h.since.elapsed() >= STARTS_WITHIN) {
-            pane.prompt = None;
+            let (what, after) = match pane.prompt.take().is_some_and(|p| p.delegated) {
+                true => ("task", "it was handed"),
+                false => ("prompt", "it opened"),
+            };
             let lines = pane.tail();
             let tail = tools::tail(&lines, tools::MAX_TEXT);
             let uid = self.uid_of(terminal);
             let why = format!(
-                "{uid} never got its prompt: a minute after it opened, it still asks its person \
+                "{uid} never got its {what}: a minute after {after}, it still asks its person \
                  something (trusting its folder, Codex's hooks), or its input wasn't ready. Look \
                  at its block. The last lines of its screen:\n{tail}"
             );
@@ -430,15 +429,19 @@ impl Workspace {
         let screen = seen.then(|| pane.screen());
         // Windows' console doesn't pass the cursor's mode on: its still screen alone tells.
         let typing = cfg!(windows) || pane.term.shared().modes().typing;
+        // A dialog its hooks told of would take the prompt for its answer.
+        let asks = matches!(pane.state, Some(AgentState::NeedsYou(_)));
+        let task = pane.handed.as_ref().map(|h| h.id);
         let Some(prompt) = pane.prompt.as_mut() else {
             return false;
         };
-        if screen.is_none() || prompt.screen != screen || (prompt.gated && !typing) {
+        if screen.is_none() || prompt.screen != screen || (prompt.gated && !typing) || asks {
             prompt.screen = screen;
             return true;
         }
         let text = pane.prompt.take().map(|p| p.text).unwrap_or_default();
-        self.send_task(terminal, &text, true, cx);
+        // No call waits to say how it went: a task not taken comes back as its end does.
+        drop(self.send_task(terminal, &text, task, cx));
         false
     }
 }

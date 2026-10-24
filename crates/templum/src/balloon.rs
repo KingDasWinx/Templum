@@ -1,41 +1,23 @@
-//! The balloon on a terminal block whose agent asks the person something
-//! (docs/specs/connections.md, Requests from agents): a dialog centered on its terminal, with its
-//! questions (docs/specs/ask-user.md, The dialog), a plan to approve, or a request with a yes and
-//! a no. Several wait in turn: the oldest shows, with "1 of 3". Every kind has the same frame, in
-//! the language of the kanban card's dialog and the Git popup: a header and a foot that stay, and
-//! a body between them that scrolls.
+//! What the requests inbox (`inbox.rs`) draws of a request an agent makes of the person
+//! (docs/specs/ask-inbox.md): its questions (docs/specs/ask-user.md, The dialog), a plan to
+//! approve, or a request with a yes and a no, each as a body that scrolls and a foot that stays,
+//! in the language of the kanban card's dialog and the Git popup. Drawn at zoom 1: the inbox is
+//! window chrome.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, BoxShadow, ClickEvent, Context, Div, ElementId, FontWeight, Hsla, MouseButton,
-    MouseDownEvent, ScrollWheelEvent, SharedString, Stateful, TestSupportExt, Window, canvas, div,
-    point, px, relative,
+    AnyElement, ClickEvent, Context, Div, ElementId, FontWeight, Hsla, ScrollWheelEvent,
+    SharedString, Stateful, TestSupportExt, Window, canvas, div, point, px, relative,
 };
-use templum_canvas::{BlockId, chrome};
 use templum_mcp::ask::{Ask, Choice, Form, Row, clean_preview};
 
 use crate::git_block::{self, FONT};
 use crate::grid::hsla;
-use crate::kanban::scrollbar_over;
 use crate::theme::Ui;
 use crate::workspace::{Wait, Waiting, Workspace};
 
-/// Its width, and its height at most (its body scrolls past that), of the terminal's.
-const SHARE: f32 = 0.8;
-/// The least of its height its body keeps, world units: a block too short to hold a header, a
-/// foot and this lets the balloon take the whole area, and one too short for that scrolls the
-/// whole frame.
-pub(crate) const MIN_BODY: f32 = 90.0;
-/// The header's and the foot's height, world units: their padding, their tile or buttons and
-/// their hairline (a test keeps these true); and the balloon's own border, both sides.
-pub(crate) const BORDER: f32 = 2.0;
-pub(crate) const HEAD: f32 = 51.0;
-pub(crate) const FOOT: f32 = 51.0;
-/// A dialog narrower than this, world units, wraps its foot's buttons on two lines (FOOT_WRAPPED).
-pub(crate) const ONE_LINE: f32 = 260.0;
-pub(crate) const FOOT_WRAPPED: f32 = 89.0;
 /// What a question whose client stopped waiting says under the header.
 const STOPPED: &str = "The agent stopped waiting: your answer will be typed into its terminal.";
 /// Its text's size, world units: the questions.
@@ -44,11 +26,11 @@ const TEXT: f32 = 14.5;
 const LABEL: f32 = 13.5;
 /// The size of what is said about them, world units: descriptions, hints, the preview.
 const SMALL: f32 = 12.0;
-/// The header's and the foot's sides, and the body's.
-const SIDE: f32 = 18.0;
-/// A preview's line height, world units, and the most lines it shows (it scrolls past them).
+/// The body's sides, and the foot's.
+pub(crate) const SIDE: f32 = 18.0;
+/// A preview's line height, world units, and the most lines it shows before Show more.
 const PREVIEW_LINE: f32 = 16.0;
-const PREVIEW_LINES: f32 = 18.0;
+const PREVIEW_CLAMP: usize = 12;
 /// A dialog narrower than this, world units, lays a preview under the options instead of beside
 /// them.
 const BESIDE: f32 = 520.0;
@@ -56,304 +38,78 @@ const BESIDE: f32 = 520.0;
 const PLAN_SHARE: f32 = 0.6;
 /// The most characters of a plan's title shown.
 const PLAN_TITLE: usize = 60;
+/// The inbox is window chrome: never scaled by the canvas's zoom.
+const Z: f32 = 1.0;
 
-/// What a kind of request puts in the frame: a line under the title, the body (which scrolls)
-/// and the foot (which stays).
-struct Parts {
-    sub: Option<String>,
-    body: Div,
-    foot: Div,
+/// What a kind of request puts in the inbox's right column: the body (which scrolls) and the
+/// foot (which stays).
+pub(crate) struct Parts {
+    pub body: Div,
+    pub foot: Div,
 }
 
-/// The stopped line's height, margin included, in a balloon `w` wide (world units): the line's
-/// words, about 560 wide, wrap in what the sides, the icon and the padding leave.
-pub(crate) fn notice(w: f32) -> f32 {
-    let lines = (560.0 / (w - 2.0 * SIDE - 42.0).max(40.0)).ceil();
-    28.0 + 19.5 * lines
-}
-
-/// What the balloon gets of its terminal's area, `area` high (world units; its width is `w`): its
-/// height at most, and whether its whole frame scrolls. SHARE of the area while that holds the
-/// header, the foot and MIN_BODY; else the whole area; else, as even that leaves the body less
-/// than MIN_BODY, the frame scrolls as one.
-fn fit(area: f32, w: f32, stopped: bool) -> (f32, bool) {
-    let area = area.max(0.0);
-    let foot = if w < ONE_LINE { FOOT_WRAPPED } else { FOOT };
-    let needs = BORDER + HEAD + foot + if stopped { notice(w) } else { 0.0 } + MIN_BODY;
-    if area * SHARE >= needs {
-        (area * SHARE, false)
-    } else {
-        (area, area < needs)
-    }
-}
-
-/// The balloon of the terminal block `id`, whose terminal is `terminal`, at zoom `z`, centered on
-/// the terminal: None when its agent asks nothing.
-pub(crate) fn render(
+/// The request `wait` of the block `n`, drawn in a column `w` wide whose body is `h` high at most
+/// (world units); None when it is no request of the person's.
+pub(crate) fn request(
     ws: &Workspace,
-    id: BlockId,
-    terminal: &str,
-    z: f32,
+    wait: &Wait,
+    n: usize,
+    w: f32,
+    h: f32,
     cx: &mut Context<Workspace>,
-) -> Option<AnyElement> {
-    let (wait, count) = ws.balloon(terminal)?;
-    // Presses count from TOO_SOON after it first shows.
-    if wait.shown.get().is_none() {
-        wait.shown.set(Some(cx.background_executor().now()));
-    }
-    let key = wait.key;
-    let n = id.0 as usize;
-    let ui = ws.ui;
-    // The yellow of the dot of a block waiting for its person.
-    let waiting = hsla(ws.theme.palette.ansi[3], 1.0);
-    // The balloon's width, world units: SHARE of the terminal's; its height at most, below.
-    let rect = ws.space.canvas.get(id).map(|b| b.rect).unwrap_or_default();
-    let width = rect.w * SHARE;
-    let stopped = matches!(wait.what, Waiting::Question { stopped: true, .. });
-    let (tallest, whole) = fit(rect.h - chrome::TITLE_H, width, stopped);
-    let Parts { sub, body, foot } = match &wait.what {
+) -> Option<Parts> {
+    Some(match &wait.what {
         Waiting::Question {
             ask, form, scroll, ..
-        } if ask.plan.is_some() => plan(
-            ws,
-            wait,
-            ask,
-            form,
-            scroll,
-            id,
-            (tallest - BORDER - HEAD - FOOT).max(MIN_BODY),
-            z,
-            cx,
-        ),
-        Waiting::Question { ask, form, .. } => question(ws, wait, ask, form, n, width, z, cx),
-        Waiting::Allow { then } => allow(ws, wait, then.buttons(), n, z, cx),
+        } if ask.plan.is_some() => plan(ws, wait, ask, form, scroll, n, w, h, Z, cx),
+        Waiting::Question { ask, form, .. } => question(ws, wait, ask, form, n, w, Z, cx),
+        Waiting::Allow { then } => allow(ws, wait, then.buttons(), n, Z, cx),
         Waiting::Turn { .. } | Waiting::Event { .. } => return None,
-    };
-    let tile = div()
-        .flex()
-        .items_center()
-        .justify_center()
-        .flex_shrink_0()
-        .size(px(30.0 * z))
-        .rounded(px(8.0 * z))
-        .bg(waiting.opacity(0.16))
-        .child(
-            Icon::new(IconName::CircleQuestionMark)
-                .size(px(16.0 * z))
-                .text_color(waiting),
-        );
-    let head = div()
-        .id(part(n, "waiting"))
-        .flex()
-        .items_center()
-        .flex_shrink_0()
-        .gap(px(10.0 * z))
-        .px(px(SIDE * z))
-        .py(px(10.0 * z))
-        .border_b_1()
-        .border_color(ui.hairline)
-        .child(tile)
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.0))
-                .flex()
-                .items_center()
-                .gap(px(8.0 * z))
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .text_size(px(13.5 * z))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Waiting for your answer"),
-                )
-                .when_some(sub, |el, sub| {
-                    el.child(
-                        div()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .text_size(px(SMALL * z))
-                            .text_color(ui.title_dim)
-                            .child(sub),
-                    )
-                }),
-        )
-        .when(count > 1, |el| {
-            el.child(
-                div()
-                    .id(part(n, "count"))
-                    .flex_shrink_0()
-                    .px(px(8.0 * z))
-                    .py(px(2.0 * z))
-                    .rounded(px(6.0 * z))
-                    .bg(ui.hover)
-                    .text_size(px(11.0 * z))
-                    .text_color(ui.title_dim)
-                    .child(format!("1 of {count}"))
-                    .test_support(),
-            )
-        })
-        .test_support();
-    // Its client gave up on the call: said where it stays in sight.
-    let stopped = stopped.then(|| {
-        div()
-            .id(part(n, "stopped"))
-            .flex()
-            .items_start()
-            .flex_shrink_0()
-            .gap(px(8.0 * z))
-            .mx(px(SIDE * z))
-            .mt(px(12.0 * z))
-            .px(px(10.0 * z))
-            .py(px(8.0 * z))
-            .rounded(px(8.0 * z))
-            .bg(waiting.opacity(0.12))
-            .text_size(px(SMALL * z))
-            .child(
-                div().mt(px(1.0 * z)).child(
-                    Icon::new(IconName::CircleAlert)
-                        .size(px(14.0 * z))
-                        .text_color(waiting),
-                ),
-            )
-            .child(div().flex_1().min_w(px(0.0)).child(STOPPED))
-            .test_support()
-    });
-    // Its key in the body's and the foot's ids: a press on a request withdrawn before its release
-    // is no click on the next one's button drawn in its place.
-    let content = div()
-        .id(("balloon-wait", key))
-        .flex()
-        .flex_col()
-        .gap(px(10.0 * z))
-        .px(px(SIDE * z))
-        .py(px(16.0 * z))
-        .child(body)
-        .test_support();
-    let foot = div()
-        .id(("balloon-foot", key))
-        .flex()
-        .items_center()
-        .flex_shrink_0()
-        .gap(px(8.0 * z))
-        .px(px(SIDE * z))
-        .py(px(10.0 * z))
-        .border_t_1()
-        .border_color(ui.hairline)
-        .child(foot)
-        .test_support();
-    // The header, the stopped line and the foot stay around a body that scrolls; in a block too
-    // short for that the whole frame is the body.
-    let mut above = vec![head.into_any_element()];
-    above.extend(stopped.map(IntoElement::into_any_element));
-    let mut scrolled = vec![content.into_any_element()];
-    let mut below = vec![foot.into_any_element()];
-    if whole {
-        scrolled.splice(0..0, above.drain(..));
-        scrolled.append(&mut below);
-    }
-    let body = div()
-        .id(part(n, "body"))
-        .flex_1()
-        .min_h(px(0.0))
-        .overflow_y_scroll()
-        .track_scroll(&wait.body.handle)
-        .children(scrolled)
-        .test_support();
-    wait.body.follow(z);
-    // The scrollbar goes over the body, not in it.
-    let scrolling = div()
-        .relative()
-        .flex()
-        .flex_col()
-        .min_h(px(0.0))
-        // The scrollbar takes every press on its strip before the balloon's handler below, whatever
-        // the button: these go ahead of it, in the capture phase. The block takes the keyboard, and
-        // the middle button pans the canvas, as over the rest of the balloon.
-        .capture_any_mouse_down(cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
-            if e.button == MouseButton::Middle {
-                ws.begin_pan(e.position);
-                cx.stop_propagation();
-            } else {
-                ws.press_on_balloon(key, id, window, cx);
-            }
-        }))
-        .child(body)
-        .child(scrollbar_over(&wait.body.handle, part(n, "scrollbar"), z));
-    // The terminal's area, under the title bar, centers it; it takes no press: the terminal
-    // around the dialog still does.
-    Some(
-        div()
-            .absolute()
-            .top(px(chrome::TITLE_H * z))
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                div()
-                    .id(("balloon", n))
-                    .w(relative(SHARE))
-                    .max_h(px(tallest * z))
-                    .flex()
-                    .flex_col()
-                    .overflow_hidden()
-                    .rounded(px(12.0 * z))
-                    .border_1()
-                    .border_color(waiting)
-                    .bg(ui.surface)
-                    // Lifted off the terminal it covers, as a block off the canvas.
-                    .shadow(vec![BoxShadow {
-                        color: ui.shadow,
-                        offset: point(px(0.0), px(8.0 * z)),
-                        blur_radius: px(20.0 * z),
-                        spread_radius: px(0.0),
-                        inset: false,
-                    }])
-                    .text_size(px(LABEL * z))
-                    // The terminal's own text color: the question reads as the agent's words.
-                    .text_color(hsla(ws.theme.palette.foreground, 1.0))
-                    // Its presses are its own: no selection starts in the terminal under it, a
-                    // program there that asked for the mouse hears none, the block's menu doesn't
-                    // open. The middle button still pans, as anywhere. Not
-                    // `block_mouse_except_scroll`: the block would lose its hover.
-                    .on_any_mouse_down(cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
-                        if e.button == MouseButton::Middle {
-                            ws.begin_pan(e.position);
-                        } else {
-                            ws.press_on_balloon(key, id, window, cx);
-                        }
-                        cx.stop_propagation();
-                    }))
-                    // The wheel scrolls it, not the terminal under it; with Ctrl it zooms the
-                    // canvas.
-                    .on_scroll_wheel(|e: &ScrollWheelEvent, _, cx| {
-                        if !e.modifiers.control {
-                            cx.stop_propagation();
-                        }
-                    })
-                    .children(above)
-                    .child(scrolling)
-                    .children(below)
-                    .test_support(),
-            )
-            .into_any_element(),
-    )
+    })
 }
 
-/// The id of the balloon's element `what` on block `n`: `q<q>-option-<i>`, `q<q>-other`, `note`,
-/// `send`, `dismiss`, `progress`, `allow`, `deny`, `count`, `waiting`, `stopped`, `body`.
+/// Said under the header of a question whose client gave up on the call, where it stays in
+/// sight.
+pub(crate) fn stopped_banner(ws: &Workspace, n: usize) -> AnyElement {
+    // The yellow of the dot of a block waiting for its person.
+    let waiting = hsla(ws.theme.palette.ansi[3], 1.0);
+    div()
+        .id(part(n, "stopped"))
+        .flex()
+        .items_start()
+        .flex_shrink_0()
+        .gap(px(8.0))
+        .mx(px(SIDE))
+        .mt(px(12.0))
+        .px(px(10.0))
+        .py(px(8.0))
+        .rounded(px(8.0))
+        .bg(waiting.opacity(0.12))
+        .text_size(px(SMALL))
+        .child(
+            div().mt(px(1.0)).child(
+                Icon::new(IconName::CircleAlert)
+                    .size(px(14.0))
+                    .text_color(waiting),
+            ),
+        )
+        .child(div().flex_1().min_w(px(0.0)).child(STOPPED))
+        .test_support()
+        .into_any_element()
+}
+
+/// The id of the request's element `what` on the asking block `n`: `q<q>-option-<i>`,
+/// `q<q>-other`, `note`, `send`, `dismiss`, `progress`, `allow`, `deny`, `stopped`, `body`,
+/// `tab-<q>` and, on an answered question's tab, `tab-<q>-answered`.
 pub(crate) fn part(n: usize, what: &str) -> ElementId {
     ElementId::Name(format!("balloon-{n}-{what}").into())
 }
 
-/// A question's dialog, `w` world units wide: each question with its header, text, options and
-/// Other field, a hairline between them, the note; Dismiss and Send in the foot. Today's shape
-/// (`ask.json` false) draws today's: a button per option, or the field. A click on an option only
-/// picks it; Send, lit once every question has an answer, answers. Only the rows `Form::rows`
-/// lists are drawn.
+/// A question's dialog, `w` world units wide: with several questions, a tab each, then the shown
+/// one with its header, text, options and Other field; the note; Dismiss and Send in the foot.
+/// Today's shape (`ask.json` false) draws today's: a button per option, or the field. A click on
+/// an option only picks it; Send, lit once every question has an answer, answers. Only the rows
+/// `Form::rows` lists are drawn.
 #[allow(clippy::too_many_arguments)]
 fn question(
     ws: &Workspace,
@@ -368,7 +124,6 @@ fn question(
     let (key, ui) = (wait.key, ws.ui);
     let Waiting::Question { others, note, .. } = &wait.what else {
         return Parts {
-            sub: None,
             body: div(),
             foot: div(),
         };
@@ -377,132 +132,141 @@ fn question(
     let ready = texts
         .as_ref()
         .is_some_and(|texts| form.answers(ask, texts).is_some());
-    let answered = texts.map_or(0, |texts| form.answered(ask, &texts));
-    let rows = Form::rows(ask);
+    let answered = texts.as_ref().map_or(0, |texts| form.answered(ask, texts));
+    let rows = form.rows(ask);
     let mut body = div().flex().flex_col().gap(px(18.0 * z));
-    for (q, question) in ask.questions.iter().enumerate() {
-        if q > 0 {
-            body = body.child(div().h(px(1.0 * z)).bg(ui.hairline));
-        }
-        let title = div()
-            .flex()
-            .flex_col()
-            .gap(px(8.0 * z))
-            .when_some(question.header_shown(), |el, header| {
-                el.child(div().flex().child(chip(header, ui, z)))
-            })
-            .child(
+    if ask.tabs() {
+        let texts = texts.as_deref().unwrap_or_default();
+        body = body.child(tabs(ws, key, ask, form, texts, n, z, cx));
+    }
+    let q = form.tab;
+    let question = &ask.questions[q];
+    let title = div()
+        .flex()
+        .flex_col()
+        .gap(px(8.0 * z))
+        .when_some(
+            question.header_shown().filter(|_| !ask.tabs()),
+            |el, header| el.child(div().flex().child(chip(header, ui, z))),
+        )
+        .child(
+            div()
+                .min_w(px(0.0))
+                .text_size(px(TEXT * z))
+                .font_weight(FontWeight::MEDIUM)
+                .line_height(relative(1.4))
+                .child(question.text.clone()),
+        )
+        .when(question.multi, |el| {
+            el.child(
                 div()
-                    .min_w(px(0.0))
-                    .text_size(px(TEXT * z))
-                    .font_weight(FontWeight::MEDIUM)
-                    .line_height(relative(1.4))
-                    .child(question.text.clone()),
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0 * z))
+                    .text_size(px(SMALL * z))
+                    .text_color(ui.title_dim)
+                    .child(
+                        Icon::new(IconName::ListChecks)
+                            .size(px(13.0 * z))
+                            .text_color(ui.title_dim),
+                    )
+                    .child("Pick any"),
             )
-            .when(question.multi, |el| {
-                el.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(5.0 * z))
-                        .text_size(px(SMALL * z))
-                        .text_color(ui.title_dim)
-                        .child(
-                            Icon::new(IconName::ListChecks)
-                                .size(px(13.0 * z))
-                                .text_color(ui.title_dim),
-                        )
-                        .child("Pick any"),
-                )
-            });
-        let mut block = div().flex().flex_col().gap(px(10.0 * z)).child(title);
-        // Its options and Other, in a faint panel; with a preview, a column beside it (or under
-        // it, in a narrow dialog).
-        let mut choices = div().flex().flex_col().gap(px(2.0 * z));
-        for (i, choice) in question.options.iter().enumerate() {
-            let id = part(n, &format!("q{q}-option-{i}"));
-            let (picked, lit) = (form.picked(q, i), form.highlight == Some(Row::Option(q, i)));
-            // Today's shape: a button, no radio.
-            let mark = ask.json.then_some(question.multi);
-            choices = choices.child(
-                option(id, mark, picked, lit, choice, ui, z)
-                    .children(reveal(Row::Option(q, i), wait))
-                    .on_click(cx.listener(once(move |ws, window, cx| {
-                        ws.pick_option(key, q, i, window, cx)
-                    })))
-                    .on_hover(hover(key, Row::Option(q, i), cx))
-                    .test_support(),
+        });
+    let mut block = div().flex().flex_col().gap(px(10.0 * z)).child(title);
+    // Its options and Other, in a faint panel; with a preview, a column beside it (or under
+    // it, in a narrow dialog).
+    let mut choices = div().flex().flex_col().gap(px(2.0 * z));
+    for (i, choice) in question.options.iter().enumerate() {
+        let id = part(n, &format!("q{q}-option-{i}"));
+        let (picked, lit) = (form.picked(q, i), form.highlight == Some(Row::Option(q, i)));
+        // Today's shape: a button, no radio.
+        let mark = ask.json.then_some(question.multi);
+        choices = choices.child(
+            option(id, mark, picked, lit, choice, ui, z)
+                .children(reveal(Row::Option(q, i), wait))
+                .on_click(cx.listener(once(move |ws, window, cx| {
+                    ws.pick_option(key, q, i, window, cx)
+                })))
+                .on_hover(hover(key, Row::Option(q, i), cx))
+                .test_support(),
+        );
+    }
+    if rows.contains(&Row::Other(q)) {
+        let input = &others[q].0;
+        let lit = form.highlight == Some(Row::Other(q));
+        let mut other = div()
+            .id(part(n, &format!("q{q}-other")))
+            .flex()
+            .items_center()
+            .gap(px(8.0 * z))
+            .w_full()
+            .rounded(px(8.0 * z))
+            .when(!question.options.is_empty(), |el| {
+                let (fill, _) = tint(form.other_picked(q), lit, ui);
+                el.px(px(10.0 * z))
+                    .py(px(6.0 * z))
+                    .when_some(fill, |el, fill| el.bg(fill))
+            })
+            .when(question.options.is_empty() && lit, |el| el.bg(ui.hover));
+        if !question.options.is_empty() {
+            // A press on its mark or its name puts the keyboard in its field.
+            let focus = input.clone();
+            other = other.child(
+                div()
+                    .id(part(n, &format!("q{q}-other-mark")))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0 * z))
+                    .cursor_pointer()
+                    .child(mark(question.multi, form.other_picked(q), ui, z))
+                    .child(div().text_size(px(LABEL * z)).child("Other"))
+                    .on_click(move |_, window, cx| {
+                        focus.update(cx, |input, cx| input.focus(window, cx))
+                    }),
             );
         }
-        if rows.contains(&Row::Other(q)) {
-            let input = &others[q].0;
-            let lit = form.highlight == Some(Row::Other(q));
-            let mut other = div()
-                .id(part(n, &format!("q{q}-other")))
-                .flex()
-                .items_center()
-                .gap(px(8.0 * z))
-                .w_full()
-                .rounded(px(8.0 * z))
-                .when(!question.options.is_empty(), |el| {
-                    let (fill, _) = tint(form.other_picked(q), lit, ui);
-                    el.px(px(10.0 * z))
-                        .py(px(6.0 * z))
-                        .when_some(fill, |el, fill| el.bg(fill))
-                })
-                .when(question.options.is_empty() && lit, |el| el.bg(ui.hover));
-            if !question.options.is_empty() {
-                // A press on its mark or its name puts the keyboard in its field.
-                let focus = input.clone();
-                other = other.child(
-                    div()
-                        .id(part(n, &format!("q{q}-other-mark")))
-                        .flex()
-                        .items_center()
-                        .gap(px(10.0 * z))
-                        .cursor_pointer()
-                        .child(mark(question.multi, form.other_picked(q), ui, z))
-                        .child(div().text_size(px(LABEL * z)).child("Other"))
-                        .on_click(move |_, window, cx| {
-                            focus.update(cx, |input, cx| input.focus(window, cx))
-                        }),
-                );
-            }
-            other = other
-                .child(git_block::field(input, z).flex_1().min_w(px(0.0)))
-                .children(reveal(Row::Other(q), wait));
-            choices = choices.child(other.on_hover(hover(key, Row::Other(q), cx)).test_support());
-        }
-        let panel = |choices: Div| {
-            if question.options.is_empty() {
-                choices
-            } else {
-                choices.p(px(4.0 * z)).rounded(px(10.0 * z)).bg(ui.card)
-            }
-        };
-        block = block.child(match ask.preview_of(q, form) {
-            None => panel(choices),
-            Some(shown) => {
-                let preview = preview(ws, shown, n, q, z);
-                if w >= BESIDE {
-                    div()
-                        .flex()
-                        .items_start()
-                        .gap(px(12.0 * z))
-                        .child(panel(choices).w(relative(0.45)).flex_shrink_0())
-                        .child(preview)
-                } else {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(10.0 * z))
-                        .child(panel(choices))
-                        .child(preview)
-                }
-            }
-        });
-        body = body.child(block);
+        other = other
+            .child(git_block::field(input, z).flex_1().min_w(px(0.0)))
+            .children(reveal(Row::Other(q), wait));
+        choices = choices.child(other.on_hover(hover(key, Row::Other(q), cx)).test_support());
     }
+    let panel = |choices: Div| {
+        if question.options.is_empty() {
+            choices
+        } else {
+            choices.p(px(4.0 * z)).rounded(px(10.0 * z)).bg(ui.card)
+        }
+    };
+    block = block.child(match ask.preview_of(q, form) {
+        None => panel(choices),
+        Some(shown) => {
+            // The body's sides are not the preview's; beside the options it has what their 45% and
+            // the gap leave.
+            let preview_w = if w >= BESIDE {
+                (w - 2.0 * SIDE) * 0.55 - 12.0
+            } else {
+                w - 2.0 * SIDE
+            };
+            let preview = preview(ws, wait, shown, (n, q), preview_w, z, cx);
+            if w >= BESIDE {
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(12.0 * z))
+                    .child(panel(choices).w(relative(0.45)).flex_shrink_0())
+                    .child(preview)
+            } else {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.0 * z))
+                    .child(panel(choices))
+                    .child(preview)
+            }
+        }
+    });
+    body = body.child(block);
     if let Some((input, _)) = note {
         body = body.child(div().h(px(1.0 * z)).bg(ui.hairline)).child(
             div()
@@ -566,15 +330,82 @@ fn question(
             })))
             .test_support(),
         );
-    let sub = match ask.questions.len() {
-        1 => "1 question".to_string(),
-        n => format!("{n} questions"),
-    };
-    Parts {
-        sub: Some(sub),
-        body,
-        foot,
-    }
+    Parts { body, foot }
+}
+
+/// The tabs of the question `key`, which asks several (docs/specs/ask-user.md, Tabs), in the Git
+/// popup's look: each its header, or "Question N", after a ring that fills with a check once its
+/// question has an answer (`others`: the Other texts); the shown one is underlined in the accent.
+/// A click shows its question. They wrap on more lines in a dialog too narrow for one row.
+#[allow(clippy::too_many_arguments)]
+fn tabs(
+    ws: &Workspace,
+    key: u64,
+    ask: &Ask,
+    form: &Form,
+    others: &[String],
+    n: usize,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> Div {
+    let ui = ws.ui;
+    let fg = hsla(ws.theme.palette.foreground, 1.0);
+    let tabs = (0..ask.questions.len()).map(|q| {
+        let on = q == form.tab;
+        let ring = div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .flex_shrink_0()
+            .size(px(14.0 * z))
+            .rounded_full();
+        let ring = if form.has_answer(ask, q, others) {
+            ring.id(part(n, &format!("tab-{q}-answered")))
+                .bg(ui.accent)
+                .child(
+                    Icon::new(IconName::Check)
+                        .size(px(10.0 * z))
+                        .text_color(ui.surface),
+                )
+                .test_support()
+                .into_any_element()
+        } else {
+            ring.border_1()
+                .border_color(ui.title_dim)
+                .into_any_element()
+        };
+        div()
+            .id(part(n, &format!("tab-{q}")))
+            .flex()
+            .items_center()
+            .gap(px(6.0 * z))
+            .min_w(px(0.0))
+            .min_h(px(30.0 * z))
+            .border_b_2()
+            .border_color(if on {
+                ui.accent
+            } else {
+                gpui_kit::transparent_black()
+            })
+            .text_size(px(FONT * z))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(if on { fg } else { ui.title_dim })
+            .cursor_pointer()
+            .hover(move |s| s.text_color(fg))
+            .child(ring)
+            .child(ask.tab(q))
+            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                ws.show_question(key, q, window, cx)
+            }))
+            .test_support()
+    });
+    div()
+        .flex()
+        .flex_wrap()
+        .gap_x(px(16.0 * z))
+        .border_b_1()
+        .border_color(ui.hairline)
+        .children(tabs)
 }
 
 /// A plan's dialog (docs/specs/agent-tools.md, propose_plan): the chip "Plan" and its title, its
@@ -587,22 +418,22 @@ fn plan(
     ask: &Ask,
     form: &Form,
     scroll: &crate::markdown::PreviewScroll,
-    id: BlockId,
+    n: usize,
+    w: f32,
     h: f32,
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> Parts {
-    let (key, ui, n) = (wait.key, ws.ui, id.0 as usize);
+    let (key, ui) = (wait.key, ws.ui);
     let (Some(shown), Waiting::Question { note, .. }) = (&ask.plan, &wait.what) else {
         return Parts {
-            sub: None,
             body: div(),
             foot: div(),
         };
     };
     let title: String = ask.summary().chars().take(PLAN_TITLE).collect();
-    // The plan's width, world units: the balloon's less the body's padding.
-    let w = ws.space.canvas.get(id).map_or(0.0, |b| b.rect.w) * SHARE - 2.0 * SIDE - 2.0;
+    // The plan's width, world units: the column's less the body's padding.
+    let w = w - 2.0 * SIDE - 2.0;
     let head = div()
         .id(part(n, "plan-title"))
         .flex()
@@ -685,7 +516,6 @@ fn plan(
     })))
     .test_support();
     Parts {
-        sub: Some("Plan to approve".into()),
         body,
         foot: foot_row(z).child(reject).child(approve.ml_auto()),
     }
@@ -737,13 +567,31 @@ fn hover(
     })
 }
 
-/// Question `q`'s preview: a caption over `shown` in the terminal's font, never wrapped, in a
-/// frame at most PREVIEW_LINES tall, scrolling both ways; None says "No preview".
-fn preview(ws: &Workspace, shown: Option<&str>, n: usize, q: usize, z: f32) -> Div {
+/// Question `q`'s preview of the block `n`, `w` world units wide: a caption over `shown` in the
+/// terminal's font, wrapped on the frame's width and cut after PREVIEW_CLAMP lines with a Show
+/// more under it that shows the rest (and Show less); None says "No preview".
+fn preview(
+    ws: &Workspace,
+    wait: &Wait,
+    shown: Option<&str>,
+    (n, q): (usize, usize),
+    w: f32,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> Div {
     let ui = ws.ui;
     let pad = 8.0 * z;
-    // A short preview has nothing to scroll up and down: the wheel goes on to the dialog's body.
-    let tall = shown.is_some_and(|text| text.lines().count() > PREVIEW_LINES as usize);
+    let (key, more) = (wait.key, wait.more.get());
+    // The lines it takes wrapped, by the width of a letter of its font.
+    let letters = ((w - 2.0 * (8.0 + 1.0)) / (ws.cell.size.w * SMALL / ws.cell.font_size))
+        .floor()
+        .max(1.0) as usize;
+    let long = shown.is_some_and(|text| {
+        text.lines()
+            .map(|line| line.chars().count().div_ceil(letters).max(1))
+            .sum::<usize>()
+            > PREVIEW_CLAMP
+    });
     div()
         .flex_1()
         .min_w(px(0.0))
@@ -768,8 +616,11 @@ fn preview(ws: &Workspace, shown: Option<&str>, n: usize, q: usize, z: f32) -> D
             div()
                 .id(part(n, &format!("q{q}-preview")))
                 .w_full()
-                .max_h(px(PREVIEW_LINES * PREVIEW_LINE * z + 2.0 * pad))
-                .overflow_scroll()
+                // Cut only where Show more is offered: an estimate that is short shows it whole.
+                .when(long && !more, |el| {
+                    el.max_h(px(PREVIEW_CLAMP as f32 * PREVIEW_LINE * z + 2.0 * pad))
+                })
+                .overflow_hidden()
                 .p(px(pad))
                 .rounded(px(8.0 * z))
                 .border_1()
@@ -778,20 +629,27 @@ fn preview(ws: &Workspace, shown: Option<&str>, n: usize, q: usize, z: f32) -> D
                 .font_family(ws.cell.font.family.clone())
                 .text_size(px(SMALL * z))
                 .line_height(px(PREVIEW_LINE * z))
-                .whitespace_nowrap()
-                // The wheel scrolls it, not the dialog around it.
-                .on_scroll_wheel(move |e: &ScrollWheelEvent, _, cx| {
-                    let sideways = e.delta.pixel_delta(px(1.0)).x.abs() > px(0.0);
-                    if !e.modifiers.control && (tall || sideways) {
-                        cx.stop_propagation();
-                    }
-                })
+                .whitespace_normal()
                 .child(match shown {
                     Some(text) => div().child(clean_preview(text)),
                     None => div().text_color(ui.title_dim).child("No preview"),
                 })
                 .test_support(),
         )
+        .when(long || more, |el| {
+            el.child(
+                div()
+                    .id(part(n, &format!("q{q}-preview-more")))
+                    .text_size(px(11.0 * z))
+                    .text_color(ui.accent)
+                    .cursor_pointer()
+                    .child(if more { "Show less" } else { "Show more" })
+                    .on_click(
+                        cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_previews(key, cx)),
+                    )
+                    .test_support(),
+            )
+        })
 }
 
 /// One of a question's options: its radio (`mark` false) or checkbox (`mark` true) and its label,
@@ -902,7 +760,7 @@ fn section(ui: Ui, icon: IconName, label: &'static str, aside: &'static str, z: 
 }
 
 /// A foot's quiet button (Dismiss, Reject, Deny): no fill, the hover color under the pointer.
-fn ghost(
+pub(crate) fn ghost(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     ui: Ui,
@@ -1019,7 +877,6 @@ fn allow(
 ) -> Parts {
     let (key, ui) = (wait.key, ws.ui);
     Parts {
-        sub: None,
         body: div().min_w(px(0.0)).child(ws.allow_line(wait, cx)),
         foot: foot_row(z)
             .justify_end()

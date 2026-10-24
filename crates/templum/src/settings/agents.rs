@@ -26,7 +26,7 @@ pub(super) fn agent_row(ws: &Workspace, entity: &Entity<Workspace>, agent: &Agen
     let id = agent.id.clone();
     let description = description(
         agent,
-        ws.agent_installed(agent),
+        ws.agent_found(agent),
         ws.agent_shell(agent).is_some(),
     );
     let show = {

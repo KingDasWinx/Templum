@@ -9,6 +9,8 @@
 #   TEMPLUM_VERSION=0.1.2       that version instead of the latest: curl … | TEMPLUM_VERSION=0.1.2 sh
 #   TEMPLUM_INSTALL_DIR=<dir>   that folder instead
 #
+# On Arch Linux, the AUR has it too: yay -S templum-bin (or paru -S templum-bin).
+#
 # release.yml attaches this file to every release.
 set -eu
 

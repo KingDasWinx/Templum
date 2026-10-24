@@ -40,6 +40,8 @@ pub(crate) struct TemplumAgent {
     pub unread: bool,
     /// The chat is open.
     pub open: bool,
+    /// The chat fills the canvas instead of its card: kept while Templum runs, closed or not.
+    pub full: bool,
     /// Its engine's process, while it runs.
     pub engine: Option<Engine>,
     /// Counts the engine's starts: lines of an engine already gone are dropped.
@@ -100,6 +102,7 @@ impl Default for TemplumAgent {
             next_approval: 0,
             unread: false,
             open: false,
+            full: false,
             engine: None,
             engine_gen: 0,
             lines: None,
@@ -506,6 +509,21 @@ impl Workspace {
             }
             (None, None) => {}
         }
+    }
+
+    /// The models its agent offers (Claude Code: haiku, sonnet, opus) that Templum can type to
+    /// start it; none for an engine with no list.
+    pub(crate) fn engine_models(&self) -> Vec<String> {
+        let id = &self.config.templum_agent.agent;
+        let engine = templum_terminal::Agent::from_name(id);
+        self.agents
+            .iter()
+            .find(|a| a.id == *id)
+            .into_iter()
+            .flat_map(|a| &a.models)
+            .filter(|m| engine.is_some_and(|e| e.launch_args(Some(m), None).is_ok()))
+            .cloned()
+            .collect()
     }
 
     /// Settings ▸ Templum Agent.

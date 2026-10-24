@@ -242,7 +242,7 @@ pub(crate) fn agent_choices(agents: &[AgentEntry]) -> Vec<(String, String)> {
         .iter()
         .filter_map(|kind| {
             let agent = agents.iter().find(|a| a.id == kind.agent)?;
-            let installed = templum_terminal::installed(agent.program());
+            let installed = agents::locate(agent.program()).is_some();
             Some((!installed, agent.id.clone(), agent.title.clone()))
         })
         .collect();
@@ -293,7 +293,7 @@ fn default_agent(agents: &[AgentEntry]) -> Option<&'static Kind> {
         agents
             .iter()
             .find(|a| a.id == id)
-            .is_some_and(|a| templum_terminal::installed(a.program()))
+            .is_some_and(|a| agents::locate(a.program()).is_some())
     };
     let first = agent_choices(agents).into_iter().next()?.0;
     let id = if installed("claude") || !installed(&first) {
@@ -316,8 +316,12 @@ pub(crate) struct Form {
     /// The theme's red, for a rule the name breaks.
     red: Hsla,
     kind: Option<&'static Kind>,
-    /// A new account's name.
+    /// The agents a new account can be of (`agent_choices`), read when the dialog opens.
+    choices: Vec<(String, String)>,
+    /// A new account's name, and the first rule it breaks, read at each key (not each frame: it
+    /// looks for a program of that name).
     name: Entity<InputState>,
+    problem: Option<String>,
     setup: Setup,
     /// The items shared, by key: the agent's id or another account of it.
     share: BTreeMap<String, String>,
@@ -353,7 +357,13 @@ impl Form {
             ui: ws.ui,
             red: crate::grid::hsla(ws.theme.palette.ansi[1], 1.0),
             kind,
+            choices: if entry.is_none() {
+                agent_choices(&ws.agents)
+            } else {
+                Vec::new()
+            },
             name,
+            problem: None,
             setup: Setup::Same,
             share: BTreeMap::new(),
             theirs: BTreeMap::new(),
@@ -373,26 +383,27 @@ impl Form {
         form
     }
 
-    /// The first rule the name typed breaks (docs/specs/accounts.md, Its name); None while it is
-    /// empty or free.
-    fn problem(&self, cx: &App) -> Option<String> {
+    /// Reads `problem` again for the name typed: the first rule it breaks (docs/specs/accounts.md,
+    /// Its name); None while it is empty or free.
+    fn check_name(&mut self, cx: &App) {
         let name = self.name.read(cx).value();
-        if name.is_empty() {
-            return None;
-        }
         let commands = agents::commands_dir();
-        agents::name_problem(
-            &name,
-            |x| self.taken.iter().any(|t| t.eq_ignore_ascii_case(x)),
-            self.data.as_deref(),
-            commands.as_deref(),
-            agents::locate,
-        )
+        self.problem = (!name.is_empty())
+            .then(|| {
+                agents::name_problem(
+                    &name,
+                    |x| self.taken.iter().any(|t| t.eq_ignore_ascii_case(x)),
+                    self.data.as_deref(),
+                    commands.as_deref(),
+                    agents::locate,
+                )
+            })
+            .flatten();
     }
 
     /// Create works: a new account's name is typed and free.
     fn can_create(&self, cx: &App) -> bool {
-        self.kind.is_some() && !self.name.read(cx).value().is_empty() && self.problem(cx).is_none()
+        self.kind.is_some() && !self.name.read(cx).value().is_empty() && self.problem.is_none()
     }
 
     /// Who an item may be shared with: its agent's own folder, then its other accounts, by id,
@@ -518,9 +529,10 @@ impl Render for Form {
         match &self.entry {
             None => {
                 let f = form.clone();
-                let options = agent_choices(&self.agents)
-                    .into_iter()
-                    .map(|(id, title)| (id.into(), title.into()))
+                let options = self
+                    .choices
+                    .iter()
+                    .map(|(id, title)| (id.clone().into(), title.clone().into()))
                     .collect();
                 column = column
                     .child(
@@ -588,7 +600,7 @@ impl Render for Form {
             Some(entry) => matches!(self.command, Some(Ok(_))).then(|| entry.id.clone()),
             None => Some(
                 Some(self.name.read(cx).value().to_string())
-                    .filter(|n| !n.is_empty() && self.problem(cx).is_none())
+                    .filter(|n| !n.is_empty() && self.problem.is_none())
                     .unwrap_or_else(|| "claudinho".to_string()),
             ),
         };
@@ -646,8 +658,8 @@ impl Form {
         let red = self.red;
         let under = if typed.is_empty() {
             None
-        } else if let Some(problem) = self.problem(cx) {
-            Some(div().text_color(red).child(problem))
+        } else if let Some(problem) = &self.problem {
+            Some(div().text_color(red).child(problem.clone()))
         } else {
             Some(
                 div()
@@ -809,17 +821,22 @@ impl Form {
             let paths = item.paths.join(", ");
             let file = !item.paths[0].ends_with('/');
             let current = self.share.get(item.key).cloned().unwrap_or_default();
-            let choice: AnyElement = if let Some(target) = self.theirs.get(item.key) {
-                note(format!("Linked by you to {}", tilde(target))).into_any_element()
+            // Why it can't be chosen goes under its paths, with the room of the row (beside them it
+            // took all of it: the item's words broke at each letter); else its list, at the right.
+            let (why, choice) = if let Some(target) = self.theirs.get(item.key) {
+                (Some(format!("Linked by you to {}", tilde(target))), None)
             } else if file && !files_share {
-                note(templum_usage::accounts::NO_FILE_LINKS.to_string()).into_any_element()
+                (
+                    Some(templum_usage::accounts::NO_FILE_LINKS.to_string()),
+                    None,
+                )
             } else {
                 let f = form.clone();
                 let key = item.key;
                 let options = std::iter::once(("".into(), "Own".into()))
                     .chain(everyone.iter().cloned())
                     .collect();
-                menu_button(
+                let list = menu_button(
                     ElementId::Name(format!("account-share-{key}").into()),
                     options,
                     current.clone().into(),
@@ -834,8 +851,8 @@ impl Form {
                             cx.notify();
                         })
                     },
-                )
-                .into_any_element()
+                );
+                (None, Some(list))
             };
             // A file the source hasn't written yet is linked once it has.
             let waiting = file
@@ -853,6 +870,7 @@ impl Form {
                     .gap(px(8.0))
                     .child(
                         div()
+                            .id(ElementId::Name(format!("account-item-{}", item.key).into()))
                             .flex()
                             .flex_col()
                             .flex_1()
@@ -862,9 +880,11 @@ impl Form {
                                 format!("{paths} · Shared once {agent} writes one")
                             } else {
                                 paths
-                            })),
+                            }))
+                            .children(why.map(note))
+                            .test_support(),
                     )
-                    .child(div().flex_shrink_0().child(choice)),
+                    .children(choice.map(|list| div().flex_shrink_0().child(list))),
             );
         }
         div()
@@ -973,7 +993,10 @@ pub(crate) fn account_dialog(
         let (form, entity) = (form.clone(), entity.clone());
         App::subscribe(cx, &name, move |_, event: &InputEvent, cx| {
             if let InputEvent::Change = event {
-                form.update(cx, |_, cx| cx.notify());
+                form.update(cx, |form, cx| {
+                    form.check_name(cx);
+                    cx.notify();
+                });
                 entity.update(cx, |_, cx| cx.notify());
             }
         })

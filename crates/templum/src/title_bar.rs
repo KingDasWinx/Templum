@@ -30,6 +30,13 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         .child(
             div().flex_1().flex().items_center().pl(px(8.0)).child(
                 button("sidebar-button", ui)
+                    .relative()
+                    // The count of the requests, while the sidebar that has their button is hidden.
+                    .children(
+                        (!ws.sidebar)
+                            .then(|| crate::inbox::badge(ws, "sidebar-badge"))
+                            .flatten(),
+                    )
                     .child(
                         Icon::new(if ws.sidebar {
                             IconName::PanelLeftClose

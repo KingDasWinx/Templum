@@ -1223,6 +1223,7 @@ impl Items {
                 column,
                 title,
                 cards: n,
+                draft,
             } => menu
                 .item(item(ws, "Rename…", None, move |_, window, cx| {
                     let ws = cx.entity();
@@ -1247,7 +1248,11 @@ impl Items {
                 }))
                 .item(item(
                     ws,
-                    "Add a card",
+                    if draft {
+                        "Continue draft"
+                    } else {
+                        "Add a card"
+                    },
                     Some(IconName::Plus),
                     move |ws, window, cx| kanban::add_card(ws, board, column, window, cx),
                 ))
@@ -1280,9 +1285,7 @@ impl Items {
                 )),
             Items::Card { board, card, send } => menu
                 .item(item(ws, "Open", None, move |ws, window, cx| {
-                    if let Some(current) = ws.boards.card(board, card).cloned() {
-                        kanban::open_card(board, current, false, window, cx);
-                    }
+                    kanban::open_card(ws, board, card, window, cx);
                 }))
                 .map(|menu| send_to(ws, menu, send, window, cx))
                 .separator()

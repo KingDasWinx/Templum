@@ -8,8 +8,10 @@ use gpui_kit::{Context, ImageSource, Window};
 use templum_canvas::{BlockId, Rect, Size, chrome};
 
 use crate::alert;
+use crate::attachments;
 use crate::board;
 use crate::checklists;
+use crate::instructions;
 use crate::notes;
 use crate::prompt;
 use crate::session;
@@ -42,12 +44,25 @@ impl Workspace {
         use session::Loaded;
         match self.data_dir.as_deref().map(board::load) {
             Some(Loaded::Saved(boards)) => {
+                // Only boards read cleanly say what is held: otherwise nothing is deleted.
+                if let Some(data) = &self.data_dir
+                    && let Err(err) = attachments::sweep(data, &boards)
+                {
+                    eprintln!("templum: couldn't delete the files no card holds: {err}");
+                }
                 self.boards_saved = Some(boards.clone());
                 self.boards = boards;
             }
             Some(Loaded::Moved { to, why }) => {
+                // Their files go with them: the session starts empty, and a start after it
+                // would sweep every file the set-aside boards list.
+                let files = match self.data_dir.as_deref().map(attachments::set_aside) {
+                    Some(Ok(true)) => ", their files as attachments.bak".to_string(),
+                    Some(Err(err)) => format!(", and their files couldn't be set aside: {err}"),
+                    Some(Ok(false)) | None => String::new(),
+                };
                 let message = format!(
-                    "Couldn't read the boards ({why}); they were kept as {}",
+                    "Couldn't read the boards ({why}); they were kept as {}{files}",
                     to.display()
                 );
                 eprintln!("templum: {message}");
@@ -82,6 +97,29 @@ impl Workspace {
                 eprintln!("templum: {message}");
                 show_notification(window, cx, Notification::error(message));
                 self.checklists_frozen = true;
+            }
+            Some(Loaded::Nothing) | None => {}
+        }
+        match self.data_dir.as_deref().map(instructions::load) {
+            Some(Loaded::Saved(standing)) => {
+                self.standing_saved = Some(standing.clone());
+                self.standing = standing;
+            }
+            Some(Loaded::Moved { to, why }) => {
+                let message = format!(
+                    "Couldn't read the instructions ({why}); they were kept as {}",
+                    to.display()
+                );
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::warning(message));
+            }
+            Some(Loaded::Unreadable(why)) => {
+                let message = format!(
+                    "Couldn't read the instructions ({why}); they won't be saved this session"
+                );
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::error(message));
+                self.standing_frozen = true;
             }
             Some(Loaded::Nothing) | None => {}
         }
@@ -250,6 +288,8 @@ impl Workspace {
         self.others.insert(self.active, current);
         self.space = self.others.remove(to);
         self.active = to;
+        // Its requests are another workspace's: the first is selected.
+        self.inbox_at = None;
         if self.space.stopped {
             self.start_space(window, cx);
         }
@@ -351,6 +391,12 @@ impl Workspace {
             ws.space.pristine = false;
             (ws.space.name.clone(), moved)
         });
+        // The selected request's block may have moved away with the others.
+        if let Some(at) = self.inbox_at
+            && !self.inbox().iter().any(|w| w.key == at)
+        {
+            self.inbox_settle(&[at]);
+        }
         self.write_index(window, cx);
         if let Some((name, moved)) = moved
             && let Some(&first) = moved.first()

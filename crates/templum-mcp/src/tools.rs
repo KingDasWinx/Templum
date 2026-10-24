@@ -660,7 +660,8 @@ pub fn list() -> Value {
                             until the person answers: no limit unless you give timeout (seconds) or the \
                             person set one; if your client stops waiting, the answer is typed into your \
                             terminal later. The older question with options (strings) still works and \
-                            returns the answer as text.",
+                            returns the answer as text. Give why: what you are doing and what the answer \
+                            decides, so the person can answer without reading your terminal.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -674,6 +675,7 @@ pub fn list() -> Value {
                         "items": { "type": "string" },
                         "description": "The older shape's answers to offer; none for a text field.",
                     },
+                    "why": { "type": "string" },
                     "timeout": {
                         "type": "integer",
                         "minimum": 1,
@@ -699,11 +701,12 @@ pub fn list() -> Value {
             "description": "Hands a task to an agent connected to you: Templum types it into its terminal, after \
                             a line saying it is from you and its id (t7), and sends it. Its answer is what it \
                             sends with reply (Templum asks it to), else its last message when its turn ends. With wait, waits \
-                            for that answer (it may take minutes); without, says its id at once, and its end comes \
-                            back typed into your terminal as [task t7 …] with its time, what it spent and its \
-                            transcript, as does a dialog it waits on. To the agent on your task, it is a change to \
-                            that task, typed at once. Refused while the agent waits for its person or is on \
-                            another agent's task.",
+                            for that answer (it may take minutes); without, says its id once the agent took it \
+                            (a few seconds; one still starting gets it once ready), or why it didn't, and its end \
+                            comes back typed into your terminal as [task t7 …] with its time, what it spent and \
+                            its transcript, as does a dialog it waits on. To the agent on your task, it is a \
+                            change to that task, typed at once. Refused while the agent waits for its person or \
+                            is on another agent's task.",
             "_meta": always_load,
             "inputSchema": {
                 "type": "object",
@@ -826,8 +829,9 @@ pub fn list() -> Value {
         {
             "name": "list_cards",
             "description": "A board shown by a kanban connected to you: its columns, and each card's id, title, \
-                            labels, priority, assignee ((you) on yours), checklist progress and comment count. \
-                            With card, that card whole: its description, checklist items and comments too.",
+                            labels, priority, assignee ((you) on yours), checklist progress, comment and attachment counts. \
+                            With card, that card whole: its description, checklist items, attachments (each \
+                            one's name, size and path) and comments too.",
             "inputSchema": { "type": "object", "properties": { "board": board, "card": card } },
         },
         {
@@ -1848,7 +1852,7 @@ mod tests {
             .unwrap();
         let schema = &ask["inputSchema"];
         assert_eq!(schema["required"], Value::Null);
-        for key in ["questions", "question", "options", "timeout"] {
+        for key in ["questions", "question", "options", "why", "timeout"] {
             assert!(schema["properties"][key].is_object(), "{key}");
         }
         let question = &schema["properties"]["questions"]["items"]["properties"];

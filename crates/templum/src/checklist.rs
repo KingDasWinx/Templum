@@ -9,13 +9,15 @@ use gpui_kit::component::input::{Backspace, Escape, Input, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, ElementId, Entity, Focusable as _, FontWeight,
-    MouseButton, ScrollWheelEvent, SharedString, TestSupportExt, Window, div, px, relative,
+    MouseButton, MouseDownEvent, ScrollWheelEvent, SharedString, TestSupportExt, Window, div, px,
+    relative,
 };
 use templum_canvas::{BlockId, Size, chrome};
 
 use crate::checklists::{self, List};
-use crate::kanban::DragPreview;
+use crate::kanban::{DragPreview, scrollbar_over};
 use crate::list_dialog;
+use crate::markdown::PreviewScroll;
 use crate::note;
 use crate::notes;
 use crate::workspace::Workspace;
@@ -29,11 +31,12 @@ const NAME_FONT: f32 = 15.0;
 /// A check box's side, world units.
 const BOX: f32 = 14.0;
 
-/// A checklist block: the checklist it shows, by id (None: none, as when it was deleted), and the
-/// one field being edited.
+/// A checklist block: the checklist it shows, by id (None: none, as when it was deleted), the
+/// one field being edited, and its list's scroll, kept through zooms.
 pub(crate) struct Checklist {
     pub list: Option<u64>,
     pub editing: Option<Editing>,
+    pub scroll: PreviewScroll,
 }
 
 /// A name or an item of the block's checklist edited in place, every key written to the
@@ -149,10 +152,12 @@ fn list_view(
             ws.add_item_after(block, id, None, window, cx)
         }))
         .test_support();
-    div()
+    checklist.scroll.follow(z);
+    let scrolled = div()
         .id(("checklist-list", n))
         .size_full()
         .overflow_y_scroll()
+        .track_scroll(&checklist.scroll.handle)
         .flex()
         .flex_col()
         .px(px(12.0 * z))
@@ -180,7 +185,30 @@ fn list_view(
         .child(add)
         // Dropped on the list's empty space or on + Add an item: at the end.
         .on_drop(cx.listener(move |ws, drag: &ItemDrag, _, cx| move_item(ws, id, drag, None, cx)))
-        .test_support()
+        .test_support();
+    // The scrollbar goes over the list, not in it: in it, it would scroll away.
+    div()
+        .relative()
+        .size_full()
+        // The scrollbar takes every press on its strip, whatever the button, before the block
+        // under it: these go ahead of it, in the capture phase. An unpicked block is picked (a
+        // picked one isn't again: that would stop its field), and the middle button pans the
+        // canvas, as over the rest of the block.
+        .capture_any_mouse_down(cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+            if ws.space.focused != Some(block) {
+                ws.focus_block(block, window, cx);
+            }
+            if e.button == MouseButton::Middle {
+                ws.begin_pan(e.position);
+                cx.stop_propagation();
+            }
+        }))
+        .child(scrolled)
+        .child(scrollbar_over(
+            &checklist.scroll.handle,
+            ("checklist-scrollbar", n).into(),
+            z,
+        ))
         .into_any_element()
 }
 

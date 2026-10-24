@@ -108,14 +108,14 @@ fn a_resized_terminal_gets_its_rect_and_its_grid_back(cx: &mut TestAppContext) {
             ws.space.terminal(terminal).unwrap().term.grid_size()
         })
     };
-    cx.update_window(handle, |_, _, cx| {
+    cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
             ws.fit_terminal(terminal, before);
             let at = |p: (f32, f32)| point(px(p.0), px(p.1));
             ws.begin_resize(terminal, templum_canvas::Edges::BOTTOM_RIGHT, at(corner));
             let to = at((corner.0 + 200.0, corner.1 + 60.0));
             ws.drag_to(to, false, cx);
-            ws.release(to, cx);
+            ws.release(to, window, cx);
         })
     })
     .unwrap();

@@ -15,6 +15,9 @@ irm https://github.com/KingDasWinx/Templum/releases/latest/download/install.ps1 
 They install the newest release. For this one, put `TEMPLUM_VERSION={version}` before `sh`
 (`curl … | TEMPLUM_VERSION={version} sh`), or run `$env:TEMPLUM_VERSION = "{version}"` before `irm`.
 
+**Arch Linux**, from the AUR ([`templum-bin`](https://aur.archlinux.org/packages/templum-bin)): `yay -S templum-bin`
+(or `paru -S templum-bin`). Your AUR helper updates it.
+
 ## Downloads
 
 An **installer** puts Templum in your system, with its shortcuts; a **portable** file runs from wherever you keep it.

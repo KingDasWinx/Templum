@@ -9,7 +9,7 @@ use templum_canvas::Wire;
 use super::bus::{
     after, answer_soon, answered, call, call_later, event, me, result_of, screen_until, screen_with,
 };
-use super::delegate::{found, prints, snapshot};
+use super::delegate::{entered, found, prints, snapshot};
 use super::*;
 
 /// The prompt "say hi" went with its Enter: the terminal echoed it and `cat` printed it back,
@@ -330,6 +330,7 @@ fn a_prompt_waits_for_the_agents_input_to_take_pastes(cx: &mut TestAppContext) {
                 (Some(0.0), Some(0)),
                 "its session is its task's"
             );
+            assert_eq!(handed.text, "say hi", "the task as written");
         });
         // The prompt ends with how to answer it.
         ws.read_with(cx, |ws, _| {
@@ -374,7 +375,7 @@ fn a_prompt_waits_for_the_agents_input_to_take_pastes(cx: &mut TestAppContext) {
             ),
         );
         screen_with(&ws, cx, new, "say hi");
-        enter(cx);
+        entered(&ws, cx, new);
         said_twice(&ws, cx, new);
         event(
             handle,
@@ -429,7 +430,7 @@ fn a_spawns_task_past_its_timeout_isnt_told(cx: &mut TestAppContext) {
         looks += 1;
     }
     screen_with(&ws, cx, new, "say hi");
-    enter(cx);
+    entered(&ws, cx, new);
     event(handle, &ws, cx, &theirs, json!({ "event": "submitted" }));
     after(cx, templum_mcp::tools::TASK_WAIT * 1000);
     let told: Vec<String> = ws.read_with(cx, |ws, _| {
@@ -584,7 +585,7 @@ fn a_snapshot_before_the_agent_started_doesnt_stop_its_prompt(cx: &mut TestAppCo
         looks += 1;
     }
     screen_with(&ws, cx, new, "say hi");
-    enter(cx);
+    entered(&ws, cx, new);
     ws.read_with(cx, |ws, _| {
         let pane = ws.space.terminal(new).unwrap();
         assert!(pane.handed.is_some(), "not taken: {:?}", pane.screen());
@@ -619,9 +620,10 @@ fn wait_for_idle_waits_on_an_agent_a_snapshot_found_no_trace_of_yet(cx: &mut Tes
 
 /// An agent no snapshot found yet may never have started (its folder's trust declined, its
 /// shell's startup asking something): typed text could run in its shell, which macOS can't tell
-/// is in front until a snapshot found the agent. What another agent hands it is refused until then.
+/// is in front until a snapshot found the agent. A reply to it is refused until then; a change to
+/// the task its prompt hands it, until that prompt is typed.
 #[gpui_kit::test]
-fn nothing_is_handed_to_an_agent_no_snapshot_found_yet(cx: &mut TestAppContext) {
+fn nothing_is_typed_into_an_agent_no_snapshot_found_yet(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);
     let (terminal, _) = me(&ws, cx, mine);
     let folder = tempfile::tempdir().unwrap();
@@ -643,7 +645,179 @@ fn nothing_is_handed_to_an_agent_no_snapshot_found_yet(cx: &mut TestAppContext) 
     assert!(failed && text.contains("still starting"), "{text}");
     let task = json!({ "block": uid, "task": "go" });
     let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
-    assert!(failed && text.contains("still starting"), "{text}");
+    assert!(failed && text.contains("it is starting"), "{text}");
+}
+
+/// A task handed to an agent just spawned (no prompt), still starting: no snapshot found it yet
+/// (Codex on Windows), or its screen isn't up (OpenCode, Copilot CLI: a paste typed then is
+/// lost). It waits, as a spawn's prompt does, and is typed once the agent is ready.
+#[gpui_kit::test]
+fn a_task_for_an_agent_still_starting_is_typed_once_it_is_ready(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "codex", "folder": folder.path() });
+    call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    let new = spawned(&ws, cx, mine);
+    let (worker, uid) = me(&ws, cx, new);
+    // A snapshot before its process started: it found no agent there yet.
+    snapshot(
+        handle,
+        &ws,
+        cx,
+        new,
+        templum_terminal::Inspection::default(),
+    );
+    let task = json!({ "block": uid, "task": "say hi" });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+    assert_eq!(
+        (failed, text),
+        (
+            false,
+            format!(
+                "Handed to {uid} as task t1. It is starting: the task is typed once it is ready."
+            )
+        )
+    );
+    let waiting = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some())
+    };
+    let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
+    in_front(&ws, cx, new, true);
+    for _ in 0..3 {
+        after(cx, look);
+    }
+    assert!(waiting(cx), "no snapshot found it: nothing typed");
+    let p = ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().term.processes());
+    let running = templum_terminal::Inspection {
+        agent: Some("codex".into()),
+        pid: p.foreground,
+        ..Default::default()
+    };
+    snapshot(handle, &ws, cx, new, running);
+    let mut looks = 0;
+    while waiting(cx) {
+        assert!(looks < 10, "never typed");
+        std::thread::sleep(Duration::from_millis(100));
+        after(cx, look);
+        looks += 1;
+    }
+    screen_with(&ws, cx, new, "say hi");
+    entered(&ws, cx, new);
+    said_twice(&ws, cx, new);
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    let task = ws.read_with(cx, |ws, _| {
+        let handed = ws.space.terminal(new).unwrap().handed.as_ref();
+        handed.map(|h| (h.id, h.taken))
+    });
+    assert_eq!(task, Some((1, true)), "its task, taken");
+}
+
+/// A task handed to an agent still starting that isn't ready a minute after: it ends, saying it
+/// never got its task, with its screen.
+#[gpui_kit::test]
+fn a_task_for_an_agent_never_ready_ends_a_minute_after_it_was_handed(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "codex", "folder": folder.path() });
+    call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    let new = spawned(&ws, cx, mine);
+    let (_, uid) = me(&ws, cx, new);
+    let task = json!({ "block": uid, "task": "say hi" });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+    assert!(!failed && text.contains("It is starting"), "{text}");
+    let idle = json!({ "block": uid });
+    let waiting = call_later(handle, &ws, cx, &terminal, 1, "wait_for_idle", idle);
+    ws.update(cx, |ws, _| {
+        let handed = ws.space.terminal_mut(new).unwrap().handed.as_mut().unwrap();
+        handed.since -= crate::workspace::spawn::STARTS_WITHIN;
+    });
+    after(cx, crate::workspace::spawn::READY_LOOK.as_millis() as u64);
+    let (failed, text) = answered(&waiting);
+    assert!(
+        failed
+            && text.starts_with(&format!(
+                "{uid} never got its task: a minute after it was handed,"
+            )),
+        "{text}"
+    );
+}
+
+/// An agent spawned without a prompt that no snapshot found within a minute of its start never
+/// started: a task handed to it is refused, as in a terminal running no agent, not kept for an
+/// agent that will never be ready.
+#[gpui_kit::test]
+fn a_task_for_an_agent_that_never_started_is_refused(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "codex", "folder": folder.path() });
+    call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    let new = spawned(&ws, cx, mine);
+    let (_, uid) = me(&ws, cx, new);
+    snapshot(
+        handle,
+        &ws,
+        cx,
+        new,
+        templum_terminal::Inspection::default(),
+    );
+    // Its cover came off; its command was typed a minute ago.
+    ws.update(cx, |ws, _| {
+        let pane = ws.space.terminal_mut(new).unwrap();
+        pane.starting = None;
+        pane.typed_agent = pane
+            .typed_agent
+            .map(|at| at - crate::workspace::spawn::STARTS_WITHIN);
+    });
+    let task = json!({ "block": uid, "task": "say hi" });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+    assert!(failed && text.contains("runs no agent"), "{text}");
+}
+
+/// A starting agent whose hooks say it waits for its person: its prompt waits, as the dialog
+/// would take it for its answer, and is typed once the dialog is gone.
+#[gpui_kit::test]
+fn a_prompt_waits_while_its_agent_asks_its_person(cx: &mut TestAppContext) {
+    use crate::workspace::AgentState;
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "codex", "folder": folder.path(), "prompt": "say hi" });
+    call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    let new = spawned(&ws, cx, mine);
+    in_front(&ws, cx, new, true);
+    found(&ws, cx, new);
+    let set = |cx: &mut TestAppContext, state| {
+        ws.update(cx, |ws, _| {
+            ws.space.terminal_mut(new).unwrap().state = state
+        })
+    };
+    set(
+        cx,
+        Some(AgentState::NeedsYou(Some("Trust these hooks?".into()))),
+    );
+    let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
+    let waiting = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some())
+    };
+    for _ in 0..4 {
+        std::thread::sleep(Duration::from_millis(100));
+        after(cx, look);
+    }
+    assert!(waiting(cx), "typed into its dialog");
+    set(cx, Some(AgentState::Idle));
+    let mut looks = 0;
+    while waiting(cx) {
+        assert!(looks < 10, "never typed");
+        std::thread::sleep(Duration::from_millis(100));
+        after(cx, look);
+        looks += 1;
+    }
+    screen_with(&ws, cx, new, "say hi");
+    entered(&ws, cx, new);
+    said_twice(&ws, cx, new);
 }
 
 /// A spawned agent no snapshot found a while after its spawn never started: its prompt and its
@@ -738,7 +912,7 @@ fn another_agents_prompt_waits_for_its_process_and_a_still_screen(cx: &mut TestA
     }
     assert!(looks >= 2, "typed once two looks saw the same screen");
     screen_with(&ws, cx, new, "say hi");
-    enter(cx);
+    entered(&ws, cx, new);
     said_twice(&ws, cx, new);
 }
 
@@ -1373,11 +1547,14 @@ fn in_worktree(
     (worker, them, repo.join(".worktrees").join(name))
 }
 
-/// The balloon of block `mine` drawn, long enough ago for presses to count; then its yes (allow)
-/// or its no (deny) pressed.
-fn press_balloon(handle: AnyWindowHandle, cx: &mut TestAppContext, mine: BlockId, what: &str) {
-    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
-        .unwrap();
+/// The inbox opened and drawn, long enough ago for presses to count; then the part `what` of the
+/// request of block `mine` (its yes, allow, or its no, deny) pressed.
+fn press_in_inbox(handle: AnyWindowHandle, cx: &mut TestAppContext, mine: BlockId, what: &str) {
+    cx.update_window(handle, |_, window, cx| {
+        inbox_open(window, cx);
+        window.render_frame(cx)
+    })
+    .unwrap();
     after(cx, 600);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
@@ -1437,13 +1614,13 @@ fn merge_worktree_asks_the_person_then_merges_and_remove_worktree_removes_it(
     );
     assert!(answers.try_recv().is_err(), "it waits for the person");
     let line = ws.read_with(cx, |ws, cx| {
-        ws.allow_line(ws.balloon(&terminal).unwrap().0, cx)
+        ws.allow_line(ws.asking(&terminal).unwrap().0, cx)
     });
     assert!(
         line.ends_with(" wants to merge w (1 commits) into main."),
         "{line}"
     );
-    press_balloon(handle, cx, mine, "allow");
+    press_in_inbox(handle, cx, mine, "allow");
     let (failed, text) = answer_soon(cx, &answers);
     assert_eq!(
         (failed, text.as_str()),
@@ -1536,14 +1713,14 @@ fn remove_worktree_with_work_in_it_asks_before_discarding_and_keep_keeps_it(
         remove(true),
     );
     assert_eq!(
-        ws.read_with(cx, |ws, _| ws.balloon(&terminal).map(|(_, n)| n)),
+        ws.read_with(cx, |ws, _| ws.asking(&terminal).map(|(_, n)| n)),
         Some(2)
     );
-    press_balloon(handle, cx, mine, "q0-option-0");
-    press_balloon(handle, cx, mine, "send");
+    press_in_inbox(handle, cx, mine, "q0-option-0");
+    press_in_inbox(handle, cx, mine, "send");
     assert_eq!(answer_soon(cx, &question), (false, "Yes".into()));
     let line = ws.read_with(cx, |ws, cx| {
-        ws.allow_line(ws.balloon(&terminal).unwrap().0, cx)
+        ws.allow_line(ws.asking(&terminal).unwrap().0, cx)
     });
     assert!(
         line.ends_with(
@@ -1551,7 +1728,7 @@ fn remove_worktree_with_work_in_it_asks_before_discarding_and_keep_keeps_it(
         ),
         "{line}"
     );
-    press_balloon(handle, cx, mine, "deny");
+    press_in_inbox(handle, cx, mine, "deny");
     assert_eq!(
         answer_soon(cx, &answers),
         (true, "The person said no.".into())
@@ -1566,7 +1743,7 @@ fn remove_worktree_with_work_in_it_asks_before_discarding_and_keep_keeps_it(
         "remove_worktree",
         remove(true),
     );
-    press_balloon(handle, cx, mine, "allow");
+    press_in_inbox(handle, cx, mine, "allow");
     assert_eq!(
         answer_soon(cx, &answers),
         (false, "Removed the worktree d and its branch.".into())
@@ -1591,7 +1768,7 @@ fn remove_worktree_with_work_in_it_asks_before_discarding_and_keep_keeps_it(
     git_run(&root, &["commit", "-qam", "ours"]);
     let merge = json!({ "worktree": "c", "folder": root });
     let answers = call_later(handle, &ws, cx, &terminal, 8, "merge_worktree", merge);
-    press_balloon(handle, cx, mine, "allow");
+    press_in_inbox(handle, cx, mine, "allow");
     assert_eq!(
         answer_soon(cx, &answers),
         (
@@ -1688,7 +1865,7 @@ fn a_worktree_changed_since_the_question_isnt_deleted(cx: &mut TestAppContext) {
     let answers = call_later(handle, &ws, cx, &terminal, 5, "remove_worktree", remove);
     // More work while the person reads the question.
     std::fs::write(wt.join("c.txt"), "more work\n").unwrap();
-    press_balloon(handle, cx, mine, "allow");
+    press_in_inbox(handle, cx, mine, "allow");
     assert_eq!(
         answer_soon(cx, &answers),
         (
@@ -1724,7 +1901,7 @@ fn a_merge_allowed_into_a_branch_isnt_made_into_another(cx: &mut TestAppContext)
     let answers = call_later(handle, &ws, cx, &terminal, 5, "merge_worktree", merge);
     // The person checks out another branch while they read the question.
     git_run(&root, &["checkout", "-q", "-b", "other"]);
-    press_balloon(handle, cx, mine, "allow");
+    press_in_inbox(handle, cx, mine, "allow");
     assert_eq!(
         answer_soon(cx, &answers),
         (
@@ -1819,7 +1996,7 @@ fn remove_worktree_names_the_ignored_files_it_would_delete(cx: &mut TestAppConte
     let discard = json!({ "worktree": "e", "folder": root, "discard": true });
     let answers = call_later(handle, &ws, cx, &terminal, 5, "remove_worktree", discard);
     let line = ws.read_with(cx, |ws, cx| {
-        ws.allow_line(ws.balloon(&terminal).unwrap().0, cx)
+        ws.allow_line(ws.asking(&terminal).unwrap().0, cx)
     });
     assert!(
         line.ends_with(
@@ -1828,7 +2005,7 @@ fn remove_worktree_names_the_ignored_files_it_would_delete(cx: &mut TestAppConte
         ),
         "{line}"
     );
-    press_balloon(handle, cx, mine, "allow");
+    press_in_inbox(handle, cx, mine, "allow");
     assert_eq!(
         answer_soon(cx, &answers),
         (false, "Removed the worktree e and its branch.".into())

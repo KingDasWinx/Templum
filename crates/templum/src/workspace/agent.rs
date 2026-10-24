@@ -15,6 +15,7 @@ use templum_agent::{
 use super::Workspace;
 use super::approvals::STOPPED;
 use super::bus::templum_in;
+use super::delegate::NoticeKind;
 use crate::chat::Answer;
 
 /// How many of the engine's stderr lines are kept.
@@ -79,7 +80,7 @@ impl Workspace {
 
     /// The engine takes `text` as a message, started first when none runs; a refusal is the
     /// turn's failure row.
-    fn tell_engine(&mut self, text: &str, cx: &mut Context<Self>) {
+    pub(super) fn tell_engine(&mut self, text: &str, cx: &mut Context<Self>) {
         if self.templum_agent.engine.is_none()
             && let Err(why) = self.start_engine(cx)
         {
@@ -109,17 +110,21 @@ impl Workspace {
     }
 
     /// A notice for `to`, about the agent in `terminal`: the Templum Agent's goes to its chat
-    /// and wakes it; a terminal's is typed there (`queue_notice`).
+    /// and wakes it; a terminal's is typed there (`queue_notice`). `task`: the id of the task `to`
+    /// handed that it is about, which waits for others to come with it (`NoticeKind`).
     pub(super) fn notice_to(
         &mut self,
         to: String,
         text: String,
         terminal: &str,
         level: NoticeLevel,
+        task: Option<u64>,
         cx: &mut Context<Self>,
     ) {
+        let kind = task.map_or(NoticeKind::Other, |_| NoticeKind::Task(level));
+        let about = task.map(|id| (terminal.to_string(), id));
         if to != templum_agent::ASKER {
-            return self.queue_notice(to, text, cx);
+            return self.push_notice(to, text, kind, about, cx);
         }
         let target = self.caller(terminal).map(|(space, id)| Target {
             block: self
@@ -127,23 +132,25 @@ impl Workspace {
                 .and_then(|s| s.uids.get(&id).cloned()),
             workspace: Some(space),
         });
-        self.agent_notice(text, target, level, cx);
+        self.agent_notice(text, target, level, (kind, about), cx);
     }
 
-    /// A task of the Templum Agent's ended, or its agent waits for its person: a notice row, and
-    /// the notice as a message to the engine, which answers it at once when idle, else after its
-    /// turn.
+    /// A task of the Templum Agent's ended, or its agent waits for its person: a notice row at
+    /// once, and the notice as a message to the engine, which answers it at once when idle, else
+    /// after its turn. The notices about tasks wait for each other as a terminal's do
+    /// (`deliver_notices`): the engine hears them as one message.
     pub(super) fn agent_notice(
         &mut self,
         text: String,
         target: Option<Target>,
         level: NoticeLevel,
+        (kind, about): (NoticeKind, Option<(String, u64)>),
         cx: &mut Context<Self>,
     ) {
         let agent = &mut self.templum_agent;
         agent.conversation.notice(&text, level, target);
         agent.unread |= !agent.open;
-        self.tell_engine(&text, cx);
+        self.push_notice(templum_agent::ASKER.to_string(), text, kind, about, cx);
     }
 
     /// Starts the engine on the conversation's session (a new one when it has none), with the
@@ -261,6 +268,15 @@ impl Workspace {
                     let agent = &mut self.templum_agent;
                     let ended = matches!(event, ChatEvent::TurnEnded { .. });
                     let started = matches!(event, ChatEvent::Started { .. });
+                    // A process about to end for a settings change still reports the old model
+                    // at each turn it takes (a queued message's): the chosen one stays shown.
+                    if let ChatEvent::Started {
+                        model: Some(model), ..
+                    } = &event
+                        && !agent.restart
+                    {
+                        agent.model = Some(model.clone());
+                    }
                     match event {
                         ChatEvent::TurnEnded {
                             error: Some(ref e), ..
@@ -424,6 +440,9 @@ impl Workspace {
     /// (its next message resumes the session); one at work ends at its turn's end.
     pub(super) fn engine_settings_changed(&mut self) {
         let agent = &mut self.templum_agent;
+        // What the engine reported is about the old settings: the chip shows the chosen model
+        // until the new engine reports its own.
+        agent.model = None;
         if agent.engine.is_none() {
             return;
         }

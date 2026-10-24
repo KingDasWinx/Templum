@@ -5,17 +5,23 @@ use std::time::Duration;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
+use gpui_kit::component::Sizable as _;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Animation, AnimationExt as _, AnyElement, BoxShadow, ClickEvent, Context, ElementId,
+    Anchor, Animation, AnimationExt as _, AnyElement, BoxShadow, ClickEvent, Context, ElementId,
     FollowMode, MouseButton, MouseDownEvent, TestSupportExt, Window, div, list, point, px,
 };
 
+use crate::settings::templum_agent::set_model;
 use crate::workspace::Workspace;
 
 const WIDTH: f32 = 640.0;
 const SIDES: f32 = 32.0;
+/// Full screen leaves this much canvas on every side.
+const INSET: f32 = 16.0;
 const MIN_H: f32 = 240.0;
 /// At most this much of the canvas's height.
 const MAX_SHARE: f32 = 0.7;
@@ -23,6 +29,21 @@ const HEADER: f32 = 36.0;
 /// It rises this far as it fades in.
 const RISE: f32 = 12.0;
 const APPEAR: Duration = Duration::from_millis(220);
+
+/// The card's width on a canvas `canvas_w` wide.
+fn width(canvas_w: f32, full: bool) -> f32 {
+    if full {
+        canvas_w - 2.0 * INSET
+    } else {
+        WIDTH.min(canvas_w - SIDES)
+    }
+}
+
+/// The width of an approval pinned in the open card: the card's less its border and the padding
+/// around the approval.
+pub(crate) fn approval_width(canvas_w: f32, full: bool) -> f32 {
+    width(canvas_w, full) - 2.0 - 2.0 * 8.0
+}
 
 /// The person's message Catch me up sends.
 pub(crate) const CATCH_UP: &str = "Catch me up: what's going on?";
@@ -56,6 +77,7 @@ pub(crate) fn render(
         return None;
     }
     let ui = ws.ui;
+    let full = agent.full;
     let rows = &agent.conversation.rows;
     let button = |id: &'static str, icon: IconName, tip: &'static str| {
         div()
@@ -90,12 +112,7 @@ pub(crate) fn render(
                 .text_color(ui.title)
                 .child("Templum Agent"),
         )
-        .child(
-            div()
-                .text_size(px(12.0))
-                .text_color(ui.title_dim)
-                .child(super::pill::engine(ws)),
-        )
+        .child(model_chip(ws, cx))
         .child(div().flex_1())
         .when_some(meter(ws), |el, meter| {
             el.child(
@@ -142,6 +159,18 @@ pub(crate) fn render(
                     .test_support(),
             )
         })
+        .child(
+            if full {
+                button("agent-full", IconName::Minimize2, "Exit full screen")
+            } else {
+                button("agent-full", IconName::Maximize2, "Full screen")
+            }
+            .on_click(cx.listener(|ws, _: &ClickEvent, _, cx| {
+                ws.templum_agent.full = !ws.templum_agent.full;
+                cx.notify();
+            }))
+            .test_support(),
+        )
         .child(
             button("agent-new", IconName::MessageSquarePlus, "New chat")
                 .on_click(cx.listener(|ws, _: &ClickEvent, _, cx| ws.new_chat(cx)))
@@ -275,9 +304,10 @@ pub(crate) fn render(
         .id("agent-chat")
         .flex()
         .flex_col()
-        .w(px(WIDTH.min(canvas_w - SIDES)))
+        .w(px(width(canvas_w, full)))
         .min_h(px(MIN_H))
-        .max_h(px(max_h))
+        .when(full, |el| el.h(px((canvas_h - 2.0 * INSET).max(MIN_H))))
+        .when(!full, |el| el.max_h(px(max_h)))
         .rounded(px(14.0))
         .bg(ui.surface)
         .border_1()
@@ -325,4 +355,45 @@ pub(crate) fn render(
         )
         .into_any_element(),
     )
+}
+
+/// The engine chip: the agent and its model; a click opens the models Settings offers, the
+/// current one checked, and Another model… goes to Settings ▸ Templum Agent to type one.
+fn model_chip(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
+    let current = ws.config.templum_agent.model.clone();
+    let models = ws.engine_models();
+    let ws_entity = cx.entity();
+    Button::new("agent-model")
+        .ghost()
+        .small()
+        .dropdown_caret(true)
+        .label(super::pill::engine(ws))
+        .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _, _| {
+            let other = !current.is_empty() && !models.contains(&current);
+            let choices = std::iter::once((String::new(), "Default".to_string()))
+                .chain(models.iter().map(|m| (m.clone(), m.clone())));
+            let menu = choices.fold(menu, |menu, (model, label)| {
+                let ws = ws_entity.clone();
+                menu.item(
+                    PopupMenuItem::new(label)
+                        .checked(model == current)
+                        .on_click(move |_, window, cx| {
+                            ws.update(cx, |ws, cx| {
+                                set_model(ws, &model, cx);
+                                // The button took the keyboard from the field: it goes back.
+                                let input = ws.agent_input(window, cx);
+                                input.update(cx, |input, cx| input.focus(window, cx));
+                            })
+                        }),
+                )
+            });
+            let ws = ws_entity.clone();
+            menu.item(
+                PopupMenuItem::new("Another model…")
+                    .checked(other)
+                    .on_click(move |_, window, cx| {
+                        ws.update(cx, |ws, cx| ws.open_agent_settings(window, cx))
+                    }),
+            )
+        })
 }

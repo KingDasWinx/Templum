@@ -25,11 +25,40 @@ block only when the block is selected ([below](#the-wheel-over-blocks)).
 Alt alone types nothing in a terminal, and Alt+key still reaches it (the layer only takes the pointer). On the dev
 machine (Hyprland), window bindings use Super, so Alt with the mouse is free.
 
+## Moving a selection
+
+Blocks are selected with Shift+drag on the empty canvas or Shift+click on a title. With two or more selected, one
+box is drawn around all of them, as Figma does: their union and a small margin (8 canvas units) outside, a
+hairline in the theme's accent, at the canvas's zoom. It follows the blocks as they move or resize, and takes no
+events itself (`Canvas::selection_box`, `templum-canvas`).
+
+- **Press anywhere to move them.** A left press on any part of a selected block (its title or its body) or on the
+  empty canvas inside the box starts moving every selected block, still selected. The body's content doesn't hear
+  that press: no text selection in a terminal, no caret in a note, no kanban card drag. One selected block moves by
+  its body too, though no box is drawn around it.
+- **A click doesn't move them.** A press let go without moving past a click: on a selected block's *body* it picks
+  that block (the keyboard goes to it, the selection ends), so the person can type right after; on the empty
+  canvas inside the box it ends the selection; on a selected *title* nothing changes, the selection stays.
+- **Shift+click** on a selected block, its title or its body, takes it out of the selection. Only a title adds a
+  block that isn't selected: the press on an unselected body belongs to its content.
+- Not affected: a right-click on a selected block opens its menu, with the selection's items; the middle button
+  pans; the header's buttons, the resize strips along the sides, the corner squares and the grip keep their
+  presses; a double-click on a title frames the block; grid mode's tiles (no free move, no box). The wheel over
+  selected blocks scrolls their content, [below](#the-wheel-over-blocks).
+- The body's content keeps the presses that are its own: a terminal's find field and the notice of a request that
+  waits for the person (only the title moves the group over the find field) and a terminal's Ctrl+click (Cmd on
+  macOS), which opens a link. Far away, the block's label is its title: a click on it keeps the selection, a
+  double-click frames the block.
+- A click is a press let go within a click's distance of where it started, without the wheel having carried the
+  selection. On a body or in the box, blocks nudged on the way are put back, with no step for Ctrl+Z.
+- Held, the selection pans the canvas at its edge like a title drag, [below](#holding-a-block).
+
 ## Holding a block
 
-While a block (or a selection) is held by its title, the wheel, or two fingers on a touchpad, pans the canvas, a
-mouse's wheel and Ctrl+wheel included, and the block stays under the pointer: it can be carried farther than the
-window shows without letting go.
+While a block (or a selection) is held by its title, body or box, the wheel, or two fingers on a touchpad, pans
+the canvas, a mouse's wheel and Ctrl+wheel included, and the block stays under the pointer: it can be carried
+farther than the window shows without letting go. That holds over any block, selected or not (`route_wheel` leaves
+the content nothing to scroll meanwhile).
 
 Bringing the pointer near the canvas's edge pans it too, the way the selection rectangle (Shift+drag) does: the
 same rule (`templum_canvas::edge_scroll`: a 40 px zone, faster the nearer the edge, full speed at it or past it,

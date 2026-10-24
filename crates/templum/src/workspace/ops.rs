@@ -17,7 +17,7 @@ use super::{Body, DEFAULT_COLS, DEFAULT_ROWS, Kanban, Space, Workspace, remember
 use crate::board::{Assignee, Card, Priority};
 use crate::checklist::{self, Checklist};
 use crate::note::{self, Note};
-use crate::{checklists, notes};
+use crate::{attachments, checklists, notes};
 
 /// A block [`Workspace::add_block_in`] opens.
 pub(crate) enum NewBlock {
@@ -162,6 +162,7 @@ impl Workspace {
                     let shown = Checklist {
                         list: Some(list),
                         editing: None,
+                        scroll: Default::default(),
                     };
                     Some(ws.add_block(rect, Body::Checklist(shown)))
                 }
@@ -436,13 +437,13 @@ impl Workspace {
         enter: bool,
         cx: &mut Context<Self>,
     ) -> Outcome {
-        let Some(worker) = self
-            .space_named(space)
-            .and_then(|s| s.terminal(id))
-            .map(|pane| pane.term.id().to_string())
-        else {
+        let Some(pane) = self.space_named(space).and_then(|s| s.terminal(id)) else {
             return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
         };
+        if let Err(refused) = pane.read_only(block) {
+            return Outcome::Now(refused);
+        }
+        let worker = pane.term.id().to_string();
         self.asker_wrote(&worker, asker);
         if !enter {
             if let Some(pane) = self.pane(&worker) {
@@ -636,6 +637,11 @@ impl Workspace {
             1 => line.push_str("  1 comment"),
             n => line.push_str(&format!("  {n} comments")),
         }
+        match c.attachments.len() {
+            0 => {}
+            1 => line.push_str("  1 attachment"),
+            n => line.push_str(&format!("  {n} attachments")),
+        }
         line
     }
 
@@ -669,6 +675,18 @@ impl Workspace {
             for item in &c.checklist {
                 let mark = if item.done { 'x' } else { ' ' };
                 text.push_str(&format!("\n  {} [{mark}] {}", item.id, flat(&item.text)));
+            }
+        }
+        if let (Some(data), false) = (&self.data_dir, c.attachments.is_empty()) {
+            text.push_str("\nattachments:");
+            for a in &c.attachments {
+                let path = attachments::dir(data, c.id).join(&a.name);
+                let size = attachments::size_text(a.size);
+                text.push_str(&format!(
+                    "\n  {}  {size}  {}",
+                    flat(&a.name),
+                    path.display()
+                ));
             }
         }
         let now = notes::now();

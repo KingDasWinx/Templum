@@ -20,7 +20,7 @@ use crate::keys::{self, Command};
 use crate::menu;
 
 use super::{
-    CLICK_SLOP, Drag, QUIT_AGAIN, Tool, Workspace, effective, option_types_text, secondary,
+    CLICK_SLOP, Copied, Drag, QUIT_AGAIN, Tool, Workspace, effective, option_types_text, secondary,
     show_notification, undo_key, workspace_digit,
 };
 
@@ -109,7 +109,7 @@ impl Workspace {
         }
     }
 
-    pub(super) fn local(&self, pos: PixelPoint<Pixels>) -> Point {
+    pub(crate) fn local(&self, pos: PixelPoint<Pixels>) -> Point {
         Point::new(
             f32::from(pos.x - self.origin.x),
             f32::from(pos.y - self.origin.y),
@@ -135,7 +135,7 @@ impl Workspace {
             return;
         }
         let p = self.local(pos);
-        self.drag = Gesture::move_block(&self.space.canvas, id, p).map(|g| Drag::held(g, p));
+        self.drag = Gesture::move_block(&self.space.canvas, id, p).map(|g| Drag::held(g, p, None));
         self.placing(&[id]);
     }
 
@@ -387,7 +387,10 @@ impl Workspace {
             .camera
             .pan_by(Point::new(-v.x * dt, -v.y * dt));
         match &mut self.drag {
-            Some(Drag::Held { gesture, .. }) => {
+            Some(Drag::Held {
+                gesture, carried, ..
+            }) => {
+                *carried = true;
                 self.space.guides = gesture.update(&mut self.space.canvas, pointer).guides;
             }
             _ => self.marquee_to(pointer),
@@ -569,12 +572,44 @@ impl Workspace {
         }
     }
 
+    /// The button let go at `pos` on a selection the person made in a terminal (a drag, a double
+    /// or triple click): it is copied, once, with `terminal.copy_on_select` on, and a quiet
+    /// "Copied" shows there.
+    pub(super) fn copy_on_select(&mut self, pos: PixelPoint<Pixels>, cx: &mut Context<Self>) {
+        if let Some(Drag::Select(id)) = self.drag
+            && self.config.terminal.copy_on_select
+            && let Some(text) = self
+                .space
+                .terminal(id)
+                .and_then(|pane| pane.term.shared().selection_text())
+            && let Some(block) = self.space.canvas.get(id)
+        {
+            let world = self.space.canvas.camera.to_world(self.local(pos));
+            self.space.copied = Some(Copied {
+                block: id,
+                at: Point::new(
+                    world.x - block.rect.x,
+                    world.y - block.rect.y - chrome::TITLE_H,
+                ),
+                // A drag past the output takes empty lines along: not counted.
+                lines: text.trim_end().lines().count(),
+                since: cx.background_executor().now(),
+            });
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            cx.notify();
+        }
+    }
+
     pub(crate) fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
-        if let Some(pane) = self.space.focused_terminal() {
-            pane.person_typed();
+        if let Some(pane) = self
+            .space
+            .focused_terminal()
+            .filter(|p| p.follows.is_none())
+        {
+            pane.person_wrote();
             pane.term.paste(&text);
         }
     }
@@ -589,7 +624,12 @@ impl Workspace {
     /// Mouse up: a press on the empty canvas that didn't pan is a click, and leaves no terminal
     /// focused (typing then reaches none; panning keeps the focus) and no block selected; on a
     /// wire, it selects the wire, so Delete removes it.
-    pub(super) fn release(&mut self, pos: PixelPoint<Pixels>, cx: &mut Context<Self>) {
+    pub(super) fn release(
+        &mut self,
+        pos: PixelPoint<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // The Wire tool let go off the canvas (over it, its layer took the drag): its curve goes.
         if matches!(self.drag, Some(Drag::Wire { .. })) {
             cx.notify();
@@ -605,10 +645,14 @@ impl Workspace {
         if self.space.canvas.blocks().iter().any(|b| self.moving(b.id)) {
             cx.notify();
         }
+        // Carried by the wheel, the blocks moved though the pointer didn't: not a click.
+        let carried = matches!(self.drag, Some(Drag::Held { carried: true, .. }));
         if let Some((start, wire)) = self.press {
             let p = self.local(pos);
             let moved = (p.x - start.x).abs().max((p.y - start.y).abs());
-            if moved < CLICK_SLOP {
+            if moved < CLICK_SLOP && !carried {
+                // A held selection nudged under the slop goes back: a click is no move.
+                self.unplace();
                 let unfocused = self.space.focused.take();
                 let had_wire = std::mem::replace(&mut self.space.selected_wire, wire);
                 if unfocused.is_some() || !self.space.selected.is_empty() || had_wire != wire {
@@ -617,6 +661,20 @@ impl Workspace {
                 }
             }
         }
+        // A selection held by a body and let go in place: that block is picked, the selection ends.
+        if let Some(Drag::Held {
+            from,
+            picks: Some(id),
+            ..
+        }) = self.drag
+        {
+            let p = self.local(pos);
+            if (p.x - from.x).abs().max((p.y - from.y).abs()) < CLICK_SLOP && !carried {
+                self.unplace();
+                self.focus_block(id, window, cx);
+            }
+        }
+        self.copy_on_select(pos, cx);
         if let Some(Drag::Ink(mut drawing)) = self.drag.take() {
             // The pen catches up with the pointer: the stroke ends where it was let go.
             drawing.push_point(self.space.canvas.camera.to_world(self.local(pos)), 0.0);
@@ -764,23 +822,6 @@ impl Workspace {
             }
             return;
         }
-        // A balloon's dialog has the keyboard (docs/specs/ask-user.md, Keyboard): its keys first;
-        // what it leaves (shortcuts aside) never reaches the shell of the focused terminal.
-        if let Some(terminal) = self.balloon_keys(window, cx).map(str::to_string) {
-            let typing = self.balloon_typing(window, cx).is_some();
-            if self.question_key(&terminal, &e.keystroke, window, cx) {
-                cx.stop_propagation();
-            } else if let Some(command) =
-                command.filter(|c| !matches!(c, Command::Copy | Command::Paste))
-            {
-                self.command_key(e, Some(command), window, cx);
-                cx.stop_propagation();
-            } else if !typing {
-                // Nor its text, which would go to the terminal's input handler.
-                cx.stop_propagation();
-            }
-            return;
-        }
         if self.picker.is_some() || command.is_some() {
             // While the picker is open, typing and shortcuts don't reach the terminal.
             self.command_key(e, command, window, cx);
@@ -895,7 +936,12 @@ impl Workspace {
             cx.stop_propagation();
             return;
         }
-        let Some(pane) = self.space.focused_terminal() else {
+        // A subagent's block is read-only: its keys go nowhere.
+        let Some(pane) = self
+            .space
+            .focused_terminal()
+            .filter(|p| p.follows.is_none())
+        else {
             return;
         };
         let k = &e.keystroke;
@@ -912,7 +958,7 @@ impl Workspace {
                     && !option_types_text(&k.key, k.key_char.as_deref(), cfg!(target_os = "macos")),
             shift: k.modifiers.shift,
         };
-        pane.person_typed();
+        pane.person_keyed(&input);
         if pane.term.key(&input) {
             // Keeps the platform from also feeding key_char to the text-input path.
             cx.stop_propagation();
@@ -996,6 +1042,13 @@ impl Workspace {
         let wire = (self.tool == Tool::Select)
             .then(|| self.wire_at(world))
             .flatten();
+        // The empty canvas inside the selection's box holds the blocks: a drag moves them, a click
+        // ends the selection (`release`).
+        if self.tool == Tool::Select && self.selection_box().is_some_and(|b| b.contains(world)) {
+            self.begin_group_move(e.position, None);
+            self.press = Some((p, wire));
+            return;
+        }
         self.drag = Some(Drag::Canvas(Gesture::pan(p)));
         self.press = Some((p, wire));
     }
@@ -1012,6 +1065,13 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.space.grid.is_some() {
+            return;
+        }
+        // Held by a title, a body or the box, the canvas moves under it, whatever is under the
+        // pointer.
+        if matches!(self.drag, Some(Drag::Held { .. })) {
+            self.on_background_scroll(e, window, cx);
+            cx.stop_propagation();
             return;
         }
         let Some(id) = self.block_under(e.position) else {
@@ -1037,7 +1097,8 @@ impl Workspace {
         self.space.pristine = false;
         // A block held by its title: the wheel moves the canvas under it, a mouse's too, and the
         // block stays under the pointer.
-        if matches!(self.drag, Some(Drag::Held { .. })) {
+        if let Some(Drag::Held { carried, .. }) = &mut self.drag {
+            *carried = true;
             let d = e.delta.pixel_delta(px(self.cell.size.h));
             self.pan_by(Point::new(f32::from(d.x), f32::from(d.y)));
             self.drag_to(e.position, e.modifiers.shift, cx);
@@ -1161,15 +1222,16 @@ impl EntityInputHandler for Workspace {
         &mut self,
         _: Option<Range<usize>>,
         text: &str,
-        window: &mut Window,
+        _: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.marked = None;
-        if self.balloon_keys(window, cx).is_some() {
-            return;
-        }
-        if let Some(pane) = self.space.focused_terminal() {
-            pane.person_typed();
+        if let Some(pane) = self
+            .space
+            .focused_terminal()
+            .filter(|p| p.follows.is_none())
+        {
+            pane.person_wrote();
             pane.term.text(text);
         }
         cx.notify();

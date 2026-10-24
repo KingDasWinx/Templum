@@ -220,12 +220,27 @@ impl Workspace {
             .collect();
     }
 
+    /// The drag has moved or resized something since `placing`.
+    pub(super) fn displaced(&self) -> bool {
+        self.placed
+            .iter()
+            .any(|(id, r)| self.space.canvas.get(*id).is_some_and(|b| b.rect != *r))
+    }
+
+    /// The blocks `placing` took go back where they were, and the drag will keep no step: a click
+    /// that nudged them.
+    pub(super) fn unplace(&mut self) {
+        for (id, rect) in &self.placed {
+            if let Some(b) = self.space.canvas.get_mut(*id) {
+                b.rect = *rect;
+            }
+        }
+    }
+
     /// The drag ended: if it moved or resized anything, it is a step.
     pub(super) fn end_placing(&mut self) {
+        let moved = self.displaced();
         let placed = std::mem::take(&mut self.placed);
-        let moved = placed
-            .iter()
-            .any(|(id, r)| self.space.canvas.get(*id).is_some_and(|b| b.rect != *r));
         if moved {
             self.keep(Change::Place(placed), Then::New);
         }

@@ -1,5 +1,5 @@
 //! The workspaces sidebar: a tile per workspace (click: show it; right-click: rename, delete),
-//! and + for a new one; the Git button at its foot. See docs/specs/workspaces.md.
+//! and + for a new one; the requests and Git buttons at its foot. See docs/specs/workspaces.md.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
@@ -7,7 +7,7 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, ClickEvent, Context, ElementId, FontWeight, Hsla, MouseButton, MouseDownEvent,
-    ObjectFit, SharedString, TestSupportExt, div, img, px,
+    ObjectFit, SharedString, TestSupportExt, Window, div, img, px,
 };
 
 use crate::grid::hsla;
@@ -20,8 +20,21 @@ use crate::workspace::{Space, Workspace};
 pub(crate) const WIDTH: f32 = 56.0;
 const TILE: f32 = 40.0;
 
-pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
+pub(crate) fn render(
+    ws: &Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> impl IntoElement {
     let ui = ws.ui;
+    // A request just arrived: the inbox button pulses, a frame at a time, for a few seconds.
+    let now = cx.background_executor().now();
+    let pulse = match ws.inbox_pulse {
+        Some(at) if ws.inbox_pulsing(now) => {
+            window.request_animation_frame();
+            crate::inbox::pulse(now.saturating_duration_since(at))
+        }
+        _ => 0.0,
+    };
     let order = ws.order();
     let tiles: Vec<AnyElement> = order
         .into_iter()
@@ -114,13 +127,17 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
                 .children(tiles)
                 .child(plus),
         )
-        // Apart, in the corner: Git isn't a workspace.
+        // Apart, in the corner: the requests and Git aren't workspaces.
         .child(
             div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
                 .pt(px(8.0))
                 .mt(px(8.0))
                 .border_t_1()
                 .border_color(ui.hairline)
+                .child(crate::inbox::button(ws, pulse, TILE, cx))
                 .child(git),
         )
 }

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::input::InputState;
 use gpui_kit::{App, Context, Entity, Focusable as _, Subscription, Window};
 use serde_json::Value;
-use templum_canvas::{BlockId, Level};
+use templum_canvas::BlockId;
 use templum_mcp::ask::{Ask, Form, Row};
 use templum_mcp::tools::Event;
 use templum_mcp::{Replier, Reply, tools};
@@ -34,7 +34,7 @@ const DRAWN: Duration = Duration::from_millis(300);
 
 /// A tool call waiting for its answer.
 pub(crate) struct Wait {
-    /// Names it for its deadline and the balloon's buttons; counts up, so the oldest is first.
+    /// Names it for its deadline and the inbox's buttons; counts up, so the oldest is first.
     pub key: u64,
     /// The connection it came on, and its JSON-RPC id: a cancel names both.
     pub conn: u64,
@@ -44,9 +44,13 @@ pub(crate) struct Wait {
     /// another workspace.
     pub from: String,
     pub what: Waiting,
-    /// When the balloon first drew it, by the executor's clock.
+    /// When it was made, by the executor's clock: the inbox says how long it has waited.
+    pub since: Instant,
+    /// When the inbox first drew it, by the executor's clock.
     pub shown: Cell<Option<Instant>>,
-    /// The scroll of the balloon's body, past what fits of its terminal's height.
+    /// Its options' previews are shown whole (Show more), not cut after a few lines.
+    pub more: Cell<bool>,
+    /// The scroll of the request's body in the inbox.
     pub body: crate::markdown::PreviewScroll,
     /// The row the keys just moved the highlight to: the body scrolls to show it once, when it is
     /// drawn (a wheel that scrolled it away since isn't fought).
@@ -60,14 +64,12 @@ pub(crate) type Field = (Entity<InputState>, Subscription);
 pub(crate) enum Waiting {
     /// `ask_user` (docs/specs/ask-user.md): its questions, what the person picked, each
     /// question's Other field, and the note (asked with `questions` only). `wait` makes the
-    /// fields. `away`: Esc gave the keyboard back to the terminal, until a press on the dialog.
-    /// `stopped`: its client gave up on the call; the answer is typed into its terminal.
+    /// fields. `stopped`: its client gave up on the call; the answer is typed into its terminal.
     Question {
         ask: Ask,
         form: Form,
         others: Vec<Field>,
         note: Option<Field>,
-        away: bool,
         stopped: bool,
         /// A plan's Markdown frame's scroll (`propose_plan`).
         scroll: crate::markdown::PreviewScroll,
@@ -196,7 +198,9 @@ impl Workspace {
             reply: asked.reply,
             from: asked.from,
             what,
+            since: cx.background_executor().now(),
             shown: Cell::new(None),
+            more: Cell::new(false),
             body: Default::default(),
             reveal: Rc::default(),
         };
@@ -208,10 +212,16 @@ impl Workspace {
             }
         );
         if matches!(wait.what, Waiting::Question { .. } | Waiting::Allow { .. }) {
+            if self
+                .caller(&wait.from)
+                .is_some_and(|(space, _)| space == self.space.id)
+            {
+                self.inbox_arrived(cx);
+            }
             self.tell_asking(&wait, window, cx);
             self.chime(cx);
             // Its block waits for its person now. The agent that handed it a task hears nothing:
-            // the person sees the balloon, and that agent can't answer it.
+            // the person sees the request in the inbox, and that agent can't answer it.
             self.needs_you(&wait.from, Some(&wait.summary()), false, cx);
         }
         self.waits.push(wait);
@@ -228,6 +238,8 @@ impl Workspace {
             return false;
         };
         let wait = self.waits.remove(i);
+        self.inbox_settle(&[key]);
+        self.request_ended(&wait, cx);
         self.unwatch(&wait);
         if !matches!(wait.what, Waiting::Question { stopped: true, .. }) {
             let _ = wait.reply.send(tools::tool_result(&wait.id, &reply));
@@ -296,7 +308,9 @@ impl Workspace {
             .collect();
         for wait in &gone {
             self.unwatch(wait);
+            self.request_ended(wait, cx);
         }
+        self.inbox_settle(&gone.iter().map(|w| w.key).collect::<Vec<_>>());
         cx.notify();
     }
 
@@ -314,7 +328,9 @@ impl Workspace {
         let gone: Vec<Wait> = self.waits.extract_if(.., |w| w.conn == conn).collect();
         for wait in &gone {
             self.unwatch(wait);
+            self.request_ended(wait, cx);
         }
+        self.inbox_settle(&gone.iter().map(|w| w.key).collect::<Vec<_>>());
         cx.notify();
     }
 
@@ -414,7 +430,7 @@ impl Workspace {
 
     /// The person's yes (`yes`) or no to the request `key`: Allow wires the two blocks, a step
     /// Ctrl+Z takes back, as wiring by hand is; Delete and Merge run on the background executor,
-    /// the request gone from the balloon at once, and answer once git is done.
+    /// the request gone from the inbox at once, and answer once git is done.
     pub(crate) fn answer_allow(&mut self, key: u64, yes: bool, cx: &mut Context<Self>) {
         let Some(at) = self.waits.iter().position(|w| w.key == key) else {
             return;
@@ -455,16 +471,19 @@ impl Workspace {
                 },
             },
         };
-        self.seen_asking(&from);
         match job {
             Err(reply) => {
                 self.answer(key, reply, cx);
+                self.seen_asking(&from);
             }
             Ok(job) => {
                 let Some(at) = self.waits.iter().position(|w| w.key == key) else {
                     return;
                 };
                 let wait = self.waits.remove(at);
+                self.inbox_settle(&[key]);
+                self.request_ended(&wait, cx);
+                self.seen_asking(&from);
                 cx.notify();
                 cx.spawn(async move |_, _| {
                     let reply = job.await;
@@ -493,9 +512,12 @@ impl Workspace {
     }
 
     /// The person answered a request of the terminal `from`: they saw its block, whose alert
-    /// (`tell_asking`'s, or any other) goes, as seeing a block clears its alert.
+    /// (`tell_asking`'s, or any other) goes, as seeing a block clears its alert; but not while
+    /// another request of it waits, whose words the alert keeps (`request_ended`).
     pub(super) fn seen_asking(&mut self, from: &str) {
-        if let Some(pane) = self.pane_mut(from) {
+        if self.asking(from).is_none()
+            && let Some(pane) = self.pane_mut(from)
+        {
             pane.alert = None;
         }
     }
@@ -546,36 +568,13 @@ impl Workspace {
     }
 
     /// What the agent in terminal `terminal` asks the person, oldest first: the first, and how
-    /// many.
-    pub(crate) fn balloon(&self, terminal: &str) -> Option<(&Wait, usize)> {
+    /// many. Its block shows a notice, and the inbox lists them.
+    pub(crate) fn asking(&self, terminal: &str) -> Option<(&Wait, usize)> {
         let mut asking = self.waits.iter().filter(|w| {
             w.from == terminal && matches!(w.what, Waiting::Question { .. } | Waiting::Allow { .. })
         });
         let first = asking.next()?;
         Some((first, 1 + asking.count()))
-    }
-
-    /// The terminal whose dialog has the keyboard: one of its fields has it, or its block does
-    /// (focused, the workspace holding the keyboard), its oldest request is a question, and Esc
-    /// didn't give the keyboard back.
-    pub(crate) fn balloon_keys(&self, window: &Window, cx: &App) -> Option<&str> {
-        if let Some(terminal) = self.balloon_typing(window, cx) {
-            return Some(terminal);
-        }
-        if !self.canvas_has_keys(window) {
-            return None;
-        }
-        let pane = self.space.focused_terminal()?;
-        let (wait, _) = self.balloon(pane.term.id())?;
-        matches!(wait.what, Waiting::Question { away: false, .. }).then_some(wait.from.as_str())
-    }
-
-    /// The terminal whose balloon's field has the keyboard, if one does: the keys are the field's.
-    pub(crate) fn balloon_typing(&self, window: &Window, cx: &App) -> Option<&str> {
-        self.waits
-            .iter()
-            .find(|w| field_focused(w, window, cx))
-            .map(|w| w.from.as_str())
     }
 
     /// A request's short sound, unless `[connections] sound` is off or one played under
@@ -591,33 +590,35 @@ impl Workspace {
         }
     }
 
-    /// The person doesn't see the asking block's dialog (the block is in another workspace,
-    /// outside the view, hidden by grid mode, or too small on screen for its dialog to be drawn,
-    /// or the window is in the background): a notification says what it asks, clicking it shows
-    /// the block; and the block gets an alert, as a bell gives one (its workspace's dot,
-    /// `go_to_waiting`).
+    /// The person doesn't see the request: it is in another workspace than the one shown, or the
+    /// window is in the background. A notification says what it asks, clicking it shows that
+    /// workspace with its inbox open at the request. The block gets an alert in every case, as a
+    /// bell gives one (its workspace's dot, `go_to_waiting`), so a request missed here is found
+    /// from another workspace; a request here, the window in front, is told by the inbox's
+    /// badge alone.
     fn tell_asking(&mut self, wait: &Wait, window: &mut Window, cx: &mut Context<Self>) {
         let Some((space_id, me)) = self.caller(&wait.from) else {
             return;
         };
-        // As `block::render` draws it: in full, or worked in.
-        let full = self.space.focused == Some(me)
-            || templum_canvas::level(self.cell.font_size, self.space.rest) == Level::Full;
-        let shown = window.is_window_active()
-            && space_id == self.space.id
-            && self.space.shown(me)
-            && full
-            && self
-                .space
-                .canvas
-                .visible_from(&self.space.view, self.viewport(window))
-                .any(|b| b.id == me);
-        if shown {
-            return;
-        }
         let space = self.space_named(&space_id).expect("the caller's workspace");
         let (_, title, _) = self.about(&space.blocks[&me], cx);
-        let text = match &wait.what {
+        let Some(text) = self.asking_text(wait, cx) else {
+            return;
+        };
+        if let Some(pane) = self.pane_mut(&wait.from) {
+            pane.alert = Some(Alert::Attention(Some(text.clone())));
+        }
+        // A request here, the window in front, is told by the badge: no notification.
+        if window.is_window_active() && space_id == self.space.id {
+            return;
+        }
+        self.notify_from(space_id, me, title, text, Some(wait.key), window, cx);
+    }
+
+    /// What the request `wait` says to the person, as a notification and the block's alert: None
+    /// for what is no request of the person's.
+    fn asking_text(&self, wait: &Wait, cx: &App) -> Option<String> {
+        Some(match &wait.what {
             Waiting::Question { ask, .. } if ask.plan.is_some() => {
                 format!("Asks you to approve a plan: {}", ask.summary())
             }
@@ -626,16 +627,31 @@ impl Workspace {
                 more => format!("Asks you: {} (and {more} more)", ask.summary()),
             },
             Waiting::Allow { .. } => self.allow_line(wait, cx),
-            Waiting::Turn { .. } | Waiting::Event { .. } => return,
+            Waiting::Turn { .. } | Waiting::Event { .. } => return None,
+        })
+    }
+
+    /// The request `ended` of the terminal `from` is gone: its block's alert follows what still
+    /// waits there. The oldest request left gives its words; with none left, the alert goes if it
+    /// was the request's (a bell's or a command's stays).
+    fn request_ended(&mut self, ended: &Wait, cx: &App) {
+        let Some(gone) = self.asking_text(ended, cx) else {
+            return;
         };
-        if let Some(pane) = self.pane_mut(&wait.from) {
-            pane.alert = Some(Alert::Attention(Some(text.clone())));
+        let left = self
+            .asking(&ended.from)
+            .and_then(|(wait, _)| self.asking_text(wait, cx));
+        if let Some(pane) = self.pane_mut(&ended.from) {
+            match left {
+                Some(text) => pane.alert = Some(Alert::Attention(Some(text))),
+                None if pane.alert == Some(Alert::Attention(Some(gone))) => pane.alert = None,
+                None => {}
+            }
         }
-        self.notify_from(space_id, me, title, text, window, cx);
     }
 
     /// `wait_for` from the terminal `from`: `event` in the terminal `block`. `idle` is
-    /// `wait_for_idle`; `needs_you` answers at once when its agent, or its balloon, already asks
+    /// `wait_for_idle`; `needs_you` answers at once when its agent, or its request, already asks
     /// its person; `output` waits for a line matching `pattern`, at once when one of its last
     /// `lines` does, or with `wait` false keeps watching while the caller works, its match typed
     /// back; the others wait for the next command or alert.
@@ -689,7 +705,7 @@ impl Workspace {
         if event == Event::NeedsYou {
             let asks = match &pane.state {
                 Some(AgentState::NeedsYou(what)) => Some(what.clone()),
-                _ => self.balloon(&of).map(|(wait, _)| Some(wait.summary())),
+                _ => self.asking(&of).map(|(wait, _)| Some(wait.summary())),
             };
             if let Some(what) = asks {
                 return Outcome::Now(waiting_for_person(block, what.as_deref(), &pane.tail()));
@@ -750,7 +766,7 @@ impl Workspace {
     }
 
     /// The block of the terminal `terminal` waits for its person (its agent asks for `what`, or
-    /// its balloon does): the `wait_for(needs_you)` on it are answered DRAWN later, with its
+    /// its request does): the `wait_for(needs_you)` on it are answered DRAWN later, with its
     /// screen as drawn by then. `tell`: a new wait, which the agent that handed it a task hears of,
     /// unless a `wait_for(needs_you)` of its was just answered with it.
     pub(super) fn needs_you(

@@ -26,7 +26,7 @@ const MCP: &str = "mcp.json";
 /// What each hook runs after Templum's program (docs/specs/connections.md, Hooks).
 const HOOK: &str = "hook claude";
 /// The Claude Code hooks Templum follows a session's turns with.
-const HOOKED: [&str; 9] = [
+const HOOKED: [&str; 11] = [
     "SessionStart",
     "UserPromptSubmit",
     "PermissionRequest",
@@ -36,6 +36,9 @@ const HOOKED: [&str; 9] = [
     "StopFailure",
     "Notification",
     "SessionEnd",
+    // Its subagents (docs/specs/claude-subagents.md).
+    "SubagentStart",
+    "SubagentStop",
 ];
 
 /// A relay file older than this when Templum starts is deleted (a week's window, and a day).
@@ -472,12 +475,28 @@ fn limits_where(relay_dir: &Path, wanted: impl Fn(Option<&Path>) -> bool) -> Opt
 /// How long Claude Code may take to say its plan's usage.
 const POLL_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long after Claude Code ended, or was killed, its output may still be read: a process it
+/// started (`claude.cmd`'s node on Windows) may keep the pipe open and never let it end.
+const READ_GRACE: Duration = Duration::from_secs(5);
+
 /// The plan's limits as Claude Code's `/usage` tells them, asked of `program` (Claude Code) at
 /// `now`: it reads its own login, asks nothing of the model and keeps no session. It runs in
 /// `dir`, an empty folder, with that folder's settings only, so the user's hooks and plugins
 /// don't run; on an account's folder `config_dir` when given. None for an API key, which has no
 /// plan. Slow: off the UI thread.
 pub fn poll(program: &Path, dir: &Path, config_dir: Option<&Path>, now: u64) -> Option<Limits> {
+    poll_within(program, dir, config_dir, now, (POLL_TIMEOUT, READ_GRACE))
+}
+
+/// `poll`, with `(timeout, grace)`: how long Claude Code may take, and how long its output may
+/// take to end after.
+fn poll_within(
+    program: &Path,
+    dir: &Path,
+    config_dir: Option<&Path>,
+    now: u64,
+    (timeout, grace): (Duration, Duration),
+) -> Option<Limits> {
     std::fs::create_dir_all(dir).ok()?;
     let mut command = Command::new(program);
     if let Some(config_dir) = config_dir {
@@ -499,12 +518,13 @@ pub fn poll(program: &Path, dir: &Path, config_dir: Option<&Path>, now: u64) -> 
     }
     let mut child = command.spawn().ok()?;
     let mut stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
+    let (sent, read) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut text = String::new();
         let _ = stdout.read_to_string(&mut text);
-        text
+        let _ = sent.send(text);
     });
-    let deadline = Instant::now() + POLL_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
@@ -516,7 +536,8 @@ pub fn poll(program: &Path, dir: &Path, config_dir: Option<&Path>, now: u64) -> 
             }
         }
     }
-    usage_report(&reader.join().ok()?, now)
+    // The reader is left to finish on its own when the pipe stays open.
+    usage_report(&read.recv_timeout(grace).ok()?, now)
 }
 
 /// What `/usage` says, in its stream-json output.
@@ -991,6 +1012,13 @@ mod tests {
             hooks["PostToolUseFailure"][0]["hooks"][0]["command"],
             "/opt/templum hook claude"
         );
+        // Its subagents open blocks of their own (docs/specs/claude-subagents.md).
+        for hook in ["SubagentStart", "SubagentStop"] {
+            assert_eq!(
+                hooks[hook][0]["hooks"][0]["command"],
+                "/opt/templum hook claude"
+            );
+        }
         // `reply` asks no permission where the server comes with the hooks, and only `reply`
         // (docs/specs/agent-protocol.md, 9).
         assert_eq!(
@@ -1122,6 +1150,30 @@ mod tests {
         poll(&program, &probe, Some(&account), 5).unwrap();
         let config = std::fs::read_to_string(dir.path().join("config")).unwrap();
         assert_eq!(config.trim_end(), account.to_string_lossy());
+    }
+
+    /// A process Claude Code started keeps its output open: the ask ends anyway, with nothing.
+    #[cfg(unix)]
+    #[test]
+    fn poll_gives_up_on_an_output_a_child_keeps_open() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("claude");
+        std::fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\ncat \"{0}/usage.jsonl\"\nsleep 3 &\n",
+                dir.path().display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("usage.jsonl"), USAGE).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let start = Instant::now();
+        let within = (Duration::from_secs(30), Duration::from_millis(300));
+        let probe = dir.path().join("probe");
+        assert_eq!(poll_within(&program, &probe, None, 5, within), None);
+        assert!(start.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

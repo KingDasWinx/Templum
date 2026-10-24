@@ -49,7 +49,8 @@ wires, copy and paste, moving to another workspace.
 
 ### The checklist on screen
 
-Under the header, scrolling when it doesn't fit (the wheel scrolls it and stops there; Ctrl+wheel zooms the canvas):
+Under the header, scrolling when it doesn't fit (the wheel scrolls it and stops there; Ctrl+wheel zooms the canvas),
+with [a scrollbar](#a-scrollbar-kanban-card-157) then:
 
 - **The name** on top, in 15 world units, semi-bold. A new checklist is named "Checklist". A click edits it: Enter or
   a click elsewhere keeps it, Esc too. A blank name reads "Checklist".
@@ -207,6 +208,8 @@ calls.
 - a wired agent's `read_checklist`, `check_item` and `add_items`, and an unwired one refused;
 - checklists and blocks come back after a restart; a block of tabs from before shows its tab on screen and keeps
   the others in the dialog; a pasted block shows a copy.
+- a long checklist's scrollbar is over its list and its track scrolls it; its scroll follows the zoom; a press on
+  the scrollbar picks an unpicked block and a middle drag from there pans; a press in a field keeps it editing.
 
 **Manual (Hyprland):** edit, check and drag items at zoom 0.5, 1 and 2, a one-line item's text staying where the
 row's was while it is edited; a long list scrolls; the dialog finds and deletes.
@@ -220,3 +223,22 @@ row's was while it is edited; a long list scrolls; the dialog finds and deletes.
 5. The agents' tools and verbs.
 6. The docs (ARCHITECTURE.md, connections.md, context-menus.md, level-of-detail.md).
 7. One checklist per block: the tab strip removed, a block of tabs from before loaded with its tab on screen.
+8. [A scrollbar](#a-scrollbar-kanban-card-157).
+
+## A scrollbar (kanban card 157)
+
+The card, as the person wrote it: *"Bloco de checklist falta scroll na tela."* A long checklist already scrolled with
+the wheel, but nothing showed that there was more, or let the pointer take hold of it.
+
+- **The scrollbar** is the kanban columns' (`kanban::scrollbar_over`, gpui-component's), over the right edge of the
+  list (name, items and + Add an item, which all scroll): on hover over its track or while scrolling, as the theme
+  says, and only once the list overflows. Its track (16 units) and thumb scale with the zoom.
+- **The scroll follows the zoom:** the list's offset scales with it, so a scrolled checklist shows the same items at
+  every zoom (zoom changes no layout).
+- **Presses:** as in a kanban column, a press on the shown scrollbar's strip is the scrollbar's; the list picks an
+  unpicked block and pans for the middle button in the capture phase, before it. A picked block isn't picked again
+  there: that would stop its field. A right-click on the strip opens no menu ([minors.md](../minors.md)).
+- **The wheel is unchanged:** over a picked block it scrolls the list, over any other it moves the canvas.
+
+**Not testable headlessly:** the thumb's look on hover. **Manual (Hyprland):** a long checklist at zoom 0.5, 1 and 2:
+the thumb follows the wheel and is dragged.

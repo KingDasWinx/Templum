@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::channel::oneshot;
 use gpui_kit::component::notification::{Notification, NotificationDelivery, NotificationType};
 use gpui_kit::{Context, SharedString, Window};
 use templum_canvas::BlockId;
@@ -17,11 +18,19 @@ use super::{Pane, TryIt, Workspace, show_notification};
 use crate::agents::{self, AgentEntry};
 use crate::config::Edit;
 use crate::notes;
-use crate::usage::{TURN_SECS, limit_name, meter_agents, resets_local};
+use crate::usage::{TURN_SECS, limit_name, meter_agents, resets};
 
-/// How often Templum asks Claude Code for the plan's limits. Its `/usage` asks Anthropic, which
-/// limits how often.
-pub(super) const CLAUDE_EVERY: Duration = Duration::from_secs(5 * 60);
+/// How long, in seconds, a plan's limits go unasked when nothing makes Templum ask (the meter turning
+/// to them, the popover, a turn's end): Claude Code's `/usage` asks Anthropic, which limits how often.
+pub(super) const CLAUDE_EVERY: u64 = 5 * 60;
+/// Templum never asks the same account's `/usage` again within this many seconds.
+pub(super) const CLAUDE_MIN: u64 = 60;
+/// How often Templum looks for limits that are due.
+pub(super) const CLAUDE_LOOK: Duration = Duration::from_secs(15);
+
+/// What `/usage` is asked with: by whose limits they are, the Claude Code to run, the empty folder
+/// to run it in and the account's folder (None: the agent's own).
+pub(super) type Job = (String, PathBuf, PathBuf, Option<PathBuf>);
 
 /// What a read found: each terminal's session, in the order asked, and each agent's limits.
 pub(crate) type Read = (Vec<Option<Session>>, Vec<(String, Limits)>);
@@ -303,6 +312,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let mut limits = limits;
+        // What `/usage` found for an account that is gone, or no longer asked, goes with it.
+        let asked: Vec<String> = self.claude_agents().map(|a| a.id.clone()).collect();
+        self.claude_polled.retain(|id, _| asked.contains(id));
+        self.claude_asked.retain(|id, _| asked.contains(id));
         for (id, polled) in &self.claude_polled {
             templum_usage::merge(&mut limits, id, polled);
         }
@@ -318,15 +331,17 @@ impl Workspace {
         }
         let mut changed = self.limits != limits;
         self.limits = limits;
-        // The meter's next agent, every few seconds.
+        // The meter's next agent, every few seconds, whose limits are asked at once.
         let now = notes::now();
-        if meter_agents(self, now).len() > 1
-            && !self.meter_hovered
-            && now >= self.meter_turned + TURN_SECS
-        {
+        let shown: Vec<String> = meter_agents(self, now)
+            .into_iter()
+            .map(|(agent, _)| agent.to_string())
+            .collect();
+        if shown.len() > 1 && !self.meter_hovered && now >= self.meter_turned + TURN_SECS {
             self.meter_turn = self.meter_turn.wrapping_add(1);
             self.meter_turned = now;
             changed = true;
+            self.ask_claude(Some(&shown[self.meter_turn % shown.len()]), CLAUDE_MIN, cx);
         }
         for space in std::iter::once(&mut self.space).chain(&mut self.others) {
             let ids: Vec<BlockId> = space.terminals().map(|(id, _)| id).collect();
@@ -364,7 +379,7 @@ impl Workspace {
                     window.used_percent,
                     limit_name(window.minutes, window.scope.as_deref())
                 ),
-                format!("Resets {}", resets_local(window.resets_at, now)),
+                format!("Resets {}", resets(window.resets_at, now, false)),
                 NotificationType::Warning,
             ),
             Event::Reset {
@@ -400,21 +415,158 @@ impl Workspace {
         show_notification(window, cx, notification);
     }
 
-    /// What to ask for the plan's limits: by whose limits they are, the Claude Code to ask, the
-    /// empty folder to ask in and the account's folder (None: its own), for its own folder and
-    /// each Claude Code account a snapshot found running since Templum started. None when the
-    /// user turned it off, without a data folder, or when it isn't installed.
-    pub(super) fn claude_poll_jobs(&self) -> Vec<(String, PathBuf, PathBuf, Option<PathBuf>)> {
-        let Some(data) = self
-            .data_dir
-            .as_ref()
-            .filter(|_| self.config.usage.claude_limits)
-        else {
+    /// Asks `/usage` for the limits that are due: those not asked for `CLAUDE_EVERY` seconds, and
+    /// the one agent the meter shows, when it shows one, every `CLAUDE_MIN`.
+    pub(super) fn ask_claude_due(&mut self, cx: &mut Context<Self>) {
+        self.ask_claude(None, CLAUDE_EVERY, cx);
+        let shown: Vec<String> = meter_agents(self, notes::now())
+            .into_iter()
+            .map(|(agent, _)| agent.to_string())
+            .collect();
+        if let [agent] = shown.as_slice() {
+            self.ask_claude(Some(agent), CLAUDE_MIN, cx);
+        }
+    }
+
+    /// Asks `/usage` for the account `only` (None: each) if it wasn't asked for `older` seconds
+    /// (at least `CLAUDE_MIN`): the probes run one at a time, `only` first. What one finds shows
+    /// at once.
+    pub(super) fn ask_claude(&mut self, only: Option<&str>, older: u64, cx: &mut Context<Self>) {
+        for job in self.claude_due(notes::now(), only, older) {
+            match only {
+                Some(_) => self.claude_queue.push_front(job),
+                None => self.claude_queue.push_back(job),
+            }
+        }
+        self.next_probe(cx);
+    }
+
+    /// Runs the next waiting probe on a thread of its own, unless one runs: `poll` waits for
+    /// Claude Code for up to 30 s, which the background pool's threads, few on a small machine,
+    /// are not for. Tests never run the user's Claude Code.
+    fn next_probe(&mut self, cx: &mut Context<Self>) {
+        if cfg!(test) {
+            return;
+        }
+        let Some((id, program, dir, config_dir)) = self.claude_next(notes::now()) else {
+            return;
+        };
+        cx.spawn(async move |ws, cx| {
+            let (found, asked) = oneshot::channel();
+            std::thread::spawn(move || {
+                let polled = templum_usage::claude::poll(
+                    &program,
+                    &dir,
+                    config_dir.as_deref(),
+                    notes::now(),
+                );
+                let _ = found.send(polled);
+            });
+            let found = asked.await.ok().flatten();
+            ws.update(cx, |ws, cx| ws.probe_done(id, found, cx)).ok();
+        })
+        .detach();
+    }
+
+    /// The next waiting probe of an account still asked about, now running, asked for at `now`;
+    /// None while one runs, or when none waits.
+    pub(super) fn claude_next(&mut self, now: u64) -> Option<Job> {
+        if self.claude_probing.is_some() {
+            return None;
+        }
+        while let Some(job) = self.claude_queue.pop_front() {
+            if self.claude_agents().any(|a| a.id == job.0) {
+                self.claude_asked.insert(job.0.clone(), now);
+                self.claude_probing = Some(job.0.clone());
+                return Some(job);
+            }
+        }
+        None
+    }
+
+    /// The probe of `id` ended with `found`: a failed ask keeps what the last one found, and isn't
+    /// asked again by a trigger for `CLAUDE_EVERY`. The next waiting one starts.
+    pub(super) fn probe_done(&mut self, id: String, found: Option<Limits>, cx: &mut Context<Self>) {
+        self.claude_probing = None;
+        match found {
+            Some(found) => self.claude_polled(id, found, cx),
+            // An API key has no plan and a machine offline no answer: only the long look asks again.
+            None => {
+                let wait = CLAUDE_EVERY - CLAUDE_MIN;
+                self.claude_asked.insert(id, notes::now() + wait);
+            }
+        }
+        self.next_probe(cx);
+    }
+
+    /// The jobs of `claude_poll_jobs` that are due at `now`, marked as asked: `only` (None: each)
+    /// if it wasn't asked for `older` seconds, and doesn't wait or run already. Nothing is looked
+    /// up when none is.
+    pub(super) fn claude_due(&mut self, now: u64, only: Option<&str>, older: u64) -> Vec<Job> {
+        let due = |id: &str| {
+            only.is_none_or(|only| only == id)
+                && self.claude_probing.as_deref() != Some(id)
+                && !self.claude_queue.iter().any(|(queued, ..)| queued == id)
+                && self.claude_asked.get(id).is_none_or(|t| now >= t + older)
+        };
+        if !self.claude_agents().any(|a| due(&a.id)) {
+            return Vec::new();
+        }
+        let jobs: Vec<Job> = self
+            .claude_poll_jobs()
+            .into_iter()
+            .filter(|(id, ..)| due(id))
+            .collect();
+        for (id, ..) in &jobs {
+            self.claude_asked.insert(id.clone(), now);
+        }
+        jobs
+    }
+
+    /// `/usage` found the limits `found` for the account `id`: they join the others now, not at
+    /// the next read. Not for one that is gone, nor older than what it found before.
+    pub(super) fn claude_polled(&mut self, id: String, found: Limits, cx: &mut Context<Self>) {
+        if !self.claude_agents().any(|a| a.id == id)
+            || self
+                .claude_polled
+                .get(&id)
+                .is_some_and(|old| old.at > found.at)
+        {
+            return;
+        }
+        let mut limits = self.limits.clone();
+        templum_usage::merge(&mut limits, &id, &found);
+        if limits != self.limits {
+            self.limits = limits;
+            cx.notify();
+        }
+        self.claude_polled.insert(id, found);
+    }
+
+    /// The agents `/usage` is asked about: Claude Code, and each of its accounts that has a login
+    /// (its `.claude.json`, which is in the account's folder on every OS, the Keychain's token
+    /// or not), whether it ran since Templum started or not. None when the user turned it off, or
+    /// without a data folder.
+    fn claude_agents(&self) -> impl Iterator<Item = &AgentEntry> {
+        let on = self.data_dir.is_some() && self.config.usage.claude_limits;
+        self.agents.iter().filter(move |a| {
+            on && match &a.account {
+                None => a.builtin == Some(Agent::CLAUDE),
+                Some(account) => {
+                    account.kind.agent == "claude" && account.folder.join(".claude.json").is_file()
+                }
+            }
+        })
+    }
+
+    /// What to ask for the plan's limits: for Claude Code's own folder and each account of
+    /// `claude_agents`. None when it isn't installed.
+    pub(super) fn claude_poll_jobs(&self) -> Vec<Job> {
+        let Some(data) = self.data_dir.as_ref() else {
             return Vec::new();
         };
         let Some(claude) = self
-            .agents
-            .iter()
+            .claude_agents()
             .find(|a| a.builtin == Some(Agent::CLAUDE))
         else {
             return Vec::new();
@@ -431,14 +583,11 @@ impl Workspace {
             found
         };
         let probe = data.join("usage").join("probe");
-        let accounts = self.agents.iter().filter_map(|a| {
-            let account = a.account.as_ref()?;
-            (account.kind.agent == "claude" && self.accounts_ran.contains(&a.id))
-                .then(|| (a.id.clone(), Some(account.folder.clone())))
-        });
-        std::iter::once((claude.id.clone(), None))
-            .chain(accounts)
-            .map(|(id, folder)| (id, program.clone(), probe.clone(), folder))
+        self.claude_agents()
+            .map(|a| {
+                let folder = a.account.as_ref().map(|account| account.folder.clone());
+                (a.id.clone(), program.clone(), probe.clone(), folder)
+            })
             .collect()
     }
 
@@ -472,6 +621,9 @@ impl Workspace {
     /// Opens or closes the title bar's usage popover.
     pub(crate) fn toggle_usage(&mut self, cx: &mut Context<Self>) {
         self.usage_open = !self.usage_open;
+        if self.usage_open {
+            self.ask_claude(None, CLAUDE_MIN, cx);
+        }
         cx.notify();
     }
 

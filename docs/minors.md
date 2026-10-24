@@ -228,6 +228,11 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   that delays `stop_agent` lets the job write its file. A person sees nothing; a contributor may see CI fail once.
   Fix: a longer job (`sleep 10`, the final wait to match) so the stop has seconds to spare, or have the job loop
   until a "stopped" file exists and fail the test if it ever ends by itself.
+- [ ] **`a_quiet_agent_is_told_once_to_a_master_not_waiting` failed once in a full run.**
+  (`crates/templum/src/workspace/tests/delegate.rs:2832`, seen at d71ae86 in a full `cargo test --workspace` while
+  two other agents built in their worktrees: the reply's end notice wasn't there yet, `told` was `[]`; it passed alone
+  five times and on the next full run of the crate.) A person sees nothing; a contributor may see CI fail once. Fix:
+  wait for the notice with a deadline (frames until `notices` has it, as `until` does), not one `after(cx, 1000)`.
 
 ## Release and benches
 
@@ -329,6 +334,13 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   `crates/templum/src/workspace/selection.rs`): resuming it would put two agents on one conversation, so a copied
   Claude Code terminal pastes as a shell in its folder. Fix: type the agent's own command (not its resume command)
   into the pasted shell.
+- [ ] **A title click that slips nudges the group.** A press on a selected block's title (`block.rs`, the title's
+  `on_mouse_down` → `begin_group_move`) let go within the click slop moves the blocks by the pixels the pointer
+  moved (`MoveGroup` has no threshold) and `end_placing` keeps a Ctrl+Z step for it; a body's or the box's click puts
+  them back (`unplace()`, `workspace/input.rs` `release`). A person sees a selection shift by a pixel or two, and an
+  undo step that does nothing visible. Fix: `Drag::Held` for a title press also remembers it is a title (or `release`
+  asks `unplace()` whenever a `Held` is let go under the slop), with a test pressing a title, moving 2 px, and
+  checking the rects and `undo`.
 
 ## Notes
 
@@ -397,6 +409,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   behind an error branch it can't reach; `note_tabs.rs` places a block at the view's center twice and removes a tab
   and fixes `active` twice. Fix: the width computed once in `list_view`; `wired_checklist` returning the `&List`; one
   helper each in `note_tabs.rs`.
+- [ ] **A right-click on a long checklist's scrollbar opens no menu.** While the scrollbar shows (pointer over its
+  track, or scrolling), gpui-component's scrollbar stops every press on its 16-unit strip; `list_view`
+  (`crates/templum/src/checklist.rs`) picks the block and pans for the middle button in the capture phase, but the
+  block's menu opens from the block's own bubble-phase handler, so a right-click there does nothing. The strip also
+  covers the right 4 units of a row's ×. Fix: open the block's menu for the right button in that capture handler when
+  the press is on the strip, and leave a field's own right-click alone.
 
 ## Grid mode
 
@@ -489,6 +507,13 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   never be typed. Fix: read the distribution's processes (`wsl.exe -e ps -o pid,args`, or
   `\\wsl.localhost\<distribution>\proc`) and match them to the block by the shell's session, then resume it with its
   resume command.
+- [ ] **A long "Copied 12 lines" can be cut in a narrow terminal.** `copied_pill` (`crates/templum/src/block.rs`)
+  grows the pill away from the nearer side of the body, which keeps a pill narrower than half the body inside it; in a
+  terminal of about 20 columns, "Copied 12 lines" let go just right of the middle passes the left edge, which clips
+  it. Fix: measure the label with `window.text_system()` and clamp `left` to the body's width minus it.
+- [ ] **Near the top, the pointer's I-beam covers the top of "Copied" when zoomed out.** Below the pointer the pill
+  sits `GAP × zoom` under it (`copied_pill`, `crates/templum/src/block.rs`), but the I-beam keeps its size: at 50%
+  its lower half overlaps the pill's top. Fix: keep that gap at least 10 screen pixels.
 
 ## Updates
 
@@ -561,8 +586,9 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **The gallery test failed once in a full run.** `the_gallery_previews_restores_and_installs`
   (`crates/templum/src/workspace/tests/themes.rs:661`) found "Catppuccin Latte" where it expected "Paper" after
   clicking "gallery-theme-Paper", in one run of `cargo test -p templum` (card 69's, under load); alone, three times, and in
-  the next full run, it passed. Fix: find what the click raced with (a frame not rendered before the read) and wait for
-  it, as the neighbouring tests do.
+  the next full run, it passed. Its neighbour `an_install_that_fails_puts_the_theme_back` (`themes.rs:817`, "not the
+  preview") failed the same way once in card 115's first full run, and passed alone three times and in the next. Fix:
+  find what the click raced with (a frame not rendered before the read) and wait for it, as the neighbouring tests do.
 - [ ] **The X of a dialog reads less than `Theme::on_accent` counts on.** It picks the hover color over the theme's
   background (`crates/templum/src/theme.rs:155`), which is where a notification's X sits, but gpui-kit paints a
   dialog with `tokens.background`, which Templum sets to `ui.canvas`, 30% darker in dark themes: under the pointer
@@ -592,6 +618,19 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   WSL agent Windows lacks would read "Yours · not found …" again and no test would fail. Fix: in
   `an_agent_that_runs_in_wsl_counts_as_installed`, open Settings ▸ Agents and check the row reads
   "Yours · templum-no-such-agent · in WSL".
+- [ ] **Settings opened right after Templum starts may call an agent "Not installed".** `find_programs`
+  (`crates/templum/src/workspace/blocks.rs`) looks for each agent's program when the panel opens and when the agents
+  change. Before the login shell's PATH arrives (`read_shell_path`, a second or so after start), an agent only that
+  PATH has (a mise install folder) isn't found, and its row says "Not installed · …" until the panel opens again.
+  Fix: remember the look was early (`shell_path_pending()`, as `shells_early` does) and look again at the first frame
+  after the PATH arrives.
+- [ ] **Two Settings rows still look at the disk every frame.** Settings ▸ Templum Agent looks for `claude` at each
+  frame (`templum_terminal::installed("claude")`, `crates/templum/src/settings/templum_agent.rs:25`), and the
+  accounts' PATH note canonicalizes every PATH folder at each frame while an account has a command (`on_path` in
+  `path_note`, `crates/templum/src/settings/accounts.rs:101`, also drawn in the account dialog). A person sees
+  nothing on a local disk, but each frame there touches it (a slow or network folder on PATH stalls it). Fix: read
+  both when the panel opens and when the agents change, as `find_programs` does, and keep the answers on the
+  workspace.
 - [ ] **The agent dialog's WSL note repeats `Workspace::in_wsl`.** The note under the Shell list
   (`crates/templum/src/settings/agents.rs:267-274`) decides WSL on its own, beside `in_wsl`
   (`crates/templum/src/workspace/blocks.rs:389-394`): if one changes (how a label not found falls back), the note says
@@ -650,11 +689,44 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## Kanban
 
-- [ ] **Esc or Enter in the title saving a comment edit's draft is untested, and Esc is unspecified.** `on_close`
-  (`crates/templum/src/kanban.rs`) saves the edit's draft when the card dialog closes by Escape from another field or
-  Enter in the title; `docs/specs/kanban.md` lists only "Done, Enter in the title", and no test covers `on_close`
-  (the tests use Done and `window.close_dialog`, which skips it). Fix: add "Escape outside the edit's field" to the
-  spec, and a test that types a draft, focuses the title, presses Escape (and Enter) and checks the saved text.
+- [ ] **Ctrl+Z of a Done on a reopened draft loses the draft's content.** `Boards::finish_draft`
+  (`crates/templum/src/board.rs`) drops the draft inside the undo step, and `undo_boards`
+  (`crates/templum/src/workspace/blocks.rs`) keeps only the drafts kept now, so the card goes back as it was and the
+  typed work is gone. A person who presses Ctrl+Z after Done to get their draft back finds nothing. Fix: on undo,
+  also put back the drafts that `before` has and the current boards lack, unless the same card or column has a new
+  one, with a test.
+- [ ] **Unsent text in "Add an item" or the comment field doesn't count as a change.** `Work::changed`
+  (`crates/templum/src/kanban.rs`) compares the cards only: Esc closes at once over a half-typed item or comment,
+  and Save draft wouldn't keep it. A person loses the line they were typing. Fix: a non-empty field counts as a
+  change, and Save and Save draft take it in first (the item as a checklist item, the comment as a comment), with a
+  test.
+- [ ] **A comment edit in a card's dialog is a change when nothing changed, and is lost when the window closes.** On
+  a new card, a comment's pencil then Esc asks "Save your changes?" though the text is the same (`pending` in the
+  dialog's `on_cancel`, `crates/templum/src/kanban.rs`); and `Work::keep` (same file), run when the window closes,
+  ignores a comment edit in progress, so its text is neither kept in the draft nor posted. Fix: count the edit only
+  when its trimmed text differs from that comment's, and have `Work::keep` take it in the same way, with a test.
+- [ ] **Done on a card deleted meanwhile loses the person's work without saying so.** `Boards::finish_draft`
+  (`crates/templum/src/board.rs`) finds nothing to change and the dialog closes; a new card whose column was deleted
+  is lost the same way. Fix: keep the draft and say "That card is gone" in a notification, with a test.
+- [ ] **Discard in the Save question also drops the draft the person had kept.** After reopening a draft, typing more
+  and choosing Discard, the earlier draft goes too (`ask_to_leave`, `crates/templum/src/kanban.rs`); there is no way to
+  drop only the newest typing. A person who wanted to keep the old draft loses it. Fix: Discard reverts to the kept
+  state when the dialog was opened from a draft, and the footer's button drops the draft, with a test.
+- [ ] **A draft is dropped when its card or column is deleted, even if Ctrl+Z brings the card back.**
+  `Boards::prune_drafts` runs after every `edit_boards` (`crates/templum/src/board.rs`) and Ctrl+Z keeps the current
+  drafts, so the restored card has no draft. A person who deleted a card with a draft and undid it loses the draft.
+  Fix: keep pruned drafts in the undo snapshot and restore the ones whose card is back, with a test.
+- [ ] **Esc or Enter in the title saving a comment edit's draft is untested, and Esc is unspecified.** The dialog's
+  `on_cancel` and `on_ok` (`crates/templum/src/kanban.rs`) save the edit's draft when the card dialog closes by Escape
+  from another field or Enter in the title; `docs/specs/kanban.md` lists only "Done, Enter in the title, a press
+  outside it", and only the press outside has a test (`a_press_outside_the_open_card_asks_and_save_keeps_what_was_typed`;
+  the others use Done and `window.close_dialog`). Fix: add "Escape outside the edit's field" to the spec, and a test
+  that types a draft, focuses the title, presses Escape (and Enter) and checks the saved text.
+- [ ] **A press outside the open card with its assignee menu open closes the card too.** The menu's own outside press
+  (gpui-kit's `PopupMenu`) closes it, and the same press reaches the dialog's overlay (`open_card` in
+  `crates/templum/src/kanban.rs`, card 116). A person who only meant to close the menu sees the card close, or, with
+  changes, the Save question open. Fix: veto the close in the dialog's `on_cancel` (a press on the overlay asks it
+  first) when the menu was open at the press (the dropdown's `on_open_change` kept in a `Cell`), with a test.
 - [ ] **Two deleted comments undone in the order they were deleted come back in the wrong order.** `deleted` keeps
   each comment's index at deletion (`crates/templum/src/kanban.rs`) and `restore_comment` (`board.rs`) inserts at it:
   delete B then C from [A,B,C], Undo B then C, and the thread reads [A,C,B]; the same when an agent removes an earlier
@@ -734,6 +806,36 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   press would open the block's menu. Fix: open the block's menu from the list's capture handler when the pointer is
   over the strip and no card is (the cards as direct children of the scrolling box give their bounds through
   `ScrollHandle::bounds_for_item`).
+- [ ] **The attachments' look and the drop and paste weren't seen in a window.** Card 152
+  (`crates/templum/src/kanban.rs`, `open_draft`: the Attachments section, the ring on `card-body`) was built while the
+  person slept and checked headless only. A person may meet thumbnails or rows that crowd a long name, a ring that is
+  too faint in a theme, ten images that wrap badly, or a drop or a pasted screenshot
+  (`grim -g "$(slurp)" - | wl-copy`) that behaves differently on Wayland, macOS or Windows. Fix: run
+  `cargo run -p templum -- --dev` in light and dark themes, attach a 9 MB image, a PDF and a text file, drop from the
+  file manager, paste a screenshot and copied text, and correct what looks wrong.
+- [ ] **No headless test reads the face's attachment count.** The face (`meta_row`,
+  `crates/templum/src/kanban.rs`) draws the paperclip and the count in a div the harness only finds by id, so
+  `attach_shows_a_thumbnail_and_a_row_and_done_puts_them_on_the_card` asserts the element appears and goes, and the
+  count is checked through the card's data. A wrong number on the face passes. Fix: give the div an accessibility
+  label with the count (or read its text if gpui-kit gains a way) and assert "2".
+- [ ] **The sweep at start reads and deletes on the UI thread.** `attachments::sweep`
+  (`crates/templum/src/attachments.rs`, called from `load_spaces`) walks `<data>/attachments/` before any window can
+  open, as the design chose; a data folder with thousands of attachments, on a slow disk, delays the first frame.
+  Fix: sweep on the background executor after the first frame, with the boards cloned into the task.
+- [ ] **A copy that fails after Save draft leaves a draft that is the card.** `land` (`crates/templum/src/kanban.rs`)
+  returns on `Err` and does nothing else: the draft kept at Save draft holds no change but the copy that failed, so
+  it equals its card and the face shows the draft pencil for nothing until someone opens and leaves the card. Fix: on
+  `Err`, drop that card's kept draft when its `work` equals its `base` (ids aside), with a test.
+- [ ] **A file copied while a draft is saved and reopened can be lost.** In `land` (`crates/templum/src/kanban.rs`,
+  the `Kept` arm): Save draft while a file copies, reopen the card from the draft, press Done before the copy ends,
+  and the copy finds no dialog and no draft (Done dropped it) and the card isn't its dialog's to take it: the file
+  lands on neither the card nor a draft, and the next start sweeps it. Fix to consider: remember the last dialog's
+  outcome per card on the workspace and follow it when no dialog and no draft is found, with a test.
+- [ ] **On X11 a copy from an app that offers an image and text attaches the image.** gpui-fast-linux 0.1.8
+  (`x11/clipboard.rs`, `get_any`) reads image formats before text, so copying cells from LibreOffice (which offers
+  both) and pressing Ctrl+V in a card's field gives `ClipboardEntry::Image` and no text: `pasted_image`
+  (`crates/templum/src/kanban.rs`) attaches "Pasted image.png" instead of pasting the words. Wayland and the other
+  platforms are not known to do it. Fix: upstream, or prefer text in that reader.
 
 ## Connections
 
@@ -789,12 +891,6 @@ Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those
   once with "Its turn ended without an answer". Fix: confirm it with the plan's manual check 14, saving both hook
   inputs; if a field tells Esc from Ctrl+B, end the turn on Esc's only; if none does, keep Working on an interrupt and
   let the screen going still end it.
-- [ ] **Parallel subagents can turn a waiting Claude Code's dot back to Working.** With subagents running side by side,
-  one subagent's `PostToolUse` or `PostToolUseFailure` (`crates/templum-mcp/src/hooks.rs:34`, at 11a2fb0) arrives
-  while another waits at a permission dialog, and the yellow "Waiting for you" turns back to Working although the
-  dialog is still open. A person sees Working and doesn't look. Fix: keep the `tool_use_id` of the
-  `PermissionRequest` with the wait, and clear the yellow only on the `PostToolUse` or `PostToolUseFailure` with that
-  id.
 - [ ] **Each hook runs the AppImage again.** The hooks, the status line and the MCP server run Templum's program,
   which is `$APPIMAGE` when Templum runs from one (`program`, `crates/templum/src/workspace/usage.rs:331`, at
   11a2fb0), and each run mounts the image; Claude Code waits for its `PostToolUse` hook after every tool. A person
@@ -860,12 +956,10 @@ Left by the second review of batch 2; line numbers are those of `development` at
 
 Left by batch 3 (agents together) and its review; line numbers are those of `development` at 6aa33f6.
 
-- [ ] **The balloon covers the find field.** Both sit at the terminal's top right (`render`,
-  `crates/templum/src/balloon.rs:18`; `find_bar`, `crates/templum/src/block.rs:682`). A person who opens find while an
-  agent asks sees the balloon over the field. Fix: put the balloon under the find field while it is open.
-- [ ] **The balloon's field misses Templum's paste shortcut.** The balloon's branch of `on_key_down`
-  (`crates/templum/src/workspace/input.rs`) lets every command but Copy and Paste through, so Ctrl+Shift+V does
-  nothing in a question's field; the find field's branch above it handles it. Fix: the same case as the find field's.
+- [ ] **The inbox's field misses Templum's paste shortcut.** `on_inbox_key`
+  (`crates/templum/src/workspace/inbox.rs`) lets every command but Copy and Paste through, so Ctrl+Shift+V does
+  nothing in a question's field; the find field's branch (`on_key_down`) handles it. Fix: the same case as the find
+  field's.
 - [ ] **The dot stops while it is off screen on a wire that is only partly in view.** A frame is asked for only when
   the dot's point is in view (`crates/templum/src/workspace/render.rs:447`): once it leaves the view it stays there
   until something else draws, then jumps. Fix: ask for frames while the wire's curve's bounds meet the view.
@@ -1106,8 +1200,8 @@ Left by batch 7 and its review; line numbers are those of `development` at eb394
   `crates/templum/src/workspace/bus.rs`) marks the task taken and not `behind`, the task's own `Submitted` is
   ignored, and the person's turn's `Stop` answers the task with the person's answer. Fix: carry the hook's `prompt`
   in `Submitted` (`hooks::claude`, `crates/templum-mcp/src/hooks.rs`) and count one toward the task only if it comes
-  after the task's Enter and starts with `[from `. Claude Code's `UserPromptSubmit` also fires for a scheduled task, a
-  `/loop` iteration and a background subagent reporting back: one of those in the second or two before the task's
+  after the task's Enter and starts with `[from `. Claude Code's `UserPromptSubmit` also fires for a scheduled task and
+  a `/loop` iteration (a background subagent's or command's report no longer counts: card 127): one of those in the second or two before the task's
   Enter is taken marks the task taken (and satisfies `confirm`, `delegate.rs`, even if its Enter was lost), and that
   turn's `Stop` answers it with, say, the subagent's summary, while the task runs later for no one. The same fix
   covers it.
@@ -1149,11 +1243,6 @@ Left by batch 7 and its review; line numbers are those of `development` at eb394
   ungated agent at a dialog a hook told of gets the paste too. Fix: check by hand (once logged in) whether Gemini CLI
   hides its cursor in that question; if so, gate `Agent::GEMINI` too; and have `look_ready` wait while `takes_typing`
   fails.
-- [ ] **A Claude Code subagent's tool end may take a queued task into the wrong turn.** The `Working` arm (`bus.rs`)
-  clears `behind` on any `PostToolUse`, as the spikes saw a tool's end take a queued prompt into the turn under way
-  (S2); whether a subagent's tool end does too wasn't checked. If not, the main turn's `Stop` answers the task with
-  its own answer. Fix: check by hand (a task delegated while Claude Code runs a subagent); if a subagent's tool end
-  doesn't take it, leave `behind` alone for a subagent's `PostToolUse`, if its payload tells one apart.
 - [ ] **A dialog's 300 ms wait may answer a `wait_for(needs_you)` that came after the agent stopped asking.**
   `needs_you` (`crates/templum/src/workspace/waits.rs`) answers, `DRAWN` after the hook, every `needs_you` wait on the
   terminal then, also one registered meanwhile after the dialog closed (a hook that answered it at once). The agent
@@ -1256,34 +1345,19 @@ Left by batch 8 and its review; line numbers are those of `development` at c51be
 
 Left by the ask_user dialog's redesign (kanban card 81, `docs/specs/ask-user.md`).
 
-- [ ] **The ask_user balloon grows when its block shrinks past the first threshold.** `fit`
-  (`crates/templum/src/balloon.rs`) gives 80% of the area while it holds what the dialog needs, else the whole area:
-  400×271 gives at most 194, 400×270 gives 242, so a person resizing a block sees the dialog jump taller as the block
-  gets shorter. Fix: `((area * SHARE).max(needs.min(area)), area < needs)`.
-- [ ] **A keyboard highlight on Send, Approve or Reject isn't scrolled into view when the whole frame scrolls.**
-  `reveal` (`crates/templum/src/balloon.rs`) is attached to options, Other and the note, not to `send_button` or the
-  plan's buttons: in a small block ↑/Shift+Tab puts the highlight on a Send out of view (Enter still sends). Fix:
-  attach `reveal(Row::Send, wait)` to Send and `reveal(Row::Option(0, i))` to Approve/Reject.
-- [ ] **A plan's frame ignores the stopped banner and a wrapped foot.** `(tallest - BORDER - HEAD - FOOT)`
-  (`crates/templum/src/balloon.rs`) overestimates the body by `notice(w)`, and by 38 when the foot wraps: in a narrow
-  block whose plan the agent stopped waiting for, the frame can be taller than the body and the wheel over it never
-  scrolls the body to Comment. Fix: subtract the same foot and notice that `fit` uses.
-- [ ] **In a narrow dialog the header's title runs over "1 of 3".** "Waiting for your answer" is `flex_shrink_0`
-  (`crates/templum/src/balloon.rs`): under about 290 wide it covers the count badge and is clipped, so a person may not
-  see other requests wait. Fix: let the title truncate (`min_w_0` + `truncate`), keep the badge `flex_shrink_0`.
-- [ ] **The small-block test covers only today's shape.** `a_dialog_in_a_small_block_keeps_its_body_and_reaches_send`
-  (`crates/templum/src/workspace/tests/requests.rs`) answers `question`/`options` only; a plan, two buttons, several
-  questions with Other and the note, and a stopped question in a small block aren't driven. Fix: loop the same sizes
-  over those calls.
-- [ ] **connections.md and ask-user.md's Testing lag the small-block fixes.** `docs/specs/connections.md` still says
-  "at most 80% of its height" with no small-block exception, and `docs/specs/ask-user.md`'s Testing doesn't list the
-  small-block, fit-heights, keys-scroll, plan-wheel or scrollbar-strip tests. Fix: point connections.md to
-  ask-user.md's *A small block* and add the tests to the list.
+- [ ] **A plan's frame ignores the stopped banner and a wrapped foot.** `detail` (`crates/templum/src/inbox.rs`) gives
+  `plan` the popup's height less its border and `FOOT` (51), which the banner of a plan the agent stopped waiting for
+  (about 50) and a foot that wraps (38 more, in a column narrower than 260) make too much: the frame can be taller than
+  the body and the wheel over it never scrolls the body to Comment. Fix: subtract the banner and the foot's real
+  heights.
 
-- [ ] **The wheel over a dialog of a block that isn't the one worked in pans the canvas.** `route_wheel`
-  (`crates/templum/src/workspace/input.rs`) gives the wheel to a block's content only when it is focused or selected,
-  and the balloon is the block's content: with focus not following the pointer, a huge dialog can't be scrolled by
-  wheel until a click focuses its block. Fix: let `route_wheel` pass a wheel over a balloon that overflows to it.
+- [ ] **A lit tab on an upper line of wrapped tabs is underlined over the next line.** `tabs`
+  (`crates/templum/src/balloon.rs`, kanban card 115) draws one hairline under the whole row and each tab's 2-unit
+  underline at its own bottom: where many questions or a narrow block wrap the row, the lit tab of the first line
+  has its accent line between the two lines, not on the hairline. A person still sees which is lit, the line just
+  floats. Fix: a hairline under each line (a row per line, splitting the tabs by measured width), or tabs as
+  filled pills (`kanban::segment`'s look) when the row wraps.
+
 
 Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
 
@@ -1299,12 +1373,15 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   Windows; neither was played on those systems, so a person there may hear nothing (or a console flash on Windows).
   On Linux both `canberra-gtk-play` and `pw-play` exit 0, but no one listened. Fix: play it there and adjust
   `chime::players`.
-- [ ] **ask_user v2's dialog isn't tried by hand.** The dialog (`crates/templum/src/balloon.rs`, redrawn by card 81)
-  was built and tested headless only: its look at far and near zooms, the header's tile and badge, the options'
-  panel and marks, the preview beside or under the options, the scrollbar, the highlight, and Claude Code, Codex
-  and Gemini CLI each asking with `questions`, then Esc in Claude Code and an answer typed back, weren't seen. A
-  person may meet misaligned marks, a pane that crowds the options or a header that wraps in a narrow block. Fix: run `cargo run -p templum -- --dev`, ask
-  with the spec's example from each agent and from `templum ask`, and correct what looks wrong.
+- [ ] **The inbox and ask_user's dialog aren't tried by hand.** The inbox (`crates/templum/src/inbox.rs`, card 144) and
+  the dialog it holds (`crates/templum/src/balloon.rs`) were built and tested headless only: the popup's look, its
+  list's rows, the notice's chip on a terminal, the sidebar button's badge and pulse, the options' panel and marks,
+  the preview beside or under the options, the scrollbar, the highlight, and Claude Code, Codex and Gemini CLI each
+  asking with `questions`, then Esc in Claude Code and an answer typed back, weren't seen. A person may meet
+  misaligned marks, a pane that crowds the options or a chip that covers the terminal's last line. Card 115's
+  tabs (`tabs` in the same file: their rings, the lit tab's underline, a row that wraps) weren't seen either. Fix: run
+  `cargo run -p templum -- --dev`, ask with the spec's example from each agent and from `templum ask`, and correct
+  what looks wrong.
 - [ ] **A withdrawn request leaves its alert.** `tell_asking` (`crates/templum/src/workspace/waits.rs`) gives the
   block an "Asks you: …" alert that only answering clears (`seen_asking`); after the agent quits or the deadline
   passes, the workspace's tile stays lit and Ctrl+Shift+A leads to a block with no dialog. Fix: clear that alert
@@ -1318,13 +1395,6 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
 - [ ] **Clicking Other's radio only puts the keyboard in its field.** After picking an option, a click on Other's
   mark (`crates/templum/src/balloon.rs`, `q<q>-other-mark`) leaves the option picked though Other's text is still in
   the field, so Send answers the option. Fix: on that click, also `form.typed(ask, q, <the field's text>)`.
-- [ ] **After Esc, hovering still highlights a row.** The highlight is drawn and set by hover
-  (`crates/templum/src/balloon.rs`) while `away`, though keys go to the terminal: Enter on a highlighted option goes
-  to the agent's prompt. Fix: neither draw nor set the highlight while the question is `away`.
-- [ ] **A question withdrawn while its field has the keyboard leaves no one with it.** When the agent quits, the
-  deadline passes or the block closes while an Other field or the note is focused, the focus stays on a dropped
-  handle and keys go nowhere until a click (traced in GPUI's `window.rs`, not run). Fix: give the workspace the
-  keyboard when a wait whose field had it is removed (`answer`, `closed`).
 - [ ] **Esc and the arrows do nothing in a question's first half second.** `question_key`
   (`crates/templum/src/workspace/questions.rs:204`) returns on `too_soon` before matching the key, so it blocks every
   dialog key, though the spec only blocks those that answer (options, Send, Dismiss). A person who presses Esc as the
@@ -1494,7 +1564,7 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   passthrough mode, once alacritty_terminal offers it.
 - [ ] **`remove_worktree` and `merge_worktree` read the worktree on the UI thread.** Left by card 35
   (`Workspace::worktree_state`, `crates/templum/src/workspace/ops.rs`): a few git commands (`worktree list`,
-  `status`, `rev-list`, `diff`) run before the call answers or the balloon asks; in a big repository the window may
+  `status`, `rev-list`, `diff`) run before the call answers or the inbox shows it; in a big repository the window may
   stall for a moment. Fix: read it on the background executor, the call an `Outcome::Later` that opens the request
   once read.
 - [ ] **A repeating schedule drifts later.** Left by the final review of card 35
@@ -1597,6 +1667,141 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   called and `quiet` stays true. B's turn ending with "waiting for C" then ends B's own task, and its master gets B's
   interim words as the answer. Rare: C has no hooks, waits on its own master, and is still during that call. Fix: call
   `asker_wrote(&asker, from)` in the waits branch too, and drop the spec's "not one that a waiting call takes".
+- [ ] **A dialog over an agent's input isn't dismissed before its task.** Left by card 118 (`EnterWait`,
+  `crates/templum/src/workspace/delegate.rs`): Cline's "Introducing Cline Desktop – Press Enter to open, any other key
+  to close" takes the paste's first key, or ignores the paste. The master now hears that the agent didn't take the task
+  (its screen never showed it, or two Enters sent nothing), and Esc then delegating again works. A master sees one
+  failed `delegate` before it. Fix: a per-agent pattern of such dialogs in the agent table (`templum_terminal::Agent`),
+  and Esc pressed once before the paste when the screen shows one.
+- [ ] **A `reply` typed into an agent says "Typed into" before its Enter went.** Left by card 118 (`reply_to`,
+  `crates/templum/src/workspace/delegate.rs`): with no call of the agent waiting, the reply is typed and the call
+  answers at once; it gets its second Enter like a task, but one that still isn't sent is lost silently. A master sees
+  "Typed into k9x1d." for a reply sitting in that agent's input. Fix: answer `reply` with `Outcome::Later` on what
+  `send_task` says, as `hand_task` does.
+- [ ] **On Windows a second Enter can still answer a dialog of an agent without hooks.** Left by card 118's review
+  (`EnterCheck::look`, `crates/templum/src/workspace/delegate.rs`): there every paste goes as keys (the console hands
+  keys on, bracketed or not), so a screen the first Enter changed and that stands still for 3 s gets a second Enter.
+  Aider asks at once "Add file to the chat? (Y)es/(N)o … [Yes]" for a task naming a file of its repository or a URL:
+  the person sees the file added to the chat without saying yes. Fix: the second Enter into a changed screen only for
+  the agents known to take a burst of keys for a paste (Codex, Copilot CLI: a flag in the agent table,
+  `templum_terminal::Agent`), not for every agent on Windows.
+- [ ] **Two Enters taken for new lines count as a task taken by an agent without hooks.** Left by card 118's review
+  (`EnterCheck::look`, the `(true, _, false) if self.moved` arm, `crates/templum/src/workspace/delegate.rs`): a paste
+  that went as keys (Codex or Copilot CLI on Windows, before their hooks spoke) can take both Enters for new lines;
+  each changed the screen, so the task counts as taken while it sits in the input. The master hears "Handed to k9x1d
+  as task t7." and waits for an answer that never comes, until the still screen or the timeout ends the task. Fix:
+  after a second Enter into a paste that went as keys, take a screen whose only change is one more row in the input
+  for "typed but not submitted".
+- [ ] **A cancelled `delegate` loses "didn't take the task".** Left by card 118's review (`Outcome::Later` in
+  `serve`, `crates/templum/src/workspace/bus.rs`; `cancel`, `waits.rs`; `not_taken`, `delegate.rs`): a `delegate`
+  without `wait` now answers only once the agent took the task; when its client gives up on the call meanwhile (Esc
+  in Claude Code), `cancel` only drops waits, so the job still answers the cancelled request, and `not_taken`, seeing
+  a call still to tell, types no notice. The master sees nothing about a task its agent never took. Fix: keep the
+  `Later` job's request id with it, and drop the job on `notifications/cancelled`: `not_taken` then finds `told`
+  cancelled and types the notice.
+- [ ] **A notice or a reply its agent's person typed over before its Enter stays unsent.** Left by card 118's review
+  (`Step::Typing` in `send_task`, `crates/templum/src/workspace/delegate.rs`): the Enter no longer goes once the
+  person typed into the agent after the paste, so their text isn't sent with it; a task then ends untaken and its
+  asker hears so, but a notice or a reply (no task) just stays in the input with the person's text, and nothing types
+  it again. Rare: the person must type in the 150–300 ms between the paste and its Enter (a notice already waits until
+  they stopped typing for 3 s). Fix: put a notice back in `notices` (its text cleared from the input first is the
+  hard part), and answer a reply with what `send_task` says, as the reply minor above asks.
+
+Left by kanban card 127 (Claude Code's subagents, `docs/specs/claude-subagents.md`) and its review; line numbers are
+those of `development` at f8c3ec9.
+
+- [ ] **A task whose turn resumes a subagent started before it is answered too early.** `Handed::subagents`
+  (`crates/templum/src/workspace/mod.rs`) keeps the subagents there when the task was taken, and a turn's end with
+  only those left answers it (`turn_ended`, `crates/templum/src/workspace/bus.rs`); one of them resumed for the task
+  (`SendMessage`, a `SubagentStart` with its id) still counts as not the task's. A master gets the interim message
+  ("I asked the reviewer again…") and the real answer comes to no one. Fix: on `SubagentStarted` for an id among a
+  taken task's `subagents`, take it off that list.
+- [ ] **Two subagents' dialogs at once: answering the later one turns the parent back to Working.** `asked_by`
+  (`Pane`) holds only the subagent that asked last; once its tool ends, the parent's dot leaves yellow although the
+  first one's dialog is still open in Claude Code's screen. A person sees Working and doesn't look. Fix: keep the ids
+  of every subagent asking (a set), and leave the wait when it is empty.
+- [ ] **A nested subagent's block opens beside the main Claude Code, not beside its own parent.** `open_subagent`
+  (`crates/templum/src/workspace/subagents.rs`) places every subagent by the terminal its hook came from; the hooks
+  don't say which subagent started a nested one. A person sees a flat column instead of a tree. Fix: read
+  `spawnDepth` and `toolUseId` from the subagent's `meta.json` (observed, not documented) and place it beside the
+  block of the subagent whose transcript holds that `tool_use`.
+- [ ] **In grid mode every subagent takes half of its parent's tile.** `open_subagent` focuses the parent before
+  opening, as `spawn_agent` does, so the grid splits the parent's tile each time; ten subagents leave slivers. Fix:
+  in grid mode, split the last subagent's tile instead, or open them off the grid.
+- [ ] **A Claude Code moved to another workspace leaves its subagents' blocks behind.** Moving a block
+  (`take_block`, `crates/templum/src/workspace/blocks.rs`) doesn't take the blocks of its subagents along; they stay,
+  unwired, until they finish and close. Fix: move them with it, wired again.
+- [ ] **Esc during a foreground subagent may leave its parent Working.** With fork mode off (or Claude Code before
+  2.1.232) a subagent runs in the foreground, inside its parent's `Agent` call; an Esc then ends the parent's turn
+  (`PostToolUseFailure` with `is_interrupt`, a `Stopped` without an answer), and whether that subagent's `SubagentStop`
+  still comes wasn't probed. If it doesn't, the subagent stays at work in `Pane::subagents` and `turn_ended`
+  (`crates/templum/src/workspace/bus.rs:414`) only awaits it: the person sees "Working: 1 subagent" until their next
+  prompt's `Stop`, and a task handed to it stays open. Fix: probe it (fork mode off, Esc while an `Explore` runs); if no
+  `SubagentStop` comes, take off, on the parent's interrupt, the subagents no `Stop`'s `background_tasks` ever listed
+  (foreground ones).
+- [ ] **A fork's transcript was never probed.** A fork (`subagent_type: "fork"`, `/subtask`) inherits its parent's whole
+  conversation; its transcript may start with that history, which `Follower::line`
+  (`crates/templum-agent/src/follow.rs:104`) would print as the fork's "Task" (the parent's first prompt) and its words,
+  and title the block with that first prompt. A person would see a block that starts with someone else's conversation.
+  Fix: probe a fork's `agent-<id>.jsonl`; if it holds the history, print from the `user` line that follows the
+  `tool_use` whose id is its `meta.json`'s `toolUseId`, or from the fork's own prompt.
+- [ ] **`/clear` greys and closes background subagents' blocks that may still run.** A new session (`Started`,
+  `crates/templum/src/workspace/bus.rs:306`) forgets the parent's subagents and marks every block of theirs done
+  (`subagents_done`), which closes a minute later; whether Claude Code's background subagents outlive `/clear` or
+  `/resume` wasn't probed. If they do, the person sees a working subagent's block turn grey and close while it still
+  writes its transcript. Fix: probe it; if they survive, keep those blocks open (still following) on `Started`, and mark
+  them done only on their `SubagentStop` or the session's `SessionEnd`.
+- [ ] **No bench was run with subagent blocks on the canvas.** The study asks for `--bench-mixed` with a dozen of them;
+  card 127's build ran none (its blocks are terminals that run nothing, `Terminal::viewer`, and the bench opens a
+  window). Fix: add a dozen viewers fed a synthetic transcript to `--bench-mixed`'s cockpit and paste its line in the
+  pull request.
+- [ ] **Only the cursor's row of a suggestion is left out of a screen's text.** `suggestion`
+  (`crates/templum-terminal/src/terminal.rs:424`) is the faint run from the shown cursor on, on its row; a suggestion
+  long enough to wrap onto the rows under it keeps those in what `read_terminal` and the other answers show, where an
+  agent may still take them for its person's text. Claude Code's suggested next prompt, shown after a turn, wasn't
+  probed (it takes a paid turn): only its placeholder and Codex's were. Fix: probe a long suggestion; if it wraps,
+  leave out the faint rows right under it too.
+- [ ] **A request's age in the inbox stays as it was drawn.** `inbox::list` (`crates/templum/src/inbox.rs`) tells "2m"
+  from the clock when it draws, and nothing redraws a window at rest, so a row says "now" until something else
+  redraws it (a click, an agent's output). Fix: while the inbox is open, a timer that notifies once a minute.
+- [ ] **A text selected in the inbox loses the keyboard when any wait ends.** `inbox_keeps_keys`
+  (`crates/templum/src/workspace/inbox.rs`) gives the keyboard back to the inbox when something inside the popup that
+  is neither the inbox nor a live request's field has it; a plan's Markdown (a selectable gpui-kit `TextView`) is such
+  a thing, so a line selected to copy loses the keyboard when another agent's `wait_for` ends, and Ctrl+C copies
+  nothing. Fix: refocus only on the focus handles of the fields that left (`answer`/`closed`/`cancel` hold the wait:
+  make `inbox_refocus` a list of its fields' handles), with a test.
+- [ ] **A notice and the person's first key can share an Enter.** `send_task`
+  (`crates/templum/src/workspace/delegate.rs`) types a notice, then waits for its paste to show before its Enter
+  (`Step::Typing`); a person who starts typing in that moment gets no Enter, and the paste stays in the input with their
+  keys (docs/specs/notice-batching.md, Non-goals). Fix to consider: queue the notice again, accepting a duplicate if the
+  person sends both.
+- [ ] **A draft that begins with a new line reads as an empty input.** `input_empty`
+  (`crates/templum/src/workspace/delegate.rs`) looks at the last row that opens with a prompt marker; a message the
+  person began with Shift+Enter has a bare marker row and its text under it, so once their last key is TYPING old and
+  the keys can't tell, the notice goes in over it. Fix: read the rows under the marker up to the input's rule or box
+  edge too.
+- [ ] **A draft emptied under a tall Claude Code footer never ends from the screen.** `INPUT_ROWS` = 6
+  (`crates/templum/src/workspace/delegate.rs`, `input_empty`) reads the bottom six rows; with a status line of 4 or more
+  lines the input row sits above them, so a draft emptied with Backspace or Esc (or one an Up, Down, Tab or Ctrl+Y left
+  over an empty input) is never seen empty, and the notices wait for the person's next message (with hooks, its
+  `Submitted`). Fix to consider: look for the input between the last two rule or box rows instead of a fixed count.
+- [ ] **Pi, OpenCode and Kilo Code get no instructions.** Only the hooks of Claude Code, Codex, Gemini CLI, Copilot CLI
+  and Qwen Code take context from `templum hook` at a session's start (`session_start` and `start_output`,
+  `crates/templum-mcp/src/hooks.rs`); Pi's extension returns nothing from `session_start`, and OpenCode's and Kilo
+  Code's plugin has no session-start hook. A person sees those agents ignore Settings ▸ Instructions. Fix: Pi's
+  extension prepends them on `before_agent_start`; OpenCode's and Kilo Code's plugin through its system-prompt hook,
+  both asking `templum/instructions` as the hook does.
+- [ ] **Qwen Code's and Copilot CLI's instructions are unchecked.** Their `hookSpecificOutput` and `additionalContext`
+  shapes (`start_output`, `crates/templum-mcp/src/hooks.rs`) come from their docs only: Qwen Code isn't installed here
+  and Copilot CLI wasn't run by hand (no sign-in). A person would see an agent that ignores its instructions. Fix: run
+  each with an instruction written and ask it what it was told, then change the shape if it differs.
+- [ ] **Claude Code's subagents get no instructions.** `session_start` is the session's: a subagent's hooks name an
+  `agent_id`, and `SubagentStart` takes `additionalContext` too. A person sees a subagent unaware of the instructions
+  the main session follows. Fix: answer `templum/instructions` at `SubagentStart` and print its `additionalContext`.
+- [ ] **A resume with no instruction applying leaves an earlier set in the conversation.** The hook prints nothing when
+  none apply (`hook`, `crates/templum-mcp/src/cli.rs`), so a conversation resumed after the person turned every
+  instruction off keeps the ones its first start gave. A person sees an agent still following an instruction they
+  deleted. Fix: the hook knows the `source`; on a resume answer a short text saying none apply any more.
 
 ## Placing new blocks
 

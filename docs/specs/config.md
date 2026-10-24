@@ -72,6 +72,7 @@ blink = false
 
 [terminal]
 scrollback = 10000   # lines of history per terminal, 0 to 100000
+copy_on_select = true   # a selection made with the mouse goes to the clipboard
 
 [keys]
 new_terminal   = "ctrl-shift-t"
@@ -124,6 +125,8 @@ On macOS the default shortcuts are `cmd-t`, `cmd-w`, `cmd-c`, `cmd-v`, `cmd-=` a
     insert mode) still gets it.
 - **`terminal`**
   - `scrollback` is the number of history lines each terminal keeps.
+  - `copy_on_select` copies a selection made with the mouse to the clipboard as the button is let go (on by
+    default; card 119, [walking-skeleton.md](walking-skeleton.md#mouse-and-trackpad)).
 - **`keys`**
   - Each action takes one shortcut or a list. Writing an action replaces its defaults; `[]` disables it.
   - Shortcuts use GPUI's keystroke syntax (`ctrl-shift-t`, `cmd-,`, `alt-f4`).
@@ -162,6 +165,7 @@ dotfiles repository.
 | `theme` | At once. |
 | `cursor` | At once, in every terminal. |
 | `terminal.scrollback` | At once, in every terminal. Lowering it drops the oldest lines beyond the new limit. |
+| `terminal.copy_on_select` | At once: the next selection. |
 | `keys` | At once. |
 | `shell` | In **new** terminals. Open terminals keep their shell. |
 

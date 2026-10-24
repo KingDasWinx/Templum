@@ -529,6 +529,7 @@ fn a_snapshot_before_the_restored_agent_is_up_keeps_it(cx: &mut TestAppContext) 
                 None,
                 None,
                 None,
+                None,
                 window,
                 cx,
             );
@@ -582,6 +583,7 @@ fn a_snapshot_tells_each_terminal_its_folder_and_agent(cx: &mut TestAppContext) 
                 None,
                 None,
                 None,
+                None,
                 window,
                 cx,
             );
@@ -589,6 +591,7 @@ fn a_snapshot_tells_each_terminal_its_folder_and_agent(cx: &mut TestAppContext) 
             // A folder the next one couldn't read keeps the one known; the agent left.
             ws.snapshot_done(
                 vec![(space, vec![(id, Inspection::default())], saved, None)],
+                None,
                 None,
                 None,
                 None,

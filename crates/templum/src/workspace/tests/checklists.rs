@@ -1081,3 +1081,175 @@ fn a_long_item_wraps_the_same_at_every_zoom(cx: &mut TestAppContext) {
     assert!(lines[0] > 1.0, "it wraps: {lines:?}");
     assert!(lines.iter().all(|l| *l == lines[0]), "{lines:?}");
 }
+
+/// A checklist block of 40 items, none edited, drawn: its list overflows the block.
+struct LongChecklist {
+    handle: AnyWindowHandle,
+    ws: Entity<Workspace>,
+    block: BlockId,
+    first: u64,
+}
+
+impl LongChecklist {
+    fn new(cx: &mut TestAppContext) -> Self {
+        let (handle, ws) = open(cx);
+        let block = new_checklist(handle, &ws, cx);
+        let first = ws.update(cx, |ws, _| {
+            let list = shown(ws, block);
+            (0..40)
+                .map(|i| {
+                    let text = format!("item {i}");
+                    ws.checklists.add_item(list, None, &text, false, 1).unwrap()
+                })
+                .min()
+                .unwrap()
+        });
+        press(handle, cx, "escape");
+        Self {
+            handle,
+            ws,
+            block,
+            first,
+        }
+    }
+
+    /// The bounds of the list and of what `id` names, as drawn now.
+    fn bounds(
+        &self,
+        cx: &mut TestAppContext,
+        id: impl Into<ElementId>,
+    ) -> (Bounds<gpui_kit::Pixels>, Bounds<gpui_kit::Pixels>) {
+        let id = id.into();
+        let n = self.block.0 as usize;
+        cx.update_window(self.handle, |_, window, cx| {
+            window.render_frame(cx);
+            (
+                window.find(("checklist-list", n)).bounds(),
+                window.find(id).bounds(),
+            )
+        })
+        .unwrap()
+    }
+
+    /// How far the first item's top is below the list's: less as the list scrolls.
+    fn first_below(&self, cx: &mut TestAppContext) -> f32 {
+        let (list, row) = self.bounds(cx, name("checklist-row", self.block, self.first));
+        f32::from(row.top() - list.top())
+    }
+
+    /// Inside the scrollbar's track (16 pixels wide), near the list's bottom.
+    fn strip(&self, cx: &mut TestAppContext) -> (f32, f32) {
+        let (list, _) = self.bounds(cx, ("checklist-list", self.block.0 as usize));
+        (
+            f32::from(list.right() - px(6.0)),
+            f32::from(list.bottom() - px(12.0)),
+        )
+    }
+}
+
+/// A checklist longer than its block has a scrollbar over exactly its list, which a press on its
+/// track scrolls.
+#[gpui_kit::test]
+fn a_long_checklist_has_a_scrollbar_that_scrolls_it(cx: &mut TestAppContext) {
+    let long = LongChecklist::new(cx);
+    let n = long.block.0 as usize;
+    let (list, bar) = long.bounds(cx, ("checklist-scrollbar", n));
+    assert_eq!(bar, list, "the scrollbar is over the list");
+    let (before, at) = (long.first_below(cx), long.strip(cx));
+    cx.update_window(long.handle, |_, window, cx| {
+        super::kanban::hover_at(window, cx, at);
+        press_with(window, cx, MouseButton::Left, Modifiers::default(), at, at);
+    })
+    .unwrap();
+    let now = long.first_below(cx);
+    assert!(
+        now < before - 100.0,
+        "the track scrolled it: {before} to {now}"
+    );
+}
+
+/// Zoom scales like a photo: a scrolled checklist shows the same items at another zoom, its
+/// scroll scaling with them.
+#[gpui_kit::test]
+fn a_scrolled_checklist_shows_the_same_items_at_another_zoom(cx: &mut TestAppContext) {
+    let long = LongChecklist::new(cx);
+    let (list, _) = long.bounds(cx, ("checklist-list", long.block.0 as usize));
+    let center = (f32::from(list.center().x), f32::from(list.center().y));
+    cx.update_window(long.handle, |_, window, cx| {
+        let down = ScrollDelta::Pixels(point(px(0.), px(-100.)));
+        wheel(window, cx, center, down, false);
+    })
+    .unwrap();
+    let at_one = long.first_below(cx);
+    assert!(at_one < 0.0, "scrolled past the first item: {at_one}");
+    long.ws.update(cx, |ws, _| {
+        let camera = ws.space.canvas.camera;
+        ws.space.canvas.camera = Camera::at(camera.origin, 0.5);
+        ws.space.flight = None;
+    });
+    let at_half = long.first_below(cx);
+    assert!(
+        (at_half - at_one / 2.0).abs() < 1.0,
+        "at zoom 0.5: {at_half}, at 1: {at_one}"
+    );
+}
+
+/// With "Focus follows the pointer" off, a press on a long checklist's scrollbar picks its block
+/// like any other press in it, so the wheel scrolls its list after; a middle drag from there
+/// pans the canvas.
+#[gpui_kit::test]
+fn a_press_on_a_long_checklists_scrollbar_picks_its_block_and_the_middle_pans(
+    cx: &mut TestAppContext,
+) {
+    let long = LongChecklist::new(cx);
+    long.ws.update(cx, |ws, _| {
+        ws.config.canvas.focus_follows_pointer = false;
+        ws.space.focused = None;
+    });
+    let at = long.strip(cx);
+    cx.update_window(long.handle, |_, window, cx| {
+        super::kanban::hover_at(window, cx, at);
+        press_with(window, cx, MouseButton::Left, Modifiers::default(), at, at);
+    })
+    .unwrap();
+    long.ws
+        .read_with(cx, |ws, _| assert_eq!(ws.space.focused, Some(long.block)));
+    let camera = long.ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    cx.update_window(long.handle, |_, window, cx| {
+        super::kanban::hover_at(window, cx, at);
+        let to = (at.0 - 50.0, at.1);
+        press_with(
+            window,
+            cx,
+            MouseButton::Middle,
+            Modifiers::default(),
+            at,
+            to,
+        );
+    })
+    .unwrap();
+    long.ws.read_with(cx, |ws, _| {
+        assert_ne!(ws.space.canvas.camera, camera, "a middle drag pans");
+    });
+}
+
+/// A press in the field of a long checklist's picked block is the field's: the block isn't
+/// picked again, which would stop it.
+#[gpui_kit::test]
+fn a_press_in_a_long_checklists_field_keeps_editing(cx: &mut TestAppContext) {
+    let long = LongChecklist::new(cx);
+    let text = name("checklist-text", long.block, long.first);
+    click(long.handle, cx, text.clone());
+    assert!(matches!(
+        editing(&long.ws, cx, long.block),
+        Some((Field::Item(item), _)) if item == long.first
+    ));
+    let (_, field) = long.bounds(cx, text);
+    let at = (f32::from(field.center().x), f32::from(field.center().y));
+    cx.update_window(long.handle, |_, window, cx| {
+        press_with(window, cx, MouseButton::Left, Modifiers::default(), at, at);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(editing(&long.ws, cx, long.block).is_some(), "still editing");
+}

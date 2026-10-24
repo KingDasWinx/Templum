@@ -732,3 +732,46 @@ fn the_shell_is_the_real_bash_git_bash_starts() {
         [10]
     );
 }
+
+/// An IME that clears its composition replaces the marked text with nothing (a dead key, then
+/// Backspace): the empty text reaches no program, and what is typed after it still does.
+#[cfg(unix)]
+#[test]
+fn empty_text_does_not_block_what_is_typed_after_it() {
+    let term = Terminal::spawn(
+        SpawnOptions {
+            cols: 40,
+            rows: 5,
+            cell_px: (8, 16),
+            command: Some((
+                "sh".to_string(),
+                vec![
+                    "-c".to_string(),
+                    "read l; printf 'got:%s' \"$l\"".to_string(),
+                ],
+            )),
+            palette: Palette::default(),
+            options: TermOptions::default(),
+            working_directory: None,
+            integration: None,
+            env: Vec::new(),
+        },
+        Arc::new(|| {}),
+    )
+    .expect("spawn");
+    term.text("");
+    term.text("hi\r");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !term.exited() {
+        assert!(Instant::now() < deadline, "what was typed never arrived");
+        std::thread::sleep(Duration::from_millis(50));
+        term.shared().rearm();
+    }
+    let mut snapshot = Snapshot::default();
+    snapshot.refresh(term.shared(), &Palette::default());
+    assert!(
+        snapshot.text().contains("got:hi"),
+        "screen was: {:?}",
+        snapshot.text()
+    );
+}

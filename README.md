@@ -109,6 +109,16 @@ irm https://github.com/KingDasWinx/Templum/releases/latest/download/install.ps1 
 Both check the download against its SHA-256 and install the newest release; `TEMPLUM_VERSION=0.1.2` (before `sh`,
 or `$env:TEMPLUM_VERSION = "0.1.2"` before `irm`) installs another one. From then on, Templum updates itself.
 
+### Arch Linux
+
+[`templum-bin`](https://aur.archlinux.org/packages/templum-bin) is in the AUR:
+
+```sh
+yay -S templum-bin    # or: paru -S templum-bin
+```
+
+Your AUR helper updates it with your other packages.
+
 ### Or download a file
 
 Every [release](https://github.com/KingDasWinx/Templum/releases/latest) has these files.

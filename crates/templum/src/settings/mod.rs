@@ -29,9 +29,10 @@ mod fields;
 mod fonts;
 mod general;
 mod git;
+mod instructions;
 mod row;
 mod sections;
-mod templum_agent;
+pub(crate) mod templum_agent;
 #[cfg(test)]
 mod tests;
 mod updates;
@@ -44,6 +45,10 @@ pub(crate) use edits::{
 };
 pub(crate) use fields::{NumberState, SCROLLBACK};
 pub(crate) use fonts::monospace_families;
+use instructions::add_instruction;
+// What a row of Settings ▸ Instructions says: the tests read it.
+#[cfg(test)]
+pub(crate) use instructions::description as instruction_description;
 // What the Git section's text areas call on each change: the tests type through them.
 #[cfg(test)]
 pub(crate) use git::{set_commit_instructions, set_commit_prompt};
@@ -67,6 +72,7 @@ pub(crate) enum Section {
     Tools,
     Git,
     Agents,
+    Instructions,
     Connections,
     TemplumAgent,
     Usage,
@@ -75,7 +81,7 @@ pub(crate) enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 14] = [
+    pub const ALL: [Section; 15] = [
         Section::Appearance,
         Section::General,
         Section::Canvas,
@@ -85,6 +91,7 @@ impl Section {
         Section::Tools,
         Section::Git,
         Section::Agents,
+        Section::Instructions,
         Section::Connections,
         Section::TemplumAgent,
         Section::Usage,
@@ -103,6 +110,7 @@ impl Section {
             Section::Tools => "Tools",
             Section::Git => "Git",
             Section::Agents => "Agents",
+            Section::Instructions => "Instructions",
             Section::Connections => "Connections",
             Section::TemplumAgent => "Templum Agent",
             Section::Usage => "Usage",
@@ -123,6 +131,7 @@ impl Section {
             Section::Tools => "settings-tab-tools",
             Section::Git => "settings-tab-git",
             Section::Agents => "settings-tab-agents",
+            Section::Instructions => "settings-tab-instructions",
             Section::Connections => "settings-tab-connections",
             Section::TemplumAgent => "settings-tab-templum-agent",
             Section::Usage => "settings-tab-usage",
@@ -132,7 +141,7 @@ impl Section {
     }
 
     /// A line under the heading, for what holds for the whole section.
-    fn note(self) -> Option<&'static str> {
+    pub(crate) fn note(self) -> Option<&'static str> {
         match self {
             Section::Shell => Some("Applies to new terminals"),
             Section::Tools => {
@@ -145,6 +154,11 @@ impl Section {
             Section::Agents => Some(
                 "The AI agents in the canvas menu. Change one of Templum's, or add your own; ↺ puts \
                  one of Templum's back as it was.",
+            ),
+            Section::Instructions => Some(
+                "Claude Code, Codex, Gemini CLI, Copilot CLI and Qwen Code read them as a session \
+                 starts: a change reaches the sessions that start after it, and a running one at \
+                 its next resume, /clear or compaction.",
             ),
             Section::Connections => Some(
                 "What the agents in the canvas get from Templum: its MCP server, to read and type \
@@ -316,15 +330,20 @@ pub(crate) fn render(
                 .when_some(section.note(), |el, note| {
                     el.child(
                         div()
+                            .id("settings-note")
                             .text_size(px(12.0))
                             .text_color(ui.title_dim)
-                            .child(note),
+                            .child(note)
+                            .test_support(),
                     )
                 })
                 .child(div().mt(px(4.0)).child(card))
                 .when(section == Section::Agents, |el| {
                     el.child(add_agent(ui, cx))
                         .child(accounts::accounts(ws, &entity, cx))
+                })
+                .when(section == Section::Instructions, |el| {
+                    el.child(add_instruction(ui, cx))
                 })
                 .when(section == Section::Appearance, |el| {
                     el.child(colors::theme_card(ws, window, cx))

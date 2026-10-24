@@ -433,6 +433,29 @@ fn on_the_wire(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> (f32, f32) {
     at(ws, cx, (480.0, 180.0))
 }
 
+/// The wire between two selected blocks runs inside their box: a click on it selects the wire.
+#[gpui_kit::test]
+fn a_click_on_a_wire_inside_the_selection_box_selects_the_wire(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = apart(handle, &ws, cx);
+    let wire = Wire::new(kanban, note).unwrap();
+    ws.update(cx, |ws, cx| {
+        ws.connect(kanban, note, cx);
+        ws.space.focused = None;
+        ws.space.selected = vec![kanban, note];
+    });
+    let on = on_the_wire(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        click(window, cx, on, 1);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.selected_wire, Some(wire));
+        assert!(ws.space.selected.is_empty());
+    });
+}
+
 #[gpui_kit::test]
 fn a_click_selects_a_wire_and_delete_removes_it(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);

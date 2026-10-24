@@ -319,6 +319,7 @@ impl Workspace {
                     column,
                     title: found.map_or_else(String::new, |c| c.title.clone()),
                     cards: found.map_or(0, |c| c.cards.len()),
+                    draft: self.boards.draft(column).is_some(),
                 }
             }
             Target::Card { board, card } => Items::Card {
@@ -327,7 +328,7 @@ impl Workspace {
                 send: self.send_to_menu(
                     self.boards
                         .card(board, card)
-                        .map_or_else(String::new, |c| c.text()),
+                        .map_or_else(String::new, |c| c.text(self.data_dir.as_deref())),
                 ),
             },
             Target::Ink(index) => Items::Ink { index },
@@ -676,6 +677,8 @@ enum Items {
         column: u64,
         title: String,
         cards: usize,
+        /// A new card's draft is kept here: "Add a card" reads "Continue draft".
+        draft: bool,
     },
     Card {
         board: u64,

@@ -111,8 +111,9 @@ impl Workspace {
             .filter_map(Body::terminal_mut)
         {
             // A spawn's prompt still waiting: its screen is its start and its first questions,
-            // which `look_ready` watches, and the minute ends its task.
-            if pane.seen.agent.is_none() || pane.prompt.is_some() {
+            // which `look_ready` watches, and the minute ends its task. A turn that ended while
+            // its subagents work: their hooks tell, its prompt sits still.
+            if pane.seen.agent.is_none() || pane.prompt.is_some() || pane.awaits_subagents {
                 pane.looks = Looks::default();
                 continue;
             }
@@ -137,6 +138,7 @@ impl Workspace {
                 AgentState::Working => {}
             }
             pane.state = Some(state);
+            pane.asked_by = None;
             changed = true;
         }
         for terminal in still {

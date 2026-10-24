@@ -53,6 +53,7 @@ impl Workspace {
         let checklist = Checklist {
             list: Some(list),
             editing: None,
+            scroll: Default::default(),
         };
         let id = self.add_block(rect, Body::Checklist(checklist));
         self.focus_block(id, window, cx);

@@ -98,9 +98,11 @@ looking at: not the focused one of the shown workspace while the window is activ
   "Finished after 2 min", "Failed (exit 1) after 12 s", the agent's text, or "Needs your attention". Only the
   first news until the block is seen: a terminal that rings on and on doesn't flood. A click shows the block: its
   workspace, the block focused, the camera moved just enough to show it whole.
-- **`go_to_waiting`** (Ctrl+Shift+A, Cmd+Shift+A on macOS) shows the terminal that asked for attention: this
-  workspace's first, then the others' in the sidebar's order, the oldest block first. Going there clears its
-  alert, so the next press shows the next one; with none waiting, a notification says so.
+- **`go_to_waiting`** (Ctrl+Shift+A, Cmd+Shift+A on macOS) opens the requests inbox
+  ([ask-inbox.md](ask-inbox.md)) when a request of an agent waits in the workspace shown. Else it shows the
+  terminal that asked for attention: this workspace's first, then the others' in the sidebar's order, the oldest
+  block first. Going there clears its alert, so the next press shows the next one; with none waiting, a
+  notification says so.
 - With Templum in the background and `terminal.notifications` on, the same as a system notification. A click
   brings Templum to the front on the block.
 

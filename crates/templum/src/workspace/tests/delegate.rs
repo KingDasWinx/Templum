@@ -6,9 +6,11 @@ use std::time::Instant;
 use serde_json::json;
 use templum_canvas::Wire;
 
-use super::bus::{after, answered, call, call_later, event, has_server, me, screen_with};
+use super::bus::{
+    after, answered, call, call_later, event, has_server, me, result_of, screen_until, screen_with,
+};
 #[cfg(unix)]
-use super::bus::{bus_note, history_with, result_of, screen_until, server_gone};
+use super::bus::{bus_note, history_with, server_gone};
 use super::*;
 
 /// Two terminals side by side and wired: mine at (40, 100) and theirs at (900, 100), 700 × 300
@@ -21,7 +23,7 @@ pub(super) fn two_agents(
 
 /// `two_agents`, theirs running `command` (`agent_cat` when None), each once its program is in
 /// front, where a snapshot found theirs.
-fn agents_running(
+pub(super) fn agents_running(
     cx: &mut TestAppContext,
     command: Option<(String, Vec<String>)>,
 ) -> (AnyWindowHandle, Entity<Workspace>, BlockId, BlockId) {
@@ -54,9 +56,29 @@ fn agents_running(
     (handle, ws, mine, theirs)
 }
 
+/// `two_agents`, theirs a `cat -v` that asked for bracketed pastes, as Claude Code does, and
+/// echoes nothing: its screen shows the bytes Templum wrote, in order, ESC as "^[" and Enter as
+/// "^M". The tty's echo would be a second writer, which `cat`'s lines cut into at any point.
+#[cfg(unix)]
+fn bracketed_cat(
+    cx: &mut TestAppContext,
+) -> (AnyWindowHandle, Entity<Workspace>, BlockId, BlockId) {
+    // One job: `cat` takes the place of the `sh` that set its tty, in front from the start.
+    let cat = "sh -c 'stty -echo -icanon -icrnl; printf \"\\033[?2004h\"; exec cat -v'; true";
+    let (handle, ws, mine, theirs) = agents_running(cx, Some(jobs(cat)));
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while !ws.read_with(cx, |ws, _| {
+        ws.space.terminal(theirs).unwrap().term.bracketed()
+    }) {
+        assert!(Instant::now() < deadline, "no bracketed paste");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    (handle, ws, mine, theirs)
+}
+
 /// A third terminal at (40, 500), 700 × 300, running Codex as far as Templum knows, found in front
 /// of its shell (Unix) and wired to `to`.
-fn another_agent(
+pub(super) fn another_agent(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
@@ -107,24 +129,82 @@ pub(super) fn snapshot(
     let done = vec![(space, vec![(id, found)], saved, None)];
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            ws.snapshot_done(done, None, None, None, window, cx)
+            ws.snapshot_done(done, None, None, None, None, window, cx)
         })
     })
     .unwrap();
 }
 
-/// The Enter a typed task waits for.
-#[cfg(unix)]
-fn enter(cx: &mut TestAppContext) {
-    after(
-        cx,
-        crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
-    );
+/// The Enter of what Templum just typed into the terminal block `id`: once its program printed
+/// since (in real time: a slow one would see its looks give up on a screen that hasn't moved yet),
+/// its looks go a short while apart until its paste shows and stood still, and the Enter went.
+pub(super) fn entered(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) {
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let (sent, printed) = ws.read_with(cx, |ws, _| {
+            let pane = ws.space.terminal(id).unwrap();
+            (pane.sent, pane.term.status().output)
+        });
+        if printed > sent {
+            break;
+        }
+        assert!(Instant::now() < deadline, "nothing printed since");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let inputs = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().term.inputs())
+    };
+    let typed = inputs(cx);
+    while inputs(cx) == typed {
+        assert!(Instant::now() < deadline, "no Enter");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        after(
+            cx,
+            crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
+        );
+    }
+}
+
+/// `delegate` from the terminal `from` with `args`, answered once given: at once when refused,
+/// else once the agent of block `theirs` took the task. Its screen is drawn in real time: once it
+/// changed (Windows' `cmd` may start late), its looks go a short while apart: its paste shows, its
+/// Enter goes, then its hooks say it took it (`hooks`), or its screen tells.
+pub(super) fn hand_over(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    (from, theirs): (&str, BlockId),
+    args: serde_json::Value,
+    hooks: bool,
+) -> (bool, String) {
+    let (worker, _) = me(ws, cx, theirs);
+    let before = screen_until(ws, cx, theirs, |_| true);
+    let answers = call_later(handle, ws, cx, from, 99, "delegate", args);
+    if let Ok(line) = answers.try_recv() {
+        return result_of(&line);
+    }
+    screen_until(ws, cx, theirs, |shown| shown != before);
+    if hooks {
+        entered(ws, cx, theirs);
+        event(handle, ws, cx, &worker, json!({ "event": "submitted" }));
+    }
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Ok(line) = answers.try_recv() {
+            return result_of(&line);
+        }
+        assert!(Instant::now() < deadline, "not answered");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        after(
+            cx,
+            crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
+        );
+    }
 }
 
 /// Mine runs Claude Code too, found by a snapshot: what comes back is typed into it.
 #[cfg(unix)]
-fn asker(ws: &Entity<Workspace>, cx: &mut TestAppContext, mine: BlockId) {
+pub(super) fn asker(ws: &Entity<Workspace>, cx: &mut TestAppContext, mine: BlockId) {
     ws.update(cx, |ws, _| {
         ws.space.terminal_mut(mine).unwrap().seen.agent = Some("claude".into())
     });
@@ -133,7 +213,7 @@ fn asker(ws: &Entity<Workspace>, cx: &mut TestAppContext, mine: BlockId) {
 
 /// The notices waiting to be typed, oldest first: to whom, and what.
 #[cfg(unix)]
-fn notices(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<(String, String)> {
+pub(super) fn notices(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<(String, String)> {
     ws.read_with(cx, |ws, _| {
         ws.notices
             .iter()
@@ -145,7 +225,7 @@ fn notices(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<(String, Stri
 /// The terminal `from` hands block `theirs` the task `said` without waiting; its agent takes it
 /// and ends with the answer `said`; then a second passes (what it spent is read then).
 #[cfg(unix)]
-fn done_task(
+pub(super) fn done_task(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
@@ -154,18 +234,9 @@ fn done_task(
     said: &str,
 ) {
     let (worker, them) = me(ws, cx, theirs);
-    let (failed, text) = call(
-        handle,
-        ws,
-        cx,
-        from,
-        "delegate",
-        json!({ "block": them, "task": said }),
-    );
+    let task = json!({ "block": them, "task": said });
+    let (failed, text) = hand_over(handle, ws, cx, (from, theirs), task, true);
     assert!(!failed, "{text}");
-    screen_with(ws, cx, theirs, said);
-    enter(cx);
-    event(handle, ws, cx, &worker, json!({ "event": "submitted" }));
     event(
         handle,
         ws,
@@ -176,19 +247,35 @@ fn done_task(
     after(cx, 1000);
 }
 
+/// A handed task keeps at most 2000 characters, cut between two characters.
+#[test]
+fn a_handed_tasks_text_is_cut_at_2000_characters() {
+    let long = "é".repeat(2001);
+    assert_eq!(crate::workspace::Handed::text_of(&long), "é".repeat(2000));
+    assert_eq!(crate::workspace::Handed::text_of("short"), "short");
+}
+
 #[cfg(unix)]
 #[gpui_kit::test]
 fn delegate_types_the_header_the_task_and_enter(cx: &mut TestAppContext) {
-    let (handle, ws, mine, theirs) = two_agents(cx);
+    // Its pastes take no Enter for a new line.
+    let (handle, ws, mine, theirs) = bracketed_cat(cx);
     let (terminal, uid) = me(&ws, cx, mine);
     let (worker, them) = me(&ws, cx, theirs);
     has_server(handle, &ws, cx, &worker, 7);
+    let inputs = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(theirs).unwrap().term.inputs())
+    };
+    let before = inputs(cx);
     let task = json!({ "block": them, "task": "fix the tests\nthen push" });
-    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+    // Answered once it took the task: `cat` has no hooks, its screen moved after the Enter.
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, false);
     assert_eq!(
         (failed, text),
         (false, format!("Handed to {them} as task t1."))
     );
+    // Its first line, its text, one Enter.
+    assert_eq!(inputs(cx), before + 3, "one Enter");
     ws.read_with(cx, |ws, _| {
         let handed = ws
             .space
@@ -199,21 +286,24 @@ fn delegate_types_the_header_the_task_and_enter(cx: &mut TestAppContext) {
             .expect("handed over");
         assert_eq!(handed.by, terminal);
         assert_eq!(handed.id, 1);
+        assert_eq!(handed.text, "fix the tests\nthen push");
     });
-    // `cat` asks for no bracketed paste: the task comes as one line, echoed as it is typed, then
-    // printed again once Enter sent it.
-    screen_with(&ws, cx, theirs, "then push");
-    enter(cx);
-    // The echo's first row ends at "tests": the rows join without the space after it.
-    screen_with(
-        &ws,
-        cx,
-        theirs,
-        &format!(
-            "({uid}), task t1] Your task is in the pasted text: do it, then answer it with reply. fix the tests"
-        ),
+    // What `cat` was given, in order: the header, a paste of its own, then the task's lines and
+    // how to answer, then one Enter. The task is longer than the screen: its start is read in the
+    // history.
+    let given = format!(
+        "({uid}), task t1] Your task is in the pasted text: do it, then answer it with reply.\
+         ^[[201~^[[200~\nfix the tests\nthen push{}^[[201~^M",
+        crate::workspace::delegate::answer_how(1)
+    )
+    .replace('\n', "");
+    history_with(&ws, cx, theirs, &given);
+    let shown = ws.read_with(cx, |ws, _| ws.space.terminal(theirs).unwrap().screen());
+    let shown = shown.replace('\n', "");
+    assert!(
+        shown.starts_with("^[[200~[from ") && shown.ends_with(&given),
+        "{shown}"
     );
-    screen_with(&ws, cx, theirs, "standard input.)[from");
 }
 
 /// Claude Code takes a long paste alone for data it was shown, not for what it is asked: the
@@ -221,22 +311,20 @@ fn delegate_types_the_header_the_task_and_enter(cx: &mut TestAppContext) {
 #[cfg(unix)]
 #[gpui_kit::test]
 fn a_task_goes_as_its_first_line_then_its_text(cx: &mut TestAppContext) {
-    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (handle, ws, mine, theirs) = bracketed_cat(cx);
     let (terminal, uid) = me(&ws, cx, mine);
     let (_, them) = me(&ws, cx, theirs);
-    // `cat` prints the sequence back: the terminal now brackets pastes, as Claude Code's does.
-    prints(&ws, cx, theirs, b"\x1b[?2004hon\r");
-    screen_with(&ws, cx, theirs, "2004honon");
     let task = json!({ "block": them, "task": "line 1\nline 2\nline 3\nline 4" });
-    call(handle, &ws, cx, &terminal, "delegate", task);
-    // The terminal echoes ESC as "^[": two pastes, the first line alone. The task is longer than
-    // the screen: its start is read in the history.
+    call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    // Two pastes, the first line alone. The task is longer than the screen: its start is read in
+    // the history.
     history_with(
         &ws,
         cx,
         theirs,
         &format!(
-            "({uid}), task t1] Your task is in the pasted text: do it, then answer it with reply.^[[201~^[[200~"
+            "({uid}), task t1] Your task is in the pasted text: do it, then answer it with reply.\
+             ^[[201~^[[200~line 1"
         ),
     );
 }
@@ -260,13 +348,13 @@ fn a_task_and_its_change_say_how_to_answer(cx: &mut TestAppContext) {
     let (terminal, _) = me(&ws, cx, mine);
     let (_, them) = me(&ws, cx, theirs);
     let task = json!({ "block": them, "task": "find the bug" });
-    call(handle, &ws, cx, &terminal, "delegate", task.clone());
+    call_later(handle, &ws, cx, &terminal, 1, "delegate", task.clone());
     let shown = screen_with(&ws, cx, theirs, "do it, then answer it with reply.");
     assert!(shown.contains("find the bug"), "{shown}");
     screen_with(&ws, cx, theirs, "call Templum's reply tool once");
     screen_with(&ws, cx, theirs, "run `templum reply -` in your shell");
     // A second delegate from the same agent is a change to task t1.
-    call(handle, &ws, cx, &terminal, "delegate", task);
+    call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
     screen_with(&ws, cx, theirs, "do it, then answer the task with reply.");
     screen_with(&ws, cx, theirs, "When task t1 is done");
 }
@@ -283,14 +371,8 @@ fn delegate_says_why_an_agent_has_no_tools(cx: &mut TestAppContext) {
         ws.update(cx, |ws, _| {
             ws.space.terminal_mut(theirs).unwrap().handed = None
         });
-        call(
-            handle,
-            &ws,
-            cx,
-            &terminal,
-            "delegate",
-            json!({ "block": them, "task": "go" }),
-        )
+        let task = json!({ "block": them, "task": "go" });
+        hand_over(handle, &ws, cx, (&terminal, theirs), task, true)
     };
     let (failed, text) = hand(cx);
     assert!(!failed, "{text}");
@@ -426,28 +508,12 @@ fn a_subagent_waiting_on_its_own_task_isnt_done(cx: &mut TestAppContext) {
         })
     };
     // Mine hands theirs t1, which takes it and hands the third t2.
-    call(
-        handle,
-        &ws,
-        cx,
-        &terminal,
-        "delegate",
-        json!({ "block": them, "task": "go" }),
-    );
-    screen_with(&ws, cx, theirs, "go");
-    enter(cx);
-    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
-    call(
-        handle,
-        &ws,
-        cx,
-        &worker,
-        "delegate",
-        json!({ "block": other, "task": "look" }),
-    );
-    screen_with(&ws, cx, third, "look");
-    enter(cx);
-    event(handle, &ws, cx, &helper, json!({ "event": "submitted" }));
+    let task = json!({ "block": them, "task": "go" });
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, true);
+    assert!(!failed, "{text}");
+    let task = json!({ "block": other, "task": "look" });
+    let (failed, text) = hand_over(handle, &ws, cx, (&worker, third), task, true);
+    assert!(!failed, "{text}");
     // Its turn ends while it waits for t2: t1 is not over, and mine is told nothing.
     let waiting = json!({ "event": "stopped", "message": "Waiting for the third." });
     event(handle, &ws, cx, &worker, waiting);
@@ -497,26 +563,19 @@ fn a_task_handed_out_before_its_own_doesnt_keep_it_open(cx: &mut TestAppContext)
     let (worker, them) = me(&ws, cx, theirs);
     let (_, other) = me(&ws, cx, third);
     // Theirs handed the third a task long ago, which nobody ended.
-    call(
+    call_later(
         handle,
         &ws,
         cx,
         &worker,
+        1,
         "delegate",
         json!({ "block": other, "task": "look" }),
     );
     // Then mine hands theirs one, which theirs answers with its turn's end.
-    call(
-        handle,
-        &ws,
-        cx,
-        &terminal,
-        "delegate",
-        json!({ "block": them, "task": "go" }),
-    );
-    screen_with(&ws, cx, theirs, "go");
-    enter(cx);
-    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    let task = json!({ "block": them, "task": "go" });
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, true);
+    assert!(!failed, "{text}");
     let done = json!({ "event": "stopped", "message": "Done." });
     event(handle, &ws, cx, &worker, done);
     after(cx, 1000);
@@ -541,11 +600,12 @@ fn an_agent_without_tools_waiting_on_its_own_task_isnt_ended_by_its_screen(
     let (_, other) = me(&ws, cx, third);
     let task = json!({ "block": them, "task": "go", "wait": true });
     let delegated = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
-    call(
+    call_later(
         handle,
         &ws,
         cx,
         &worker,
+        1,
         "delegate",
         json!({ "block": other, "task": "look" }),
     );
@@ -575,12 +635,13 @@ fn delegate_refuses_what_it_mustnt_type_into(cx: &mut TestAppContext) {
     );
     let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task.clone());
     assert!(failed && text.contains("waiting for its person"), "{text}");
-    // Working on its own prompt: typed in, the task waits its turn.
+    // Working on its own prompt: typed in, the task waits its turn, taken at its Enter.
     event(handle, &ws, cx, &worker, json!({ "event": "working" }));
-    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task.clone());
+    let at = (terminal.as_str(), theirs);
+    let (failed, text) = hand_over(handle, &ws, cx, at, task.clone(), false);
     assert!(!failed, "{text}");
     // On the caller's own task: a change to it (another agent's: another_agents_task_is_still_refused).
-    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task.clone());
+    let (failed, text) = hand_over(handle, &ws, cx, at, task.clone(), false);
     assert_eq!(
         (failed, text),
         (false, format!("Typed into {them} as a change to task t1."))
@@ -689,7 +750,7 @@ fn reply_with_no_one_waiting_types_into_the_agent(cx: &mut TestAppContext) {
     let (failed, text) = call(handle, &ws, cx, &worker, "reply", reply);
     assert_eq!((failed, text), (false, format!("Typed into {uid}.")));
     screen_with(&ws, cx, mine, "Done.");
-    enter(cx);
+    entered(&ws, cx, mine);
     screen_with(
         &ws,
         cx,
@@ -708,7 +769,7 @@ fn a_reply_with_no_one_waiting_is_the_tasks_end(cx: &mut TestAppContext) {
     let (worker, them) = me(&ws, cx, theirs);
     asker(&ws, cx, mine);
     let task = json!({ "block": them, "task": "find the bug" });
-    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, true);
     assert!(!failed, "{text}");
     let (failed, text) = call(
         handle,
@@ -866,7 +927,7 @@ fn a_waiting_call_gets_the_answer_and_no_notice(cx: &mut TestAppContext) {
     asker(&ws, cx, mine);
     let ends = |cx: &mut TestAppContext, said: &str| {
         screen_with(&ws, cx, theirs, said);
-        enter(cx);
+        entered(&ws, cx, theirs);
         event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
         event(
             handle,
@@ -883,11 +944,12 @@ fn a_waiting_call_gets_the_answer_and_no_notice(cx: &mut TestAppContext) {
     assert_eq!(answered(&answers), (false, "one".to_string()));
     after(cx, 1000);
     // `wait_for_idle` after one without.
-    call(
+    call_later(
         handle,
         &ws,
         cx,
         &terminal,
+        1,
         "delegate",
         json!({ "block": them, "task": "two" }),
     );
@@ -997,10 +1059,14 @@ fn a_notice_waits_while_its_asker_asks_its_person(cx: &mut TestAppContext) {
         pane.keyed.set(Instant::now().checked_sub(TYPING));
     });
     after(cx, 1000);
-    screen_with(&ws, cx, mine, "[task t1 from ");
-    assert_eq!(queued(cx), ["Two."], "one, the oldest");
+    // Both go as one paste: no other task of its agent runs (docs/specs/notice-batching.md).
+    screen_with(&ws, cx, mine, "[2 tasks ended]");
+    assert!(queued(cx).is_empty());
+    // A third comes while their Enters may still be due: it waits.
+    done_task(handle, &ws, cx, &terminal, theirs, "Three.");
+    assert_eq!(queued(cx), ["Three."], "its Enter may still be due");
     after(cx, 1000);
-    assert_eq!(queued(cx), ["Two."], "its Enter may still be due");
+    assert_eq!(queued(cx), ["Three."], "its Enter may still be due");
     // Its first Enter may have come up to ENTER_LOOKS looks after it was typed, its second CONFIRM
     // after that.
     let sent = |cx: &mut TestAppContext, ago| {
@@ -1010,15 +1076,15 @@ fn a_notice_waits_while_its_asker_asks_its_person(cx: &mut TestAppContext) {
     };
     sent(cx, CONFIRM);
     after(cx, 1000);
-    assert_eq!(queued(cx), ["Two."], "its second Enter may still be due");
+    assert_eq!(queued(cx), ["Three."], "its second Enter may still be due");
     sent(cx, NOTICE_GAP);
     after(cx, 1000);
-    screen_with(&ws, cx, mine, "[task t2 from ");
+    screen_with(&ws, cx, mine, "[task t3 from ");
     assert!(queued(cx).is_empty());
     // It asks again, and quits while a notice waits: dropped.
     event(handle, &ws, cx, &terminal, asks);
-    done_task(handle, &ws, cx, &terminal, theirs, "Three.");
-    assert_eq!(queued(cx), ["Three."]);
+    done_task(handle, &ws, cx, &terminal, theirs, "Four.");
+    assert_eq!(queued(cx), ["Four."]);
     ws.update(cx, |ws, _| {
         ws.space.terminal_mut(mine).unwrap().seen.pid = Some(1)
     });
@@ -1042,6 +1108,7 @@ fn a_notice_waits_after_a_reply_typed_into_its_asker(cx: &mut TestAppContext) {
         ws.queue_notice(
             terminal.clone(),
             "[task t9 from x: done in 1 s] y\nz".into(),
+            crate::workspace::delegate::NoticeKind::Other,
             cx,
         )
     });
@@ -1088,16 +1155,9 @@ fn the_end_says_what_it_spent_and_its_transcript(cx: &mut TestAppContext) {
             ..Default::default()
         },
     );
-    call(
-        handle,
-        &ws,
-        cx,
-        &terminal,
-        "delegate",
-        json!({ "block": them, "task": "count" }),
-    );
-    screen_with(&ws, cx, theirs, "count");
-    enter(cx);
+    let task = json!({ "block": them, "task": "count" });
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, true);
+    assert!(!failed, "{text}");
     usage(
         cx,
         Session {
@@ -1105,7 +1165,6 @@ fn the_end_says_what_it_spent_and_its_transcript(cx: &mut TestAppContext) {
             ..Default::default()
         },
     );
-    send(cx, json!({ "event": "submitted" }));
     send(
         cx,
         json!({ "event": "stopped", "message": "Done.", "transcript": "/x/roll\nout\u{1b}.jsonl" }),
@@ -1137,17 +1196,9 @@ fn the_end_says_what_it_spent_and_its_transcript(cx: &mut TestAppContext) {
             ..Default::default()
         },
     );
-    call(
-        handle,
-        &ws,
-        cx,
-        &terminal,
-        "delegate",
-        json!({ "block": them, "task": "again" }),
-    );
-    screen_with(&ws, cx, theirs, "again");
-    enter(cx);
-    send(cx, json!({ "event": "submitted" }));
+    let task = json!({ "block": them, "task": "again" });
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, true);
+    assert!(!failed, "{text}");
     send(cx, json!({ "event": "stopped", "message": "Again." }));
     let relay = templum_usage::relay_dir(data.path());
     std::fs::create_dir_all(&relay).unwrap();
@@ -1164,17 +1215,9 @@ fn the_end_says_what_it_spent_and_its_transcript(cx: &mut TestAppContext) {
     );
     // The next task, handed before a snapshot read its usage again, starts from that read: the
     // last task's calls aren't its own ($0.42), and nothing new read says no figure.
-    call(
-        handle,
-        &ws,
-        cx,
-        &terminal,
-        "delegate",
-        json!({ "block": them, "task": "more" }),
-    );
-    screen_with(&ws, cx, theirs, "more");
-    enter(cx);
-    send(cx, json!({ "event": "submitted" }));
+    let task = json!({ "block": them, "task": "more" });
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, true);
+    assert!(!failed, "{text}");
     send(cx, json!({ "event": "stopped", "message": "More." }));
     after(cx, spent_after);
     let told = notices_until(&ws, cx, 3);
@@ -1234,10 +1277,11 @@ fn a_task_whose_agent_left_or_block_closed_comes_back_as_failed(cx: &mut TestApp
         &terminal,
         json!({ "event": "needs_you", "message": "Allow Edit?" }),
     );
+    // Handed over: not refused. Its end comes before it took the task.
     let hand = |cx: &mut TestAppContext, block: &str| {
         let task = json!({ "block": block, "task": "go" });
-        let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
-        assert!(!failed, "{text}");
+        let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+        assert!(answers.try_recv().is_err(), "refused");
     };
     // Its agent left: a snapshot no longer finds it.
     hand(cx, &them);
@@ -1323,17 +1367,9 @@ fn a_dialog_in_a_task_is_told_once(cx: &mut TestAppContext) {
     let told = |cx: &mut TestAppContext| -> Vec<String> {
         notices(&ws, cx).into_iter().map(|(_, t)| t).collect()
     };
-    call(
-        handle,
-        &ws,
-        cx,
-        &terminal,
-        "delegate",
-        json!({ "block": them, "task": "go" }),
-    );
-    screen_with(&ws, cx, theirs, "go");
-    enter(cx);
-    send(cx, json!({ "event": "submitted" }));
+    let task = json!({ "block": them, "task": "go" });
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, true);
+    assert!(!failed, "{text}");
     send(cx, asks(json!("Allow Bash?")));
     shows(&ws, cx, theirs, "1. Yes, proceed (y)");
     // The same wait: its notification, and another message for it.
@@ -1393,17 +1429,9 @@ fn a_dialog_its_asker_waits_for_isnt_typed_too(cx: &mut TestAppContext) {
         &terminal,
         json!({ "event": "needs_you", "message": "Allow Edit?" }),
     );
-    call(
-        handle,
-        &ws,
-        cx,
-        &terminal,
-        "delegate",
-        json!({ "block": them, "task": "go" }),
-    );
-    screen_with(&ws, cx, theirs, "go");
-    enter(cx);
-    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    let task = json!({ "block": them, "task": "go" });
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, true);
+    assert!(!failed, "{text}");
     let needs_you = json!({ "block": them, "event": "needs_you" });
     let answers = call_later(handle, &ws, cx, &terminal, 2, "wait_for", needs_you);
     event(
@@ -1439,23 +1467,15 @@ fn a_balloon_in_a_task_isnt_told(cx: &mut TestAppContext) {
         &terminal,
         json!({ "event": "needs_you", "message": "Allow Edit?" }),
     );
-    call(
-        handle,
-        &ws,
-        cx,
-        &terminal,
-        "delegate",
-        json!({ "block": them, "task": "go" }),
-    );
-    screen_with(&ws, cx, theirs, "go");
-    enter(cx);
-    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    let task = json!({ "block": them, "task": "go" });
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, true);
+    assert!(!failed, "{text}");
     let asked = json!({ "question": "Ship it?", "options": ["Yes", "No"] });
     let _asked = call_later(handle, &ws, cx, &worker, 2, "ask_user", asked);
     after(cx, 300);
     let told = notices(&ws, cx);
     assert!(told.is_empty(), "{told:?}");
-    let shown = ws.read_with(cx, |ws, _| ws.balloon(&worker).is_some());
+    let shown = ws.read_with(cx, |ws, _| ws.asking(&worker).is_some());
     assert!(shown, "the person sees it");
 }
 
@@ -1479,7 +1499,7 @@ fn a_task_past_its_timeout_comes_back_only_at_its_end(cx: &mut TestAppContext) {
         notices(&ws, cx).into_iter().map(|(_, t)| t).collect()
     };
     let task = json!({ "block": them, "task": "think", "timeout": 2 });
-    call(handle, &ws, cx, &terminal, "delegate", task);
+    call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
     // Its Enter goes while the test's clock runs: the screen shows the task in real time.
     screen_with(&ws, cx, theirs, "think");
     after(cx, 2000);
@@ -1515,7 +1535,7 @@ fn a_task_past_its_timeout_comes_back_only_at_its_end(cx: &mut TestAppContext) {
     let task = json!({ "block": them, "task": "ponder", "wait": true, "timeout": 2 });
     let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
     screen_with(&ws, cx, theirs, "ponder");
-    enter(cx);
+    entered(&ws, cx, theirs);
     event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
     after(cx, 2000);
     assert!(answered(&answers).0, "timed out");
@@ -1533,17 +1553,9 @@ fn a_change_from_the_asker_goes_into_its_task(cx: &mut TestAppContext) {
     let (terminal, uid) = me(&ws, cx, mine);
     let (worker, them) = me(&ws, cx, theirs);
     let send = |cx: &mut TestAppContext, e: serde_json::Value| event(handle, &ws, cx, &worker, e);
-    call(
-        handle,
-        &ws,
-        cx,
-        &terminal,
-        "delegate",
-        json!({ "block": them, "task": "say A" }),
-    );
-    screen_with(&ws, cx, theirs, "say A");
-    enter(cx);
-    send(cx, json!({ "event": "submitted" }));
+    let task = json!({ "block": them, "task": "say A" });
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, true);
+    assert!(!failed, "{text}");
     let change = json!({ "block": them, "task": "also say B", "wait": true });
     let answers = call_later(handle, &ws, cx, &terminal, 2, "delegate", change);
     screen_with(
@@ -1565,19 +1577,12 @@ fn a_change_from_the_asker_goes_into_its_task(cx: &mut TestAppContext) {
     send(cx, json!({ "event": "stopped", "message": "B" }));
     assert_eq!(answered(&answers), (false, "B".to_string()));
     // Its timeout starts again from the change's.
-    call(
-        handle,
-        &ws,
-        cx,
-        &terminal,
-        "delegate",
-        json!({ "block": them, "task": "count", "timeout": 2 }),
-    );
-    screen_with(&ws, cx, theirs, "count");
-    enter(cx);
-    send(cx, json!({ "event": "submitted" }));
+    let task = json!({ "block": them, "task": "count", "timeout": 2 });
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, true);
+    assert!(!failed, "{text}");
+    // At work: it queues the change, taken at its Enter.
     let change = json!({ "block": them, "task": "count to 9", "timeout": 5 });
-    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", change);
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), change, false);
     assert_eq!(
         (failed, text),
         (false, format!("Typed into {them} as a change to task t2."))
@@ -1597,6 +1602,7 @@ fn a_change_from_the_asker_goes_into_its_task(cx: &mut TestAppContext) {
             text: "say hi".into(),
             screen: None,
             gated: false,
+            delegated: false,
         });
     });
     let (failed, text) = call(
@@ -1618,17 +1624,8 @@ fn another_agents_task_is_still_refused(cx: &mut TestAppContext) {
     let (terminal, _) = me(&ws, cx, mine);
     let (other, _) = me(&ws, cx, third);
     let (_, them) = me(&ws, cx, theirs);
-    assert!(
-        !call(
-            handle,
-            &ws,
-            cx,
-            &terminal,
-            "delegate",
-            json!({ "block": them, "task": "a" })
-        )
-        .0
-    );
+    let task = json!({ "block": them, "task": "a" });
+    assert!(!hand_over(handle, &ws, cx, (&terminal, theirs), task, true).0);
     for wait in [false, true] {
         let task = json!({ "block": them, "task": "b", "wait": wait });
         let (failed, text) = call(handle, &ws, cx, &other, "delegate", task);
@@ -1738,11 +1735,12 @@ fn a_dot_travels_only_while_a_task_is_handed_over(cx: &mut TestAppContext) {
         dots(cx, Instant::now(), false).is_empty(),
         "nothing handed over"
     );
-    call(
+    call_later(
         handle,
         &ws,
         cx,
         &terminal,
+        1,
         "delegate",
         json!({ "block": them, "task": "go" }),
     );
@@ -1806,6 +1804,75 @@ fn the_dot_goes_with_its_wire_and_the_answer_still_comes(cx: &mut TestAppContext
         json!({ "event": "stopped", "message": "Done." }),
     );
     assert_eq!(answered(&answers), (false, "Done.".to_string()));
+}
+
+/// Codex and Copilot CLI, reading a paste as keys (Windows' console passes no bracketed paste
+/// on), take an Enter that comes with them, or just after, for a new line in it: the task sits
+/// in their input. Nothing moved after it: a second Enter goes, and sends it. `delegate` answers
+/// once it went.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_enter_taken_for_a_new_line_goes_again(cx: &mut TestAppContext) {
+    // Its first line read, the second Enter starts it.
+    let fake = "echo ready; sh -c 'read -r task; read -r enter; echo SUBMITTED; exec cat'; true";
+    let (handle, ws, mine, theirs) = agents_running(cx, Some(jobs(fake)));
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    screen_with(&ws, cx, theirs, "ready");
+    in_front(&ws, cx, theirs, true);
+    found(&ws, cx, theirs);
+    let task = json!({ "block": them, "task": "go on" });
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, false);
+    assert!(
+        !failed && text.starts_with(&format!("Handed to {them} as task t1.")),
+        "{text}"
+    );
+    screen_with(&ws, cx, theirs, "SUBMITTED");
+    let handed = ws.read_with(cx, |ws, _| {
+        ws.space.terminal(theirs).unwrap().handed.is_some()
+    });
+    assert!(handed, "its task goes on");
+}
+
+/// An agent whose input never sends what it holds (an input not ready yet, a promo dialog over
+/// it): two Enters change nothing on its screen. `delegate` says the task was typed but not
+/// submitted, instead of handing it over, and ends it: no notice of that end comes besides.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_task_two_enters_didnt_send_is_answered_as_not_taken(cx: &mut TestAppContext) {
+    // It shows what is typed, an Enter as a carriage return, and sends nothing.
+    let fake = "stty -icanon -icrnl -echoctl; echo ready; cat >/dev/null; true";
+    let (handle, ws, mine, theirs) = agents_running(cx, Some(jobs(fake)));
+    asker(&ws, cx, mine);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    screen_with(&ws, cx, theirs, "ready");
+    in_front(&ws, cx, theirs, true);
+    found(&ws, cx, theirs);
+    let inputs = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(theirs).unwrap().term.inputs())
+    };
+    let before = inputs(cx);
+    let task = json!({ "block": them, "task": "go on" });
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, false);
+    assert!(
+        failed
+            && text.starts_with(&format!(
+                "{them} didn't take the task: typed but not submitted: two Enters changed \
+                 nothing on its screen"
+            ))
+            && text.contains("go on"),
+        "{text}"
+    );
+    assert_eq!(inputs(cx) - before, 4, "two pastes, two Enters");
+    let handed = ws.read_with(cx, |ws, _| {
+        ws.space.terminal(theirs).unwrap().handed.is_some()
+    });
+    assert!(!handed, "the task ended");
+    after(cx, 2000);
+    assert!(notices(&ws, cx).is_empty(), "{:?}", notices(&ws, cx));
+    let shown = ws.read_with(cx, |ws, _| ws.space.terminal(mine).unwrap().screen());
+    assert!(!shown.contains("[task t1 from"), "told twice: {shown}");
 }
 
 /// A screen the task doesn't show on (a dialog that ignores the paste, as Codex's approval does)
@@ -1920,7 +1987,7 @@ fn nothing_is_typed_into_the_shell_an_agent_left(cx: &mut TestAppContext) {
         let pane = ws.space.terminal_mut(theirs).unwrap();
         pane.seen.pid = pane.term.processes().shell;
     });
-    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, true);
     assert!(!failed, "{text}");
 }
 
@@ -2292,6 +2359,7 @@ fn interrupt_presses_esc_and_ends_the_callers_task(cx: &mut TestAppContext) {
             text: "count to a million".into(),
             screen: None,
             gated: false,
+            delegated: false,
         })
     });
     let stopped = call_later(handle, &ws, cx, &terminal, 2, "interrupt", stop.clone());
@@ -2475,7 +2543,7 @@ fn a_wait_for_times_out_goes_with_its_block_and_shows_no_balloon(cx: &mut TestAp
         json!({ "block": them, "event": "attention", "timeout": 1 }),
     );
     assert!(
-        ws.read_with(cx, |ws, _| ws.balloon(&terminal).is_none()),
+        ws.read_with(cx, |ws, _| ws.asking(&terminal).is_none()),
         "a wait asks the person nothing"
     );
     after(cx, 1000);
@@ -2780,11 +2848,12 @@ fn a_quiet_agent_is_told_once_to_a_master_not_waiting(cx: &mut TestAppContext) {
     let (worker, them) = me(&ws, cx, theirs);
     asker(&ws, cx, mine);
     has_server(handle, &ws, cx, &worker, 7);
-    call(
+    call_later(
         handle,
         &ws,
         cx,
         &terminal,
+        1,
         "delegate",
         json!({ "block": them, "task": "go" }),
     );
@@ -2810,7 +2879,7 @@ fn a_quiet_agent_is_told_once_to_a_master_not_waiting(cx: &mut TestAppContext) {
         })
     };
     // `cat` shows it twice: as it is typed, and printed once its Enter went.
-    enter(cx);
+    entered(&ws, cx, mine);
     let deadline = Instant::now() + std::time::Duration::from_secs(10);
     while quiet(&ws, cx) < 2 {
         assert!(Instant::now() < deadline, "the first one was typed");
@@ -2855,7 +2924,7 @@ fn a_change_starts_quiet_over(cx: &mut TestAppContext) {
     asker(&ws, cx, mine);
     has_server(handle, &ws, cx, &worker, 7);
     let task = json!({ "block": them, "task": "go" });
-    call(handle, &ws, cx, &terminal, "delegate", task.clone());
+    call_later(handle, &ws, cx, &terminal, 1, "delegate", task.clone());
     ticks(&ws, cx, theirs, 0, 4);
     for _ in 0..5 {
         after(cx, 1000);
@@ -2863,7 +2932,7 @@ fn a_change_starts_quiet_over(cx: &mut TestAppContext) {
     history_with(&ws, cx, mine, "hasn't answered: its screen is still]");
     assert!(notices(&ws, cx).is_empty(), "{:?}", notices(&ws, cx));
     // A change to t1.
-    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, false);
     assert_eq!(
         (failed, text),
         (false, format!("Typed into {them} as a change to task t1."))
@@ -2916,11 +2985,12 @@ fn a_quiet_agent_waiting_on_its_own_task_says_nothing(cx: &mut TestAppContext) {
     has_server(handle, &ws, cx, &worker, 7);
     let task = json!({ "block": them, "task": "go", "wait": true });
     let delegated = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
-    call(
+    call_later(
         handle,
         &ws,
         cx,
         &worker,
+        1,
         "delegate",
         json!({ "block": other, "task": "look" }),
     );
@@ -2971,14 +3041,14 @@ fn a_sub_task_that_went_quiet_doesnt_keep_the_subagents_task_open(cx: &mut TestA
     has_server(handle, &ws, cx, &helper, 7);
     // A hands B t1, which takes it and hands C t2.
     let task = json!({ "block": them, "task": "go" });
-    call(handle, &ws, cx, &terminal, "delegate", task);
+    call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
     screen_with(&ws, cx, theirs, "go");
-    enter(cx);
+    entered(&ws, cx, theirs);
     event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
     let task = json!({ "block": other, "task": "look" });
-    call(handle, &ws, cx, &worker, "delegate", task);
+    call_later(handle, &ws, cx, &worker, 1, "delegate", task);
     screen_with(&ws, cx, third, "look");
-    enter(cx);
+    entered(&ws, cx, third);
     // C goes still without a reply: B is told.
     ticks(&ws, cx, third, 0, 4);
     for _ in 0..5 {
@@ -2987,7 +3057,7 @@ fn a_sub_task_that_went_quiet_doesnt_keep_the_subagents_task_open(cx: &mut TestA
     assert_eq!(told_quiet(&ws, cx, third), Some(true));
     // B hands C the task again: it waits for it again, and its turn's end answers nothing.
     let again = json!({ "block": other, "task": "again" });
-    let (failed, text) = call(handle, &ws, cx, &worker, "delegate", again);
+    let (failed, text) = hand_over(handle, &ws, cx, (&worker, third), again, false);
     assert_eq!(
         (failed, text),
         (false, format!("Typed into {other} as a change to task t2."))
@@ -3040,27 +3110,20 @@ fn quiet_subagent(cx: &mut TestAppContext) -> Quiet {
     let (helper, other) = me(&ws, cx, third);
     has_server(handle, &ws, cx, &helper, 7);
     // A hands B t1, which takes it and hands C t2; C goes still on a dialog: B is told.
-    call(
-        handle,
-        &ws,
-        cx,
-        &terminal,
-        "delegate",
-        json!({ "block": them, "task": "go" }),
-    );
-    screen_with(&ws, cx, theirs, "go");
-    enter(cx);
-    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
-    call(
+    let task = json!({ "block": them, "task": "go" });
+    let (failed, text) = hand_over(handle, &ws, cx, (&terminal, theirs), task, true);
+    assert!(!failed, "{text}");
+    call_later(
         handle,
         &ws,
         cx,
         &worker,
+        1,
         "delegate",
         json!({ "block": other, "task": "look" }),
     );
     screen_with(&ws, cx, third, "look");
-    enter(cx);
+    entered(&ws, cx, third);
     ticks(&ws, cx, third, 0, 4);
     for _ in 0..5 {
         after(cx, 1000);
@@ -3153,7 +3216,7 @@ fn the_masters_reply_to_a_quiet_agent_starts_its_wait_over(cx: &mut TestAppConte
     let said = json!({ "block": q.other, "text": "Take the second one." });
     let (failed, text) = call(q.handle, &q.ws, cx, &q.worker, "reply", said);
     assert!(!failed && text.starts_with("Typed into"), "{text}");
-    enter(cx);
+    entered(&q.ws, cx, q.third);
     q.master_waits_again(cx);
 }
 
@@ -3172,13 +3235,14 @@ fn waiting_for_a_subagent_that_waits_on_its_own_task_ended_its_turn(cx: &mut Tes
     let task = json!({ "block": them, "task": "go", "wait": true });
     let delegated = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
     screen_with(&ws, cx, theirs, "go");
-    enter(cx);
+    entered(&ws, cx, theirs);
     event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
-    call(
+    call_later(
         handle,
         &ws,
         cx,
         &worker,
+        1,
         "delegate",
         json!({ "block": other, "task": "look" }),
     );
@@ -3215,16 +3279,16 @@ fn waiting_for_a_subagent_without_hooks_isnt_answered_with_an_earlier_task(
     let task = json!({ "block": them, "task": "one", "wait": true });
     let delegated = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
     screen_with(&ws, cx, theirs, "one");
-    enter(cx);
+    entered(&ws, cx, theirs);
     let answer = json!({ "text": "Answer to t1." });
     call(handle, &ws, cx, &worker, "reply", answer);
     assert_eq!(answered(&delegated), (false, "Answer to t1.".into()));
     let next = json!({ "block": them, "task": "two" });
-    call(handle, &ws, cx, &terminal, "delegate", next);
+    call_later(handle, &ws, cx, &terminal, 1, "delegate", next);
     screen_with(&ws, cx, theirs, "two");
-    enter(cx);
+    entered(&ws, cx, theirs);
     let sub = json!({ "block": other, "task": "look" });
-    call(handle, &ws, cx, &worker, "delegate", sub);
+    call_later(handle, &ws, cx, &worker, 1, "delegate", sub);
     ticks(&ws, cx, theirs, 0, 4);
     for _ in 0..5 {
         after(cx, 1000);
@@ -3285,10 +3349,10 @@ fn a_subagent_waiting_on_its_own_task_answers_the_others_waiting_for_its_turn(
     let task = json!({ "block": them, "task": "go", "wait": true });
     let delegated = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
     screen_with(&ws, cx, theirs, "go");
-    enter(cx);
+    entered(&ws, cx, theirs);
     event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
     let task = json!({ "block": other, "task": "look" });
-    call(handle, &ws, cx, &worker, "delegate", task);
+    call_later(handle, &ws, cx, &worker, 1, "delegate", task);
     // C waits for B's turn, as A does.
     let idle = json!({ "block": them });
     let idle = call_later(handle, &ws, cx, &helper, 8, "wait_for_idle", idle);
@@ -3320,7 +3384,7 @@ fn a_subagent_waiting_on_its_own_task_answers_the_others_by_its_still_screen(
     let task = json!({ "block": them, "task": "go", "wait": true });
     let delegated = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
     let task = json!({ "block": other, "task": "look" });
-    call(handle, &ws, cx, &worker, "delegate", task);
+    call_later(handle, &ws, cx, &worker, 1, "delegate", task);
     ticks(&ws, cx, theirs, 0, 4);
     let idle = json!({ "block": them });
     let idle = call_later(handle, &ws, cx, &helper, 8, "wait_for_idle", idle);
@@ -3484,10 +3548,9 @@ fn a_hooked_agent_gone_still_keeps_its_task_and_says_so(cx: &mut TestAppContext)
         json!({ "event": "needs_you", "message": "Allow Edit?" }),
     );
     let task = json!({ "block": them, "task": "think" });
-    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
-    assert!(!failed, "{text}");
-    screen_with(&ws, cx, theirs, "think");
-    enter(cx);
+    let delegated = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    screen_with(&ws, cx, theirs, "standard input.)");
+    entered(&ws, cx, theirs);
     // Its screen settled before the looks start counting.
     screen_until(&ws, cx, theirs, |s| s.matches("think").count() >= 2);
     event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
@@ -3495,6 +3558,11 @@ fn a_hooked_agent_gone_still_keeps_its_task_and_says_so(cx: &mut TestAppContext)
     let needs_you = call_later(handle, &ws, cx, &other, 2, "wait_for", asks);
     // The first look sees the echo drawn before the hook: the screen is still from there.
     after(cx, 1000);
+    let (failed, text) = answered(&delegated);
+    assert!(
+        !failed && text.starts_with(&format!("Handed to {them} as task t1.")),
+        "{text}"
+    );
     for _ in 0..29 {
         after(cx, 1000);
     }
@@ -3590,7 +3658,7 @@ fn a_task_no_hook_confirms_gets_its_enter_again_then_ends(cx: &mut TestAppContex
     let task = json!({ "block": them, "task": "think", "wait": true });
     let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
     screen_with(&ws, cx, theirs, "think");
-    enter(cx);
+    entered(&ws, cx, theirs);
     screen_until(&ws, cx, theirs, |s| s.matches("think").count() >= 2);
     let confirm = crate::workspace::delegate::CONFIRM.as_millis() as u64;
     after(cx, confirm);
@@ -3601,6 +3669,76 @@ fn a_task_no_hook_confirms_gets_its_enter_again_then_ends(cx: &mut TestAppContex
         failed && text.contains("didn't take the task") && text.contains("think"),
         "{text}"
     );
+    // Its input may still hold the task: typed again, it would go in twice.
+    assert!(text.contains("clear its input (send_keys)"), "{text}");
+}
+
+/// The person types into the agent before its task's Enter: the Enter would send their half
+/// line with the task. None goes, and the asker hears why.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn no_enter_once_the_person_typed_into_the_agent(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    let inputs = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(theirs).unwrap().term.inputs())
+    };
+    let task = json!({ "block": them, "task": "think" });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    let typed = inputs(cx);
+    ws.read_with(cx, |ws, _| {
+        ws.space.terminal(theirs).unwrap().person_typed()
+    });
+    after(
+        cx,
+        crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
+    );
+    let (failed, text) = answered(&answers);
+    assert!(
+        failed && text.contains("its person is typing in it"),
+        "{text}"
+    );
+    assert_eq!(inputs(cx), typed, "no Enter");
+}
+
+/// A task's looks after its Enter stop once it ended and another came after it: they press no
+/// Enter into the later task, nor end it as not taken.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_earlier_tasks_looks_leave_a_later_task_alone(cx: &mut TestAppContext) {
+    let confirm = crate::workspace::delegate::CONFIRM.as_millis() as u64;
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    event(handle, &ws, cx, &worker, json!({ "event": "started" }));
+    let inputs = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(theirs).unwrap().term.inputs())
+    };
+    let task = json!({ "block": them, "task": "think" });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    screen_with(&ws, cx, theirs, "think");
+    entered(&ws, cx, theirs);
+    screen_until(&ws, cx, theirs, |s| s.matches("think").count() >= 2);
+    // Task t1 ended, and task t2 came after it.
+    ws.update(cx, |ws, _| {
+        ws.space
+            .terminal_mut(theirs)
+            .unwrap()
+            .handed
+            .as_mut()
+            .unwrap()
+            .id = 2
+    });
+    let typed = inputs(cx);
+    after(cx, 2 * confirm);
+    assert_eq!(inputs(cx), typed, "no Enter into task t2");
+    ws.read_with(cx, |ws, _| {
+        let handed = ws.space.terminal(theirs).unwrap().handed.as_ref();
+        assert_eq!(handed.map(|h| h.id), Some(2), "task t2 still handed over");
+    });
+    let (failed, text) = answered(&answers);
+    assert!(failed && text.contains("before it took the task"), "{text}");
 }
 
 /// A turn's end (Claude Code's idle prompt comes a minute after its last turn) and a screen its
@@ -3618,7 +3756,7 @@ fn only_its_prompt_taken_confirms_a_task(cx: &mut TestAppContext) {
     let task = json!({ "block": them, "task": "think", "wait": true });
     let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
     screen_with(&ws, cx, theirs, "think");
-    enter(cx);
+    entered(&ws, cx, theirs);
     screen_until(&ws, cx, theirs, |s| s.matches("think").count() >= 2);
     event(
         handle,
@@ -3644,7 +3782,7 @@ fn only_its_prompt_taken_confirms_a_task(cx: &mut TestAppContext) {
     let task = json!({ "block": them, "task": "ponder", "wait": true });
     let answers = call_later(handle, &ws, cx, &terminal, 2, "delegate", task);
     screen_with(&ws, cx, theirs, "ponder");
-    enter(cx);
+    entered(&ws, cx, theirs);
     event(
         handle,
         &ws,
@@ -3680,7 +3818,7 @@ fn no_second_enter_into_a_changed_screen_or_while_the_person_types(cx: &mut Test
         let task = json!({ "block": them, "task": "think", "wait": true });
         let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
         screen_with(&ws, cx, theirs, "think");
-        enter(cx);
+        entered(&ws, cx, theirs);
         screen_until(&ws, cx, theirs, |s| s.matches("think").count() >= 2);
         // The screen just after the Enter, which a second one would need unchanged.
         after(cx, enter_after);
@@ -3724,7 +3862,7 @@ fn a_task_confirmed_queued_or_unconfirmable_stays_handed(cx: &mut TestAppContext
         let task = json!({ "block": them, "task": "think", "wait": true });
         let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
         screen_with(&ws, cx, theirs, "think");
-        enter(cx);
+        entered(&ws, cx, theirs);
         if before == "started" {
             // Its turn starts: `UserPromptSubmit`.
             event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));

@@ -110,12 +110,21 @@ The chat is a floating card that rises from the pill: the pill becomes its foote
   rows up to 70% of the canvas's height (at least 240 px), radius 14, `popover` fill, `hairline` border, the focused
   block's shadow (y 10, blur 30). It rises 12 px and fades in over 0.22 s; with less motion it appears.
 - **It doesn't block the app.** The canvas works around it; a click outside it doesn't close it. Only Esc in its field,
-  its ▾ button or the shortcut close it, and the conversation goes on while it is closed. It sits under the settings
-  panel, the workspaces screen and the welcome, over the blocks and the Git popup; it is window chrome, so the canvas's
-  zoom never scales it.
+  its ▾ button or the shortcut close it, and the conversation goes on while it is closed. It sits under the Git popup,
+  the settings panel, the workspaces screen and the welcome, over the blocks; it is window chrome, so the canvas's zoom
+  never scales it.
+- **Full screen:** the header's `maximize-2` button ("Full screen"; `minimize-2`, "Exit full screen", while full) makes
+  the card fill the canvas, 16 px in from every side, in the same layer (under the Git popup); its footer stays at the
+  bottom and its body grows. It stays full when the chat is closed and opened again, for as long as Templum runs (no
+  option). Esc, ▾ and the shortcut work as before; the rise and the fade are the same.
 - **Its header** (36 px): `sparkles` and "Templum Agent" in `title`, the engine chip, then on the right **Stop** (a
-  `circle-stop`, only while it works), **New chat** (`message-square-plus`) and **▾** (close). Batch 2 adds the run
-  meter between them ([Orchestration](#orchestration)).
+  `circle-stop`, only while it works), **Full screen**, **New chat** (`message-square-plus`) and **▾** (close). Batch 2
+  adds the run meter between them ([Orchestration](#orchestration)).
+- **The engine chip** ("Claude Code · opus") is a button: its menu lists Default (the agent's own model), the agent's
+  models (Claude Code: haiku, sonnet, opus) with a check on the current one, and **Another model…**, which opens
+  Settings ▸ Templum Agent to type one. A choice writes `templum_agent.model` as Settings does, so it reaches the next
+  start of the engine the same way, and the chip shows the model the engine reports once it has started, and the chosen
+  one until then.
 - **Its body** scrolls; it follows new rows while it is at its end, and a small "↓ New" pill brings it back there
   after the person scrolled up.
 - **An empty conversation** shows three suggestions as chips; a click puts its text in the field:
@@ -128,7 +137,7 @@ The chat is a floating card that rises from the pill: the pill becomes its foote
 |---|---|---|
 | The person's message | Right-aligned bubble, at most 80% wide, `hover` fill, radius 12, plain text | yes |
 | The agent's text | Full width, Markdown through gpui-kit's `TextView` at the window's scale, growing as it streams | yes |
-| Thinking | "Thinking" in `title_dim` with a light band sweeping across it, while the engine thinks before its first text or tool | no |
+| Thinking | "Thinking" in `title_dim` with a light band sweeping across it, while the engine thinks before its first text or tool; a message or notice that comes meanwhile goes above it | no |
 | An action | One line: an icon for the tool's kind, then a sentence. Running: a spinner and the tool's title ("Creating a workspace…"). Done: the first line of the tool's answer, which Templum writes ("Created workspace API (w3)."). Failed: a red icon and the refusal under it in dim red. Denied: "You denied this." in `title_dim`. A click shows what it touched (the workspace, then the block: `reveal`) | yes |
 | Reads | Consecutive reads (`overview`, `list_*`, `read_*`, and the engine's own Read, Glob, Grep) fold into one dim row, "Looked at the canvas (4)" | yes |
 | An approval | The popup's record once answered: its sentence and "Allowed once", "Allowed for this conversation" or "Denied" | yes |
@@ -200,7 +209,7 @@ A section after Connections:
 | Field | Control | Option | Batch |
 |---|---|---|---|
 | Agent | Dropdown: the engines Templum can run; one not installed says "(not installed)" | `templum_agent.agent` (`claude`) | 1; Codex from 3 |
-| Model | Text; empty is the agent's own default. Checked as `spawn_agent` checks a model (1 to 64 letters, digits, `.`, `-`, `_`, `:`, `/`) | `templum_agent.model` | 1 |
+| Model | Dropdown: Default (the agent's own), then the agent's models (Claude Code: haiku, sonnet, opus); under it Another model, a text field for one the list doesn't have, checked as `spawn_agent` checks a model (1 to 64 letters, digits, `.`, `-`, `_`, `:`, `/`). An engine with no list of models shows the text field alone, as Model | `templum_agent.model` | 1 |
 | Effort | Dropdown: Default, then the agent's efforts ([agents.md](agents.md#a-model-and-an-effort)) | `templum_agent.effort` | 1 |
 | Prompt pill | Switch, on: the pill at the bottom of the canvas; off, the shortcut still opens it | `templum_agent.pill` | 1 |
 | Agents at once | Number 1–16, default 4: how many of its tasks may run together | `templum_agent.max_agents` | 2 |
@@ -294,8 +303,11 @@ isn't the person writing. Hand tasks without waiting, end your turn, and go on w
   `user` line with the `tool_result` (its `content` a string for a built-in tool, a list of `{"type":"text"}` for an
   MCP tool; `is_error` absent when false), `rate_limit_event`, and the `result` (`subtype` `success`, `duration_ms`,
   `total_cost_usd`, `result`). Other `system` subtypes (`commands_changed`, `thinking_tokens`) come and are skipped.
-- Every message is replayed, the first too. A message written during a turn isn't taken into it: it waits, and once
-  the turn's `result` is out a new turn starts with its `init` and its replayed `user` line.
+- Every message is replayed, the first too, once, when a turn takes it. A message written during a turn without tools
+  waits, and once the turn's `result` is out a new turn starts with its `init` and its replayed `user` line. Written
+  during a turn with tools (Claude Code 2.1.309, `claude-taken.jsonl`), it is taken into that turn at the next tool
+  answer: its replayed `user` line comes then, with no `init` of its own, and one `result` ends the turn for every
+  message it took. So Templum counts what waits for a turn by the replays, not by the `init`s.
 - The interrupt request, `{"type":"control_request","request_id":"<id>","request":{"subtype":"interrupt"}}` on stdin,
   stops the turn and keeps the process: a `control_response` `success`, a `user` line "[Request interrupted by
   user]", then a `result` with `subtype` `error_during_execution`, `is_error` true and no `result`; the next message
@@ -313,8 +325,8 @@ Each stdout line is one JSON object. Templum reads these and ignores every other
 | `stream_event` `content_block_start` with `content_block.type` `tool_use` (`id`, `name`) | an action row, running |
 | `{"type":"assistant","message":{"content":[…]}}` | a `text` block replaces the streamed text with its whole text; a `tool_use` block (`id`, `name`, `input`) gives its action row its call |
 | `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id","content","is_error"}]}}` | the action is done or failed |
-| a `user` line with the text of a message Templum wrote (the replay) | that message loses its "Queued" |
-| `{"type":"result","subtype","is_error","duration_ms","total_cost_usd","result"}` | the turn ends: its end row; `is_error` adds a failure row |
+| a `user` line with the text of a message Templum wrote (the replay) | that message loses its "Queued" and waits for no turn |
+| `{"type":"result","subtype","is_error","duration_ms","total_cost_usd","result"}` | the turn ends: its end row; `is_error` adds a failure row; an action still running fails; the chat works on only while a message waits for a turn |
 
 - Tool names arrive as `mcp__templum-control__<tool>`; the row strips the prefix. Read, Glob and Grep fold into a reads
   row ("Read `src/main.rs`" in its tooltip).
@@ -494,7 +506,11 @@ The Templum Agent hands work out as an agent block does, with the tasks of
 - **A task's end** comes as the notice connections.md writes (`[task t7 from Codex · api (k9x1d): done in 31 s, …]
   Its answer is in the pasted text.` and the answer), as a notice row in the chat and as a message to the engine: at
   once when it is idle (a new turn), else taken into the turn under way when Claude Code takes queued messages there,
-  else after it. So the Templum Agent wakes up when an agent finishes, without the person.
+  else after it. So the Templum Agent wakes up when an agent finishes, without the person. The chat shows each notice
+  as it comes; only what the engine is told waits, as a terminal's notices do (up to 15 seconds for the next end, 60
+  at most, at once when no other task of its runs), and it hears several as one message under a first line,
+  `[3 tasks ended] They are in the pasted text.` ([notice-batching.md](notice-batching.md)). No draft rule applies: the
+  chat's field isn't the engine's input.
 - **Waiting for its person** sends the waiting notice the same way (once per wait), and the notice row turns yellow;
   clicking it shows the block.
 - **Agents at once:** `open_agent` with a prompt and `delegate` are refused while `templum_agent.max_agents` of its

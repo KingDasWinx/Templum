@@ -120,6 +120,7 @@ when "i" and "m" advance by the same width at 14 pt, within 0.01 px.
 | Cursor | Dropdown: Block, Bar, Underline | `cursor.shape` |
 | Blink | Switch | `cursor.blink` |
 | Scrollback | Number 0–100000, step 1000 | `terminal.scrollback` |
+| Copy selection automatically | Switch, on by default: text selected with the mouse goes to the clipboard as the button is let go, and a quiet "Copied" shows there for a moment ([walking-skeleton.md](walking-skeleton.md#mouse-and-trackpad)). Not in the welcome | `terminal.copy_on_select` |
 
 **Shell** (applies to new terminals)
 
@@ -140,6 +141,11 @@ when "i" and "m" advance by the same width at 14 pt, within 0.01 px.
 **Agents** lists the agents ([agents.md](agents.md#changing-ours-adding-yours)), and under them their **Accounts**:
 another login of an agent on its own folder, and what it shares with the others
 ([accounts.md](accounts.md#settings--agents--accounts)).
+
+**Instructions** (after Agents) is the person's standing instructions for their agents, saved in `instructions.json`,
+not `config.toml` ([instructions.md](instructions.md#settings--instructions-decided-with-the-person)): a row per
+instruction (its name; under it where and for whom; a switch; **Edit**), "Add an instruction", and a dialog with Name,
+Where, Agents and Text. A change applies at once: the next session's start reads it.
 
 **Shortcuts**
 

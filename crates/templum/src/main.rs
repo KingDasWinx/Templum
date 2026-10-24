@@ -4,6 +4,7 @@
 
 mod agents;
 mod alert;
+mod attachments;
 mod autostart;
 mod balloon;
 mod bench;
@@ -18,7 +19,9 @@ mod editor;
 mod gallery;
 mod git_block;
 mod grid;
+mod inbox;
 mod ink;
+mod instructions;
 mod kanban;
 mod keys;
 mod launcher;

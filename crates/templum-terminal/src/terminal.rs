@@ -14,6 +14,7 @@ use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
+use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode, viewport_to_point};
 use alacritty_terminal::tty;
@@ -333,13 +334,32 @@ impl SharedTerm {
     }
 
     /// The last `count` lines of the history and the screen, as text, without the blank rows
-    /// under the last one written. A wrapped line is one line.
+    /// under the last one written. A wrapped line is one line. A suggestion where the cursor
+    /// waits for typing isn't typed, and is left out (an agent reading it took it for its
+    /// person's text): its row is then a line of its own.
     pub fn lines(&self, count: usize) -> Vec<String> {
         let term = self.0.lock_unfair();
         let (top, bottom) = (term.topmost_line().0, term.bottommost_line().0);
         // The blank rows under the cursor are at most a screen: read that much more.
         let from = (bottom + 1 - (count + term.screen_lines()) as i32).max(top);
-        let mut lines = text_between(&term, from, bottom);
+        let mut lines = match suggestion(&term).filter(|(line, _)| line.0 >= from) {
+            Some((line, cols)) => {
+                let part = |a: usize, b: usize| {
+                    term.bounds_to_string(
+                        GridPoint::new(line, Column(a)),
+                        GridPoint::new(line, Column(b)),
+                    )
+                };
+                let head = (cols.start > 0).then(|| part(0, cols.start - 1));
+                let tail = (cols.end < term.columns()).then(|| part(cols.end, term.columns() - 1));
+                let mut lines = text_between(&term, from, line.0 - 1);
+                let row = head.unwrap_or_default() + &tail.unwrap_or_default();
+                lines.push(row.trim_end().to_string());
+                lines.extend(text_between(&term, line.0 + 1, bottom));
+                lines
+            }
+            None => text_between(&term, from, bottom),
+        };
         while lines.last().is_some_and(String::is_empty) {
             lines.pop();
         }
@@ -395,6 +415,22 @@ fn text_between<T>(term: &Term<T>, top: i32, bottom: i32) -> Vec<String> {
     text.lines()
         .map(|line| line.trim_end().to_string())
         .collect()
+}
+
+/// The suggestion an input draws where its shown cursor waits for typing, not typed yet: the
+/// faint run of cells from the cursor on, its line and columns. Claude Code's placeholder
+/// (`Try "fix lint errors"`), Codex's (`Ask Codex to do anything`), a completion after what was
+/// typed.
+fn suggestion<T>(term: &Term<T>) -> Option<(Line, std::ops::Range<usize>)> {
+    if !term.mode().contains(TermMode::SHOW_CURSOR) {
+        return None;
+    }
+    let at = term.grid().cursor.point;
+    let row = &term.grid()[at.line];
+    let end = (at.column.0..term.columns())
+        .find(|&col| !row[Column(col)].flags.contains(Flags::DIM))
+        .unwrap_or(term.columns());
+    (end > at.column.0).then_some((at.line, at.column.0..end))
 }
 
 /// A terminal's processes, to read from any thread with [`inspect`].
@@ -873,7 +909,8 @@ pub struct Terminal {
     #[cfg(unix)]
     master: Option<std::fs::File>,
     shared: Arc<Shared>,
-    pty: EventLoopSender,
+    /// Its PTY's input; None for a viewer, which runs nothing ([`Terminal::viewer`]).
+    pty: Option<EventLoopSender>,
     cols: u16,
     rows: u16,
     shell_name: String,
@@ -906,12 +943,7 @@ impl Terminal {
             // Not the terminal Templum was started from.
             ("TERM_PROGRAM".into(), "templum".into()),
         ]);
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let id = format!(
-            "{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        );
+        let id = next_id();
         env.insert("TEMPLUM_TERMINAL".into(), id.clone());
         // Read again for each terminal: a program installed since Templum started is found.
         if let Some(path) = crate::path_var().and_then(|p| p.into_string().ok()) {
@@ -974,7 +1006,7 @@ impl Terminal {
             #[cfg(unix)]
             master,
             shared,
-            pty,
+            pty: Some(pty),
             cols: opts.cols,
             rows: opts.rows,
             shell_name,
@@ -982,6 +1014,52 @@ impl Terminal {
             input: AtomicBool::new(false),
             inputs: AtomicU64::new(0),
         })
+    }
+
+    /// A terminal that runs nothing: it shows what Templum feeds it ([`Terminal::feed`]), and
+    /// keys, pastes and resizes reach no program. `name` is its title until what it shows sets
+    /// one.
+    pub fn viewer(
+        name: &str,
+        (cols, rows): (u16, u16),
+        palette: Palette,
+        options: TermOptions,
+        notify: Notify,
+    ) -> Self {
+        let shared = Arc::new(Shared::new(
+            notify,
+            window_size(cols, rows, (0, 0)),
+            palette,
+        ));
+        let term = Term::new(
+            options.config(),
+            &TermSize::new(cols as usize, rows as usize),
+            Listener(shared.clone()),
+        );
+        Self {
+            term: SharedTerm(Arc::new(FairMutex::new(term)), shared.clone()),
+            pid: None,
+            #[cfg(unix)]
+            master: None,
+            shared,
+            pty: None,
+            cols,
+            rows,
+            shell_name: name.to_string(),
+            id: next_id(),
+            input: AtomicBool::new(false),
+            inputs: AtomicU64::new(0),
+        }
+    }
+
+    /// Shows `bytes` in a viewer, as a program's output: whole lines, escape sequences and all.
+    /// Its watches hear them.
+    pub fn feed(&self, bytes: &[u8]) {
+        crate::tap::Scanner::new().scan(bytes, &self.shared);
+        let mut parser: alacritty_terminal::vte::ansi::Processor =
+            alacritty_terminal::vte::ansi::Processor::new();
+        parser.advance(&mut *self.term.0.lock(), bytes);
+        self.shared.wake();
     }
 
     /// The terminal's `TEMPLUM_TERMINAL`.
@@ -1144,16 +1222,28 @@ impl Terminal {
         *self.shared.palette.lock().unwrap() = palette;
     }
 
-    /// Sends raw input (scrolling the view back to the bottom, like any typing).
+    /// Sends raw input (scrolling the view back to the bottom, like any typing). A viewer takes
+    /// none.
     pub fn write(&self, bytes: impl Into<Cow<'static, [u8]>>) {
+        if self.pty.is_none() {
+            return;
+        }
         self.term.0.lock_unfair().scroll_display(Scroll::Bottom);
         self.term.touched();
         self.send(bytes);
     }
 
     fn send(&self, bytes: impl Into<Cow<'static, [u8]>>) {
-        self.inputs.fetch_add(1, Ordering::Relaxed);
-        let _ = self.pty.send(Msg::Input(bytes.into()));
+        let bytes = bytes.into();
+        // alacritty's event loop never finishes an empty write: all input after it would wait
+        // behind it, forever (an IME clearing its composition replaces it with "").
+        if bytes.is_empty() {
+            return;
+        }
+        if let Some(pty) = &self.pty {
+            self.inputs.fetch_add(1, Ordering::Relaxed);
+            let _ = pty.send(Msg::Input(bytes));
+        }
     }
 
     /// How many times input reached its program: a key, text, a paste, what the app wrote, a
@@ -1166,6 +1256,9 @@ impl Terminal {
     /// `write`, for input someone gave: a key, a paste, typed text ([`Terminal::had_input`]).
     /// Once the shell ended, input reaches nothing and ends nothing: it doesn't count.
     fn input(&self, bytes: impl Into<Cow<'static, [u8]>>) {
+        if self.pty.is_none() {
+            return;
+        }
         if !self.exited() {
             self.input.store(true, Ordering::Relaxed);
         }
@@ -1219,7 +1312,9 @@ impl Terminal {
                 true
             }
             Some(bytes) => {
-                let _ = self.pty.send(Msg::Input(bytes.into()));
+                if let Some(pty) = &self.pty {
+                    let _ = pty.send(Msg::Input(bytes.into()));
+                }
                 true
             }
             None => false,
@@ -1241,7 +1336,7 @@ impl Terminal {
     }
 
     /// The program asked for pastes to be bracketed.
-    fn bracketed(&self) -> bool {
+    pub fn bracketed(&self) -> bool {
         self.term
             .0
             .lock_unfair()
@@ -1261,7 +1356,9 @@ impl Terminal {
             .lock_unfair()
             .resize(TermSize::new(cols as usize, rows as usize));
         self.term.touched();
-        let _ = self.pty.send(Msg::Resize(size));
+        if let Some(pty) = &self.pty {
+            let _ = pty.send(Msg::Resize(size));
+        }
     }
 
     /// Scrolls to the previous (`up`) or the next prompt (shell integration marks them): the one
@@ -1293,6 +1390,11 @@ impl Terminal {
         moved
     }
 
+    /// Its view is scrolled back from the end of its output.
+    pub fn scrolled_back(&self) -> bool {
+        self.term.0.lock_unfair().grid().display_offset() > 0
+    }
+
     /// Scrolls the history (positive = up). In full-screen apps that asked for it (less,
     /// vim: alternate screen + alternate scroll), sends arrow keys instead.
     pub fn scroll(&self, lines: i32) {
@@ -1320,8 +1422,20 @@ impl Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         // Ends the event loop, which drops the PTY and kills the shell.
-        let _ = self.pty.send(Msg::Shutdown);
+        if let Some(pty) = &self.pty {
+            let _ = pty.send(Msg::Shutdown);
+        }
     }
+}
+
+/// A new terminal's id, unique among the terminals of every Templum running: `<pid>-<n>`.
+fn next_id() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 fn window_size(cols: u16, rows: u16, (cell_width, cell_height): (u16, u16)) -> WindowSize {
@@ -1410,6 +1524,55 @@ mod tests {
         assert_ne!(read, 0, "{}", io::Error::last_os_error());
         // Windows ends the higher levels first; a shell or an agent starts at 0x280.
         assert!(level > 0x280, "level {level:#x}");
+    }
+
+    /// A viewer shows what it is fed, as a program's output, and runs nothing: no input reaches
+    /// anything, and it closes with nothing to end.
+    #[test]
+    fn a_viewer_shows_what_it_is_fed_and_takes_no_input() {
+        let woke = Arc::new(AtomicBool::new(false));
+        let wake = woke.clone();
+        let notify: Notify = Arc::new(move || wake.store(true, Ordering::SeqCst));
+        let options = TermOptions::default();
+        let mut term = Terminal::viewer("Explore", (30, 4), Palette::default(), options, notify);
+        assert_eq!(term.title(), "Explore");
+        let watch = term.watch(Pattern::new("Done").unwrap());
+        term.feed("\x1b]2;Explore · List\x07\x1b[1mTask\x1b[0m\r\nList the files.\r\n".as_bytes());
+        term.feed(b"\x1b[2m- Done\x1b[0m\r\n");
+        assert!(woke.load(Ordering::SeqCst), "the UI hears it");
+        assert_eq!(term.title(), "Explore · List");
+        assert_eq!(
+            term.shared().lines(3),
+            ["Task", "List the files.", "- Done"]
+        );
+        assert_eq!(term.hit(watch).as_deref(), Some("- Done"));
+        term.text("x");
+        term.paste("y");
+        term.press(&KeyInput {
+            key: "enter",
+            ..KeyInput::default()
+        });
+        term.write(&b"z"[..]);
+        term.resize(40, 5, (8, 16));
+        assert_eq!(term.grid_size(), (40, 5));
+        assert!(
+            !term.had_input() && term.inputs() == 0,
+            "nothing takes input"
+        );
+        assert!(!term.exited());
+        assert_eq!(term.processes(), Processes::default());
+        assert!(term.shells().is_empty());
+        assert_ne!(
+            term.id(),
+            Terminal::viewer(
+                "x",
+                (1, 1),
+                Palette::default(),
+                TermOptions::default(),
+                Arc::new(|| {})
+            )
+            .id()
+        );
     }
 
     #[test]
@@ -1906,6 +2069,33 @@ mod tests {
         let all = term.lines(100);
         assert_eq!((all.len(), all[0].as_str()), (10, "1"));
         assert!(term.lines(0).is_empty());
+    }
+
+    #[test]
+    fn a_suggestion_where_the_cursor_waits_is_not_in_the_lines() {
+        // Claude Code 2.1.309's empty input, as it draws it: its placeholder faint, the cursor
+        // shown on the placeholder's first cell.
+        let (term, _) = headless(40, 4);
+        feed(
+            &term,
+            "\x1b[?25l\x1b[2;1H────\r\x1b[1B\x1b[39m❯\u{a0}\x1b[2mTry \"fix lint errors\"\r\x1b[1B\
+             \x1b[22m────\x1b[3;3H\x1b[?25h"
+                .as_bytes(),
+        );
+        assert_eq!(term.lines(4), ["", "────", "❯", "────"]);
+        // Codex 0.154.0's; faint text the cursor isn't on is the screen's.
+        feed(
+            &term,
+            b"\x1b[2J\x1b[1;1H\x1b[1m\xe2\x80\xba\x1b[22m \x1b[2mAsk Codex to do anything\
+              \x1b[22m\r\n\x1b[2mtip\x1b[22m\r\n> /he\x1b[2mlp\x1b[22m done\x1b[1;3H",
+        );
+        assert_eq!(term.lines(3), ["›", "tip", "> /help done"]);
+        // A completion after what was typed.
+        feed(&term, b"\x1b[3;6H");
+        assert_eq!(term.lines(1), ["> /he done"]);
+        // Under a hidden cursor, nothing waits for typing.
+        feed(&term, b"\x1b[?25l");
+        assert_eq!(term.lines(1), ["> /help done"]);
     }
 
     #[test]

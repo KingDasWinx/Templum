@@ -48,12 +48,13 @@ impl Starting {
 
 impl Workspace {
     /// Covers the terminal `id` of the active workspace with `title`, its agent's name, until the
-    /// agent shows.
+    /// agent shows. Its command was just typed (`Pane::typed_agent`).
     pub(super) fn cover_start(&mut self, id: BlockId, title: String, cx: &mut Context<Self>) {
         let Some(pane) = self.space.terminal_mut(id) else {
             return;
         };
         pane.starting = Some(Starting::new(title, Instant::now()));
+        pane.typed_agent = Some(Instant::now());
         let terminal = pane.term.id().to_string();
         cx.spawn(async move |ws, cx| {
             loop {

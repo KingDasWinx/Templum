@@ -18,6 +18,8 @@ pub struct Ask {
     pub json: bool,
     /// `propose_plan`'s: its one question is Approve or Reject, with a comment.
     pub plan: Option<Plan>,
+    /// Said with `why` (trimmed): what the agent is doing and what the answer decides.
+    pub why: Option<String>,
 }
 
 /// A plan the person approves or rejects (docs/specs/agent-tools.md, propose_plan).
@@ -42,6 +44,7 @@ pub fn plan(title: Option<String>, text: String) -> Ask {
         }],
         json: false,
         plan: Some(Plan { title, text }),
+        why: None,
     }
 }
 
@@ -63,7 +66,15 @@ pub struct Choice {
 
 /// `ask_user`'s arguments, in either shape; Err names the place that is wrong.
 pub fn parse(args: &Value) -> Result<Ask, String> {
-    match (&args["question"], &args["questions"]) {
+    let why = match &args["why"] {
+        Value::Null => None,
+        Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        Value::String(_) => {
+            return Err("why is blank: say why you ask, or leave it out.".into());
+        }
+        _ => return Err("\"why\" is a text".into()),
+    };
+    let ask = match (&args["question"], &args["questions"]) {
         (Value::Null, Value::Null) => {
             Err("ask_user needs \"questions\" (or \"question\", a string)".into())
         }
@@ -91,10 +102,12 @@ pub fn parse(args: &Value) -> Result<Ask, String> {
                 questions: vec![question],
                 json: false,
                 plan: None,
+                why: None,
             })
         }
         _ => Err("Give question or questions, not both.".into()),
-    }
+    }?;
+    Ok(Ask { why, ..ask })
 }
 
 fn questions_of(value: &Value) -> Result<Ask, String> {
@@ -152,6 +165,7 @@ fn questions_of(value: &Value) -> Result<Ask, String> {
         questions,
         json: true,
         plan: None,
+        why: None,
     })
 }
 
@@ -215,6 +229,18 @@ impl Ask {
     /// option only picks; Send answers.
     pub fn quick(&self) -> bool {
         self.plan.is_some()
+    }
+
+    /// Asked with `questions`, more than one: the dialog shows one at a time, under a tab each.
+    pub fn tabs(&self) -> bool {
+        self.json && self.questions.len() > 1
+    }
+
+    /// Question `q`'s tab: its header as its chip shows it, or "Question 2" without one.
+    pub fn tab(&self, q: usize) -> String {
+        self.questions[q]
+            .header_shown()
+            .unwrap_or_else(|| format!("Question {}", q + 1))
     }
 
     /// The result's text: `answers[q]` holds the labels picked in question `q`, in option order,
@@ -349,20 +375,23 @@ pub enum Row {
     Send,
 }
 
-/// What the person picked in a dialog, and the row highlighted. The Other fields' and the note's
-/// texts live in the app's fields.
+/// What the person picked in a dialog, the row highlighted and the question shown. The Other
+/// fields' and the note's texts live in the app's fields.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Form {
     pub highlight: Option<Row>,
+    /// The question on screen, its tab lit (`Ask::tabs`); 0 for a call of one.
+    pub tab: usize,
     picked: Vec<Vec<bool>>,
     other: Vec<bool>,
 }
 
 impl Form {
-    /// Nothing picked, no row highlighted.
+    /// Nothing picked, no row highlighted, the first question shown.
     pub fn new(ask: &Ask) -> Form {
         Form {
             highlight: None,
+            tab: 0,
             picked: ask
                 .questions
                 .iter()
@@ -372,9 +401,9 @@ impl Form {
         }
     }
 
-    /// The dialog's rows in order: for `questions`, each question's options then its Other, then
-    /// the note and Send; today's shape, its options and Send, or its field and Send.
-    pub fn rows(ask: &Ask) -> Vec<Row> {
+    /// The dialog's rows in order: for `questions`, the shown question's options then its Other,
+    /// then the note and Send; today's shape, its options and Send, or its field and Send.
+    pub fn rows(&self, ask: &Ask) -> Vec<Row> {
         // A plan's: Comment, then Reject on the left and Approve on the right.
         if ask.plan.is_some() {
             return vec![Row::Note, Row::Option(0, 1), Row::Option(0, 0)];
@@ -388,17 +417,11 @@ impl Form {
             rows.push(Row::Send);
             return rows;
         }
-        let mut rows: Vec<Row> = ask
-            .questions
-            .iter()
-            .enumerate()
-            .flat_map(|(q, question)| {
-                (0..question.options.len())
-                    .map(move |i| Row::Option(q, i))
-                    .chain([Row::Other(q)])
-            })
+        let q = self.tab;
+        let mut rows: Vec<Row> = (0..ask.questions[q].options.len())
+            .map(|i| Row::Option(q, i))
             .collect();
-        rows.extend([Row::Note, Row::Send]);
+        rows.extend([Row::Other(q), Row::Note, Row::Send]);
         rows
     }
 
@@ -434,7 +457,7 @@ impl Form {
     /// Moves the highlight `by` rows, wrapping; from none, onto the first row going down, the
     /// last going up.
     pub fn step(&mut self, ask: &Ask, by: isize) {
-        let rows = Form::rows(ask);
+        let rows = self.rows(ask);
         let at = self
             .highlight
             .and_then(|row| rows.iter().position(|r| *r == row));
@@ -457,8 +480,13 @@ impl Form {
     /// How many questions have an answer so far.
     pub fn answered(&self, ask: &Ask, others: &[String]) -> usize {
         (0..ask.questions.len())
-            .filter(|q| !self.answer_of(ask, *q, others).is_empty())
+            .filter(|q| self.has_answer(ask, *q, others))
             .count()
+    }
+
+    /// Whether question `q` has an answer: its tab says so.
+    pub fn has_answer(&self, ask: &Ask, q: usize, others: &[String]) -> bool {
+        !self.answer_of(ask, q, others).is_empty()
     }
 
     fn answer_of(&self, ask: &Ask, q: usize, others: &[String]) -> Vec<String> {
@@ -476,24 +504,52 @@ impl Form {
         answer
     }
 
-    /// Highlights the first row of the next question without an answer after the highlighted
-    /// one, wrapping; stays when every question has one.
-    pub fn next_unanswered(&mut self, ask: &Ask, others: &[String]) {
+    /// The next question without an answer, wrapping: after the shown one while the highlight is
+    /// on one of its rows, else from it. None when every question has one.
+    pub fn unanswered(&self, ask: &Ask, others: &[String]) -> Option<usize> {
         let n = ask.questions.len();
         let from = match self.highlight {
-            Some(Row::Option(q, _) | Row::Other(q)) => q + 1,
-            _ => 0,
+            Some(Row::Option(..) | Row::Other(_)) => self.tab + 1,
+            _ => self.tab,
         };
-        let next = (from..from + n)
+        (from..from + n)
             .map(|q| q % n)
-            .find(|q| self.answer_of(ask, *q, others).is_empty());
-        if let Some(q) = next {
-            self.highlight = Some(if ask.questions[q].options.is_empty() {
-                Row::Other(q)
-            } else {
-                Row::Option(q, 0)
-            });
+            .find(|q| !self.has_answer(ask, *q, others))
+    }
+
+    /// Shows the next question without an answer (`unanswered`) and highlights its first row;
+    /// stays when every question has one.
+    pub fn next_unanswered(&mut self, ask: &Ask, others: &[String]) {
+        if let Some(q) = self.unanswered(ask, others) {
+            self.show(ask, q);
+            self.highlight = Some(first_row(ask, q));
         }
+    }
+
+    /// Shows question `q`: a highlight on another question's row goes to its first row; on the
+    /// note or Send, or on none, it stays.
+    pub fn show(&mut self, ask: &Ask, q: usize) {
+        self.tab = q;
+        if let Some(Row::Option(on, _) | Row::Other(on)) = self.highlight
+            && on != q
+        {
+            self.highlight = Some(first_row(ask, q));
+        }
+    }
+
+    /// Shows the question `by` tabs away from the shown one, wrapping.
+    pub fn turn(&mut self, ask: &Ask, by: isize) {
+        let n = ask.questions.len() as isize;
+        self.show(ask, (self.tab as isize + by).rem_euclid(n) as usize);
+    }
+}
+
+/// Question `q`'s first row: its first option, or its field when it has none.
+fn first_row(ask: &Ask, q: usize) -> Row {
+    if ask.questions[q].options.is_empty() {
+        Row::Other(q)
+    } else {
+        Row::Option(q, 0)
     }
 }
 
@@ -653,6 +709,27 @@ mod tests {
     }
 
     #[test]
+    fn why_is_kept_trimmed() {
+        let ask = parse(
+            &json!({ "question": "Ship it?", "options": ["Yes"], "why": "  Releasing 1.2. " }),
+        )
+        .unwrap();
+        assert_eq!(ask.why, Some("Releasing 1.2.".into()));
+        let ask =
+            parse(&json!({ "questions": [{ "question": "Ship it?" }], "why": "Now" })).unwrap();
+        assert_eq!(ask.why, Some("Now".into()), "in either shape");
+        assert_eq!(parse(&json!({ "question": "Ship it?" })).unwrap().why, None);
+    }
+
+    #[test]
+    fn a_blank_why_is_refused() {
+        let err = parse(&json!({ "question": "Ship it?", "why": "  " })).unwrap_err();
+        assert!(err.contains("why"), "{err}");
+        let err = parse(&json!({ "question": "Ship it?", "why": 3 })).unwrap_err();
+        assert!(err.contains("why"), "{err}");
+    }
+
+    #[test]
     fn the_answer_is_text_for_question() {
         let ask = parse(&json!({ "question": "Ship it?", "options": ["Yes", "No"] })).unwrap();
         assert_eq!(ask.answer(&[vec!["Yes".into()]], ""), "Yes");
@@ -667,7 +744,7 @@ mod tests {
     fn a_plans_form_answers_approved_or_rejected_with_the_comment() {
         let ask = plan(Some("Move the bus".into()), "## Steps\n1. a".into());
         assert_eq!(
-            Form::rows(&ask),
+            Form::new(&ask).rows(&ask),
             [Row::Note, Row::Option(0, 1), Row::Option(0, 0)],
             "Comment, Reject, Approve"
         );
@@ -736,6 +813,15 @@ mod tests {
         parse(&json!({ "questions": questions })).unwrap()
     }
 
+    /// A call of a single-select question ("Which?", A or B) and one without options ("When?").
+    fn one_and_free() -> Ask {
+        let questions = json!([
+            { "question": "Which?", "options": ["A", "B"] },
+            { "question": "When?" }
+        ]);
+        parse(&json!({ "questions": questions })).unwrap()
+    }
+
     fn one(question: Value) -> Ask {
         parse(&json!({ "questions": [question] })).unwrap()
     }
@@ -796,9 +882,12 @@ mod tests {
     #[test]
     fn a_question_without_options_is_its_field() {
         let ask = one(json!({ "question": "When?" }));
-        assert_eq!(Form::rows(&ask), [Row::Other(0), Row::Note, Row::Send]);
+        assert_eq!(
+            Form::new(&ask).rows(&ask),
+            [Row::Other(0), Row::Note, Row::Send]
+        );
         let today = parse(&json!({ "question": "When?" })).unwrap();
-        assert_eq!(Form::rows(&today), [Row::Other(0), Row::Send]);
+        assert_eq!(Form::new(&today).rows(&today), [Row::Other(0), Row::Send]);
         for ask in [ask, today] {
             let mut form = Form::new(&ask);
             assert_eq!(form.answers(&ask, &[String::new()]), None);
@@ -816,7 +905,7 @@ mod tests {
     fn todays_shape_has_no_other_nor_note() {
         let ask = parse(&json!({ "question": "Ship it?", "options": ["Yes", "No"] })).unwrap();
         assert_eq!(
-            Form::rows(&ask),
+            Form::new(&ask).rows(&ask),
             [Row::Option(0, 0), Row::Option(0, 1), Row::Send]
         );
     }
@@ -824,7 +913,6 @@ mod tests {
     #[test]
     fn the_highlight_starts_on_none_then_steps_and_wraps() {
         let ask = singles(2);
-        assert_eq!(Form::rows(&ask).len(), 2 + 1 + 2 + 1 + 2);
         let mut form = Form::new(&ask);
         assert_eq!(form.highlight, None);
         form.step(&ask, 1);
@@ -846,6 +934,115 @@ mod tests {
         );
     }
 
+    /// One question shows at a time: the keys move through its rows, the note and Send only.
+    #[test]
+    fn the_rows_are_the_shown_questions() {
+        let ask = singles(2);
+        let mut form = Form::new(&ask);
+        let shown = |q| vec![Row::Option(q, 0), Row::Option(q, 1), Row::Other(q)];
+        assert_eq!(
+            form.rows(&ask),
+            [shown(0), vec![Row::Note, Row::Send]].concat()
+        );
+        form.show(&ask, 1);
+        assert_eq!(
+            form.rows(&ask),
+            [shown(1), vec![Row::Note, Row::Send]].concat()
+        );
+        form.highlight = Some(Row::Other(1));
+        form.step(&ask, 1);
+        form.step(&ask, 1);
+        form.step(&ask, 1);
+        assert_eq!(
+            form.highlight,
+            Some(Row::Option(1, 0)),
+            "Send wraps to its first"
+        );
+    }
+
+    #[test]
+    fn showing_a_question_moves_a_highlight_off_the_hidden_one() {
+        let ask = one_and_free();
+        let mut form = Form::new(&ask);
+        form.show(&ask, 1);
+        assert_eq!((form.tab, form.highlight), (1, None), "none stays none");
+        form.highlight = Some(Row::Note);
+        form.show(&ask, 0);
+        assert_eq!(form.highlight, Some(Row::Note), "the note shows under each");
+        form.highlight = Some(Row::Option(0, 1));
+        form.show(&ask, 1);
+        assert_eq!(
+            form.highlight,
+            Some(Row::Other(1)),
+            "a free question's field"
+        );
+        form.show(&ask, 0);
+        assert_eq!(form.highlight, Some(Row::Option(0, 0)));
+    }
+
+    #[test]
+    fn turning_wraps_both_ways() {
+        let ask = singles(3);
+        let mut form = Form::new(&ask);
+        form.turn(&ask, -1);
+        assert_eq!(form.tab, 2);
+        form.turn(&ask, 1);
+        assert_eq!(form.tab, 0);
+        form.turn(&ask, 1);
+        assert_eq!(form.tab, 1);
+    }
+
+    /// A call with several questions shows tabs; one question, today's shape and a plan don't.
+    #[test]
+    fn only_several_questions_have_tabs() {
+        assert!(singles(2).tabs());
+        assert!(!singles(1).tabs());
+        let today = parse(&json!({ "question": "Ship it?", "options": ["Yes"] })).unwrap();
+        assert!(!today.tabs());
+        assert!(!plan(None, "ok".into()).tabs());
+    }
+
+    #[test]
+    fn a_tab_is_named_by_its_header_or_its_place() {
+        let ask = parse(&json!({ "questions": [
+            { "question": "Which?", "header": "A rather long header" },
+            { "question": "When?" }
+        ] }))
+        .unwrap();
+        assert_eq!(ask.tab(0), ask.questions[0].header_shown().unwrap());
+        assert_eq!(ask.tab(1), "Question 2");
+    }
+
+    #[test]
+    fn a_tab_knows_its_question_is_answered() {
+        let ask = one_and_free();
+        let mut form = Form::new(&ask);
+        let mut others = vec![String::new(); 2];
+        assert!(!form.has_answer(&ask, 0, &others) && !form.has_answer(&ask, 1, &others));
+        form.pick(&ask, 0, 1);
+        others[1] = "Friday".into();
+        form.typed(&ask, 1, "Friday");
+        assert!(form.has_answer(&ask, 0, &others) && form.has_answer(&ask, 1, &others));
+    }
+
+    /// The next question without an answer starts after the shown one while the highlight is on
+    /// it, and from it otherwise (the note, Send, none).
+    #[test]
+    fn the_next_unanswered_starts_from_the_shown_question() {
+        let ask = singles(3);
+        let others = vec![String::new(); 3];
+        let mut form = Form::new(&ask);
+        form.show(&ask, 1);
+        assert_eq!(form.unanswered(&ask, &others), Some(1), "from it");
+        form.highlight = Some(Row::Option(1, 1));
+        assert_eq!(form.unanswered(&ask, &others), Some(2), "after it");
+        form.pick(&ask, 2, 0);
+        assert_eq!(form.unanswered(&ask, &others), Some(0), "wrapping");
+        form.pick(&ask, 0, 0);
+        form.pick(&ask, 1, 0);
+        assert_eq!(form.unanswered(&ask, &others), None);
+    }
+
     #[test]
     fn next_unanswered_skips_answered_questions() {
         let ask = singles(3);
@@ -855,6 +1052,7 @@ mod tests {
         form.highlight = Some(Row::Option(0, 1));
         form.next_unanswered(&ask, &others);
         assert_eq!(form.highlight, Some(Row::Option(2, 0)));
+        assert_eq!(form.tab, 2, "its question shows");
         form.next_unanswered(&ask, &others);
         assert_eq!(form.highlight, Some(Row::Option(0, 0)), "it wraps");
         form.pick(&ask, 0, 0);

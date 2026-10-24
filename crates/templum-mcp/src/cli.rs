@@ -3,6 +3,7 @@
 
 use std::io::{self, BufRead as _, BufReader, Read, Write};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -40,6 +41,9 @@ const VERBS: &[&str] = &[
     "new",
     "close",
 ];
+/// How long a session's start waits for Templum's instructions (docs/specs/instructions.md): the
+/// hooks' own limits are 5 s, and Templum answers in milliseconds.
+const ANSWER_WITHIN: Duration = Duration::from_secs(2);
 const READ: &str = "read <block> [-n <lines>] [--last] [--json]";
 const ASK: &str = "ask <question> [--option <answer>]… [--json]";
 const WAIT: &str = "wait <block> [--for idle|needs_you|command_finished|attention] \
@@ -91,7 +95,8 @@ impl Env {
 
 /// Runs the command `args` (the verb first) and returns its exit code: 0 done, 1 refused or
 /// failed, 2 a usage error, outside Templum, or Templum gone. A hook always returns 0 and prints
-/// nothing: an agent mustn't stop over Templum, and Claude Code reads a hook's output.
+/// nothing but, as a session starts, the person's instructions: an agent mustn't stop over
+/// Templum, and Claude Code reads a hook's output.
 pub fn run(
     args: &[String],
     env: &Env,
@@ -104,9 +109,7 @@ pub fn run(
         None => ("", &[][..]),
     };
     if verb == "hook" {
-        if let Some(event) = hook_event(rest, &mut *stdin) {
-            let _ = send_event(env, &event);
-        }
+        hook(rest, env, &mut *stdin, stdout);
         return 0;
     }
     if verb == "control" {
@@ -694,21 +697,64 @@ fn one_call(
     2
 }
 
-/// The event an agent's hook hands over, on stdin for all three.
-fn hook_event(args: &[String], stdin: &mut dyn Read) -> Option<hooks::AgentEvent> {
-    let mut on_stdin = || {
-        let mut input = String::new();
-        stdin.read_to_string(&mut input).ok()?;
-        serde_json::from_str::<Value>(&input).ok()
+/// An agent's hook: tells the bus its event and, as a session starts, asks for the person's
+/// instructions on the same connection and prints them in the agent's shape. Silent when
+/// Templum isn't there, doesn't answer within `ANSWER_WITHIN`, or has none.
+fn hook(args: &[String], env: &Env, stdin: &mut dyn Read, stdout: &mut dyn Write) {
+    let (Some(agent), Some(input)) = (args.first(), hook_input(args, stdin)) else {
+        return;
     };
+    let event = hook_event(args, &input);
+    let starts = hooks::session_start(agent, args.get(1).map(String::as_str), &input);
+    if event.is_none() && !starts {
+        return;
+    }
+    let Ok(mut stream) = open(env, "hook") else {
+        return;
+    };
+    if let Some(event) = event {
+        let Some(line) = serde_json::to_value(event)
+            .ok()
+            .map(|event| rpc::notification(hooks::METHOD, event))
+        else {
+            return;
+        };
+        if stream.write_all(line.as_bytes()).is_err() {
+            return;
+        }
+    }
+    if !starts {
+        let _ = stream.finish();
+        return;
+    }
+    let text = instructions(stream, agent, ANSWER_WITHIN).unwrap_or_default();
+    if let Some(output) = hooks::start_output(agent, &text) {
+        let _ = writeln!(stdout, "{output}");
+    }
+}
+
+/// What an agent's hook hands over, on stdin for all of them. None for an agent Templum doesn't
+/// hook, and for input that isn't JSON.
+fn hook_input(args: &[String], stdin: &mut dyn Read) -> Option<Value> {
     match args.first()?.as_str() {
-        "claude" => hooks::claude(&on_stdin()?),
-        "gemini" => hooks::gemini(&on_stdin()?),
         // An older Templum's `notify` (its JSON as an argument): its stdin is Codex's terminal,
         // which reading would steal the person's keys from.
-        "codex" if args.len() > 1 => None,
-        "codex" => hooks::codex(&on_stdin()?),
-        "copilot" => match hooks::copilot(args.get(1)?, &on_stdin()?)? {
+        "codex" if args.len() > 1 => return None,
+        "claude" | "codex" | "gemini" | "copilot" | "opencode" | "qwen" | "pi" => {}
+        _ => return None,
+    }
+    let mut input = String::new();
+    stdin.read_to_string(&mut input).ok()?;
+    serde_json::from_str(&input).ok()
+}
+
+/// The event an agent's hook input `input` says. None for what Templum doesn't follow.
+fn hook_event(args: &[String], input: &Value) -> Option<hooks::AgentEvent> {
+    match args.first()?.as_str() {
+        "claude" => hooks::claude(input),
+        "gemini" => hooks::gemini(input),
+        "codex" => hooks::codex(input),
+        "copilot" => match hooks::copilot(args.get(1)?, input)? {
             hooks::AgentEvent::Stopped {
                 message: None,
                 transcript: Some(path),
@@ -719,12 +765,42 @@ fn hook_event(args: &[String], stdin: &mut dyn Read) -> Option<hooks::AgentEvent
             event => Some(event),
         },
         // Templum's plugin, in OpenCode and Kilo Code.
-        "opencode" => hooks::opencode(&on_stdin()?),
-        "qwen" => hooks::qwen(&on_stdin()?),
+        "opencode" => hooks::opencode(input),
+        "qwen" => hooks::qwen(input),
         // Templum's extension in Pi.
-        "pi" => hooks::pi(&on_stdin()?),
+        "pi" => hooks::pi(input),
         _ => None,
     }
+}
+
+/// Asks the bus, on the connection of a hook that already said its event, for `agent`'s
+/// instructions, and waits for the answer `within` at most. None for no answer, an error, or an
+/// answer without a text; an empty text means none apply.
+fn instructions(mut stream: Stream, agent: &str, within: Duration) -> Option<String> {
+    let deadline = Instant::now() + within;
+    let request = rpc::request(1, hooks::INSTRUCTIONS, json!({ "agent": agent }));
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    let text = loop {
+        // A read's limit is for each read: each gets what is left.
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())?;
+        reader.get_ref().set_read_timeout(Some(left)).ok()?;
+        line.clear();
+        if reader.read_line(&mut line).ok()? == 0 {
+            return None;
+        }
+        let Ok(answer) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if answer["id"] == 1 {
+            break answer["result"]["text"].as_str()?.to_string();
+        }
+    };
+    let _ = reader.get_ref().finish();
+    Some(text)
 }
 
 /// The answer in Copilot CLI's transcript at `path` (its last 256 KB): it writes the file in
@@ -757,14 +833,6 @@ fn tail(path: &str, max: u64) -> Option<String> {
             .to_string(),
         false => text.into_owned(),
     })
-}
-
-/// Tells the bus about an agent's turn; nothing when Templum isn't there.
-fn send_event(env: &Env, event: &hooks::AgentEvent) -> Option<()> {
-    let mut stream = open(env, "hook").ok()?;
-    let line = rpc::notification(hooks::METHOD, serde_json::to_value(event).ok()?);
-    stream.write_all(line.as_bytes()).ok()?;
-    stream.finish().ok()
 }
 
 #[cfg(test)]
@@ -1392,6 +1460,152 @@ mod tests {
             run_with(&["hook", "claude"], &env(&bus), "not json"),
             (0, String::new(), String::new())
         );
+    }
+
+    /// A bus that answers `templum/instructions` with `text` and sends every other message
+    /// (but a connection's end) to the channel, with its client's name.
+    fn instructing_bus(
+        text: &'static str,
+    ) -> (
+        tempfile::TempDir,
+        Bus,
+        std::sync::mpsc::Receiver<(String, Incoming)>,
+    ) {
+        let (seen, heard) = std::sync::mpsc::channel();
+        let (dir, bus) = test_bus(move |m| {
+            if matches!(&m.incoming, Incoming::Notification { method, .. } if method == crate::bus::CLOSED)
+            {
+                return;
+            }
+            if let Incoming::Request { id, .. } = &m.incoming {
+                let _ = m.reply.send(rpc::result(id, json!({ "text": text })));
+            }
+            let _ = seen.send((m.hello.client, m.incoming));
+        });
+        (dir, bus, heard)
+    }
+
+    fn started(source: &str) -> String {
+        json!({ "hook_event_name": "SessionStart", "source": source }).to_string()
+    }
+
+    fn context_line(text: &str) -> String {
+        format!(
+            "{}\n",
+            json!({ "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": text } })
+        )
+    }
+
+    #[test]
+    fn a_session_start_prints_templums_instructions() {
+        let (_dir, bus, heard) = instructing_bus("Be brief.");
+        assert_eq!(
+            run_with(&["hook", "claude"], &env(&bus), started("startup")),
+            (0, context_line("Be brief."), String::new())
+        );
+        assert_eq!(
+            heard.recv_timeout(LIMIT).unwrap(),
+            (
+                "hook".to_string(),
+                Incoming::Notification {
+                    method: "templum/event".into(),
+                    params: json!({ "event": "started" }),
+                }
+            )
+        );
+        assert_eq!(
+            heard.recv_timeout(LIMIT).unwrap(),
+            (
+                "hook".to_string(),
+                Incoming::Request {
+                    id: json!(1),
+                    method: "templum/instructions".into(),
+                    params: json!({ "agent": "claude" }),
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn copilots_start_prints_its_own_shape() {
+        let (_dir, bus, heard) = instructing_bus("Be brief.");
+        assert_eq!(
+            run_with(&["hook", "copilot", "sessionStart"], &env(&bus), "{}"),
+            (
+                0,
+                format!("{}\n", json!({ "additionalContext": "Be brief." })),
+                String::new()
+            )
+        );
+        let asked = heard.iter().take(2).last().unwrap().1;
+        assert!(matches!(asked, Incoming::Request { params, .. } if params["agent"] == "copilot"));
+    }
+
+    #[test]
+    fn a_compaction_gets_the_instructions_again_and_no_event() {
+        let (_dir, bus, heard) = instructing_bus("Be brief.");
+        assert_eq!(
+            run_with(&["hook", "claude"], &env(&bus), started("compact")),
+            (0, context_line("Be brief."), String::new())
+        );
+        // The compaction leaves its turn working: the request is the only thing Templum hears.
+        assert!(matches!(
+            heard.recv_timeout(LIMIT).unwrap().1,
+            Incoming::Request { method, .. } if method == "templum/instructions"
+        ));
+        assert!(heard.try_recv().is_err());
+    }
+
+    #[test]
+    fn no_instructions_print_nothing() {
+        let (_dir, bus, _heard) = instructing_bus("");
+        assert_eq!(
+            run_with(&["hook", "claude"], &env(&bus), started("startup")),
+            (0, String::new(), String::new())
+        );
+    }
+
+    #[test]
+    fn a_templum_that_doesnt_answer_costs_at_most_the_limit() {
+        // A bus that hears the request and never answers.
+        let (_dir, bus) = test_bus(|_| {});
+        let hook = std::time::Instant::now();
+        let stream = open(&env(&bus), "hook").unwrap();
+        assert_eq!(
+            instructions(stream, "claude", std::time::Duration::from_millis(200)),
+            None
+        );
+        assert!(hook.elapsed() < std::time::Duration::from_secs(1));
+        // Outside Templum: nothing, at once.
+        assert_eq!(
+            run_with(&["hook", "claude"], &Env::default(), started("startup")),
+            (0, String::new(), String::new())
+        );
+    }
+
+    #[test]
+    fn only_a_session_start_asks_and_prints() {
+        let (_dir, bus, heard) = instructing_bus("Be brief.");
+        for hook in [
+            r#"{"hook_event_name":"Stop","last_assistant_message":"Done."}"#,
+            r#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{}}"#,
+            r#"{"hook_event_name":"UserPromptSubmit","prompt":"hi"}"#,
+        ] {
+            assert_eq!(
+                run_with(&["hook", "claude"], &env(&bus), hook),
+                (0, String::new(), String::new())
+            );
+        }
+        assert_eq!(
+            run_with(&["hook", "copilot", "agentStop"], &env(&bus), "{}"),
+            (0, String::new(), String::new())
+        );
+        while let Ok((_, heard)) = heard.recv_timeout(std::time::Duration::from_millis(300)) {
+            assert!(
+                !matches!(heard, Incoming::Request { .. }),
+                "{heard:?} asked for instructions"
+            );
+        }
     }
 
     #[test]

@@ -4,7 +4,7 @@
 - **Status:** Implemented (kanban card 35, "Aprimorando ferramentas do Templum"):
   [docs/plans/2026-10-18-agent-tools.md](../plans/2026-10-18-agent-tools.md)
 - **Builds on:** [connections.md](connections.md) (the bus, the tools, tasks, the notices typed back, spawning, the
-  balloon), [ask-user.md](ask-user.md) (the dialog `propose_plan` reuses), [agents.md](agents.md) (the agents, their
+  inbox), [ask-user.md](ask-user.md) (the dialog `propose_plan` reuses), [agents.md](agents.md) (the agents, their
   model and effort), [agent-parity.md](agent-parity.md) (which agent gets what), [checklist.md](checklist.md),
   [cockpit.md](cockpit.md) (notes), [git.md](git.md) (worktrees)
 - **Shares operations with:** kanban card 35's sibling, card 43 ("Templum Agent", a second MCP server that controls
@@ -40,7 +40,7 @@ one exception: it needs the agent's own flag ([Every agent](#every-agent)).
    Codex).
 6. A role saved in `config.toml` (`[roles.reviewer]`) opens its agent with its model, effort, words and instructions:
    `spawn_agent(role: "reviewer", prompt: …)`.
-7. `propose_plan` shows a long Markdown plan in the balloon with Approve, Reject and a comment, and returns the
+7. `propose_plan` shows a long Markdown plan in the requests inbox with Approve, Reject and a comment, and returns the
    person's decision.
 8. `schedule` hands a text to a wired agent or reminds the caller, at a time or every few minutes, until it is
    cancelled; the person sees the caller's schedules on its block and can cancel them.
@@ -309,10 +309,11 @@ conversation.
 
 - **Arguments:** `plan` (Markdown, required, not blank, at most 256 KB), `title` (optional; shown up to 60 characters),
   `timeout` (as `ask_user`'s: none unless given or set by `[connections] question_timeout`, the shorter winning).
-- **The dialog** is `ask_user`'s balloon ([ask-user.md](ask-user.md#the-dialog)) holding a plan instead of questions:
+- **The dialog** is `ask_user`'s request in the inbox ([ask-user.md](ask-user.md#the-dialog)) holding a plan instead
+  of questions:
 
   ```
-  (?) Waiting for your answer  Plan to approve                              1 of 2
+  From Claude Code · api  Why Releasing 1.2                          Plan to approve
   ─────────────────────────────────────────────────────────────────────────────
    [Plan]  Move the bus to tokio
    ┌─────────────────────────────────────────────────────────────────────┐
@@ -325,14 +326,15 @@ conversation.
    Reject                                                          [✓ Approve]
   ```
 
-  in the frame of ask_user's dialog since card 81: the header and the foot stay, the body between them scrolls
+  in the frame of ask_user's dialog since card 81: the foot stays, the body over it scrolls
 
   the header chip "Plan" and the title (or "A plan" when none); the plan rendered as Markdown by `markdown::preview`
-  (headings, lists, code, scaled with the zoom like a photo), in a frame on the canvas color that scrolls on its own,
-  at most 60% of the body's height (the balloon less its header and foot); the wheel over it scrolls it when it overflows, not the body; then the Comment field (the note of `ask_user`); then **Reject** on the left and
-  **Approve** on the right. Its keys are `ask_user`'s: ↓ and Tab move through Comment, Reject and Approve, Enter on
-  Approve or Reject presses it, Esc gives the keyboard back; presses within 0.5 s of it showing are ignored. The sound,
-  the notification ("Asks you to approve a plan: *title*"), the alert, "1 of 3", the deadline, a cancel typed back,
+  (headings, lists, code), in a frame on the canvas color that scrolls on its own, at most 60% of the body's height
+  (the popup less its foot); the wheel over it scrolls it when it overflows, not the body; then the Comment field
+  (the note of `ask_user`); then **Reject** on the left and **Approve** on the right. Its keys are `ask_user`'s: ↓ and
+  Tab move through Comment, Reject and Approve, Enter on Approve or Reject presses it, Esc closes the inbox; presses
+  within 0.5 s of the inbox drawing it are ignored. The sound, the notification ("Asks you to approve a plan:
+  *title*"), the alert, its row in the list, the deadline, a cancel typed back,
   and the connection's end are a question's.
 - **Answer:** approved, a result `Approved.`; rejected, an error result `Rejected.`; either followed by
   `\nThe person's comment: …` when they wrote one. (`templum plan` exits 1 on a rejection: `templum plan p.md && …`.)
@@ -340,7 +342,7 @@ conversation.
   `[answer to your plan "Move the bus to tokio"] The answer is in the pasted text.` and `Approved.` or `Rejected.`
   with the comment.
 - **In `templum-mcp`:** an `Ask` whose `plan` is set: one implicit single-select question (Approve, Reject) and the
-  note, so `Form` keeps the picking, the highlight and the answer, headless and unit-tested; the balloon draws a plan
+  note, so `Form` keeps the picking, the highlight and the answer, headless and unit-tested; the inbox draws a plan
   instead of its questions.
 - The command line: `templum plan <file> [--title <t>]` (`-` reads stdin).
 
@@ -413,7 +415,7 @@ conversation.
   virtualenv's), not what git ignores in a tracked folder of such a name (a `.env` in Go's `build/ci/`); the files
   `npm-debug.log`, `yarn-error.log`, `yarn-debug.log`, `pnpm-debug.log`, `.eslintcache` and `.coverage`: "feature-x
   has files git ignores, which removing it deletes: .env. discard: true deletes them." With `discard`, the person is
-  asked in the balloon first ([Asking the person](#asking-the-person)): "*Claude Code · api* wants to delete the
+  asked in the inbox first ([Asking the person](#asking-the-person)): "*Claude Code · api* wants to delete the
   worktree feature-x, with 2 changed files and 3 commits not merged, and files git ignores: .env." (the last part with
   such files only) **Delete** and **Keep**. Deleted: `git worktree remove --force` then `git branch -D`.
 - **`merge_worktree`** (`worktree`, `folder`): the person is asked first, always: "*Claude Code · api* wants to merge
@@ -435,7 +437,7 @@ conversation.
 ### Asking the person
 
 `connect`'s request ([connections.md](connections.md#requests-from-agents)) becomes one of a kind: a sentence and two
-buttons, in the balloon, with its sound, notification, alert, queue, timeout (30 minutes unless asked) and cancel.
+buttons, in the inbox, with its sound, notification, alert, queue, timeout (30 minutes unless asked) and cancel.
 `merge_worktree` and a discarding `remove_worktree` use it with their own words; Deny (Keep, Cancel) answers "The
 person said no." and nothing runs. The keyboard doesn't answer it, as `connect`'s.
 
@@ -451,7 +453,7 @@ the blocks wired to it; what a block opened on its own the caller may close; wha
 | `create_block` | a new block, wired to the caller | no: it is on the canvas, Ctrl+Z closes it |
 | `replace_note`, `edit_item`, `delete_item` | a wired note or checklist | no: one Ctrl+Z step |
 | `spawn_agent` with `fork` or `role` | a new block, as `spawn_agent` | no |
-| `propose_plan` | the caller's own balloon | it is the person's answer |
+| `propose_plan` | the caller's own request in the inbox | it is the person's answer |
 | `schedule` | a wired block running an agent, or its own; checked again when it goes | no: shown on its block, cancelled from its menu |
 | `cancel_schedule` | the caller's own schedules | no |
 | `remove_worktree` | a worktree no block works in | only with `discard` |
@@ -491,7 +493,7 @@ the method; the other calls it, and a task that adds one first looks for it on `
 | `worktree_state(folder, name)`, `worktree_remove(folder, name, discard)`, `worktree_merge(folder, name)` | Run on the background executor through `templum-git` (`Repo::worktree_state`, `remove_worktree`, `merge`) | `remove_worktree`, `merge_worktree` | `remove_worktree`, `merge_worktree` | card 35 |
 | `fork_command(entry, session) -> Option<String>` (in `agents.rs`, through `templum_terminal::Agent::fork_session`) | The words that start a fork (Claude Code, Codex) | `spawn_agent` with `fork` | `open_agent` with `fork`, if it takes one | card 35 |
 | `Role` (`config.rs`) and `Role::spawn(&self, id, tools::Spawn) -> Result<tools::Spawn, String>` | A role's agent, model, effort, words and prompt over a spawn's own | `spawn_agent` with `role` | `open_agent`'s `role` | card 35 |
-| `ask::Ask::plan(title, markdown)` and the balloon's plan | A plan to approve | `propose_plan` | the plan card (its batch 4) | card 35 |
+| `ask::Ask::plan(title, markdown)` and the inbox's plan | A plan to approve | `propose_plan` | the plan card (its batch 4) | card 35 |
 | `schedule_add(Schedule) -> u64`, `schedule_cancel(id)`, `Schedule { by, to, text, next, every, until }` | Deliveries later; `by` an asker (a terminal id, or `templum-agent`) | `schedule`, `cancel_schedule` | `schedule` (its batch 4) | card 35 |
 | `watch_add(terminal, Pattern) -> Option<u64>` over `templum_terminal::Terminal::watch`; `Watch { by, of, pattern, until }` in `Workspace::watches` for `wait: false` | A pattern looked for in a terminal's lines | `wait_for` with `pattern` | `wait_for`'s `pattern` | card 35 |
 | `open_agent_in(space, entry, folder, spawn, place, wire_to, opener)` | `spawn_agent`'s `open_agent` without a caller's block | `spawn_agent` (a fork goes through it) | `open_agent` | card 43, from `spawn.rs`; until it lands, card 35's fork goes through `spawn.rs`'s `open_agent`, changing only the command it types |
@@ -503,7 +505,7 @@ Notes for card 43:
   `wait_for(command_finished)` on it.
 - The asker of a schedule, a watch and a task is a string: a terminal's `TEMPLUM_TERMINAL`, or card 43's reserved
   `templum-agent`. Card 35 delivers a notice only to a terminal; card 43 routes `templum-agent`'s to its chat.
-- The approval of the block server is the balloon; the control server's is its own gate. The operations above never
+- The approval of the block server is the inbox; the control server's is its own gate. The operations above never
   ask anyone.
 - `add_block_in` takes an `opener` (card 43's spec has none yet): the block's `opened_by`, a block id or
   `templum-agent`, which `stop_agent` and `close_block` check. The file is card 43's name for it, `workspace/ops.rs`.
@@ -562,7 +564,7 @@ A change applies to the next `spawn_agent`, as every config change does to what 
 | `templum/src/workspace/schedules.rs` (new) | `Workspace::schedules`, `watches` delivered by their timers | 4 |
 | `templum-terminal/src/agent.rs`; `templum/src/agents.rs` | `Spec::fork_id`, `Agent::fork_session`; `AgentEntry::fork_command` | 2 |
 | `templum/src/config.rs`, `session.rs`, `workspace/persist.rs` | `[roles]`; `role` on terminal items, typed again on resume | 2 |
-| `templum/src/balloon.rs`, `workspace/questions.rs` | the plan's dialog; the general request's words | 3, 5 |
+| `templum/src/balloon.rs`, `inbox.rs`, `workspace/questions.rs` | the plan's dialog and the inbox; the general request's words | 3, 5 |
 | `templum/src/block.rs`, `menu/` | the schedules' clock and **Cancel schedules ▸** | 4 |
 | `templum-git/src/repo.rs` | `Repo::worktree_state` (changed files, commits not merged), `remove_worktree` | 5 |
 
@@ -596,7 +598,7 @@ its model, effort and words, its instructions with the prompt, and again on rest
 `propose_plan`'s Approve, Reject with a comment, keys, a cancel typed back; a schedule goes at its time to an agent and
 the caller, one to a terminal running no agent is refused, a refusal comes back (an agent on a task included),
 `every` repeats and ends after 7 days, a time missed while asleep goes once, a cancel, the clock on the block and its
-menu; `remove_worktree` and `merge_worktree` with the balloon's buttons, their refusals, a conflict aborted.
+menu; `remove_worktree` and `merge_worktree` with the inbox's buttons, their refusals, a conflict aborted.
 
 **By hand:** Claude Code stopping a spawned Codex that left `sleep 60 && touch ~/x &` running (no `~/x`); a dev server
 from `create_block` and a `wait_for` on "ready"; Claude Code forking itself, the fork knowing the conversation; a
@@ -616,7 +618,7 @@ work), each in [the plan](../plans/2026-10-18-agent-tools.md):
 2. **Agents like Claude Code's subagents:** fork, roles.
 3. **A plan the person approves:** `propose_plan`.
 4. **Later:** `schedule`, `cancel_schedule`, `wait_for` with `wait: false`.
-5. **Worktrees:** `remove_worktree`, `merge_worktree`, the general request in the balloon.
+5. **Worktrees:** `remove_worktree`, `merge_worktree`, the general request in the inbox.
 
 ## Risks
 
@@ -637,7 +639,7 @@ work), each in [the plan](../plans/2026-10-18-agent-tools.md):
 | A schedule types into an agent at a bad moment | The same checks as `delegate` at that moment; a refusal comes back to its caller; never into a dialog |
 | A schedule's text runs as a command in a shell, at a moment nobody chose | Schedules go only to agents: one to a terminal running none is refused when it is set, and one whose agent left is refused when it comes, never typed into the shell |
 | Schedules pile up unseen | The clock on the caller's block, its menu, `whoami`; 7 days at most; none survive a restart |
-| A merge into the person's branch | Asked every time in the balloon; refused while the worktree, or the working tree it merges into, has uncommitted changes; a conflict is aborted, never left half done |
+| A merge into the person's branch | Asked every time in the inbox; refused while the worktree, or the working tree it merges into, has uncommitted changes; a conflict is aborted, never left half done |
 | Card 43 and card 35 change the same code at once | [Shared operations](#shared-operations) names who adds what; tasks look on `development` first and favor `ops.rs` |
 
 ## Calls made for card 35

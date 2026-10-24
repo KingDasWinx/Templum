@@ -18,6 +18,28 @@ pub fn content_rect(block: Rect) -> Rect {
     )
 }
 
+/// The side of a block's resize corner squares, `edge` being the strips' width.
+pub fn corner(edge: f32) -> f32 {
+    2.0 * edge
+}
+
+/// Whether a press at `p` on a block drawn at `rect` (all in screen units, `zoom` the camera's) is
+/// on its body: not on a resize zone, which are the strips `edge` wide along the sides, the
+/// `corner` squares at the four corners, and the grip in the bottom-right one.
+pub fn on_body(rect: Rect, edge: f32, zoom: f32, p: Point) -> bool {
+    let (left, right) = (p.x - rect.x, rect.right() - p.x);
+    let (top, bottom) = (p.y - rect.y, rect.bottom() - p.y);
+    let corner = corner(edge);
+    let in_corner = (left < corner || right <= corner) && (top < corner || bottom <= corner);
+    let grip = HANDLE * zoom;
+    rect.contains(p)
+        && left >= edge
+        && right > edge
+        && bottom > edge
+        && !in_corner
+        && !(right <= grip && bottom <= grip)
+}
+
 /// Whole cells fitting in `content`, never below MIN_COLS x MIN_ROWS.
 pub fn grid_size(content: Size, cell: Size) -> (u16, u16) {
     // The epsilon keeps block_size -> grid_size exact despite float error.
@@ -68,6 +90,28 @@ mod tests {
             let content = content_rect(Rect::new(5.0, 5.0, block.w, block.h));
             assert_eq!(grid_size(content.size(), CELL), (cols, rows));
         }
+    }
+
+    #[test]
+    fn a_press_on_a_resize_zone_is_not_on_the_body() {
+        let rect = Rect::new(100.0, 100.0, 400.0, 300.0);
+        let on = |x, y| on_body(rect, 6.0, 1.0, Point::new(x, y));
+        assert!(on(300.0, 250.0));
+        assert!(!on(103.0, 250.0), "left strip");
+        assert!(!on(497.0, 250.0), "right strip");
+        assert!(!on(300.0, 398.0), "bottom strip");
+        assert!(!on(490.0, 390.0), "grip");
+        assert!(on(490.0, 300.0), "beside the grip");
+        // The corner squares are twice the strips' width, all four of them.
+        assert!(!on(109.0, 391.0), "bottom-left corner, beyond the strip");
+        assert!(!on(109.0, 109.0), "top-left corner");
+        assert!(!on(491.0, 109.0), "top-right corner");
+        assert!(on(113.0, 391.0), "past the corner");
+        assert!(on(300.0, 391.0));
+        // Far away the grip is smaller than its corner square: the square still holds.
+        assert!(!on_body(rect, 2.0, 0.1, Point::new(497.0, 397.0)));
+        assert!(on_body(rect, 6.0, 0.5, Point::new(480.0, 380.0)));
+        assert!(!on_body(rect, 6.0, 0.5, Point::new(496.0, 396.0)));
     }
 
     #[test]

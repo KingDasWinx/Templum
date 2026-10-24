@@ -1,6 +1,6 @@
 //! Selecting blocks: a rectangle (Shift+drag on the empty canvas) or Shift+click on a title; and
-//! what acts on the selected blocks, or on the focused one: a selected title's drag moves them
-//! together, Delete closes them, Copy and Paste copy them.
+//! what acts on the selected blocks, or on the focused one: a drag from a selected block or from
+//! the box around them moves them together, Delete closes them, Copy and Paste copy them.
 
 use gpui_kit::{ClipboardItem, Context, Pixels, Point as PixelPoint, Window};
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,9 @@ use crate::session;
 
 use super::history::{Change, Then};
 use super::{Drag, Workspace};
+
+/// How far outside the selected blocks their box is drawn (world units).
+pub(crate) const BOX_MARGIN: f32 = 8.0;
 
 /// What Copy puts on the clipboard for blocks: JSON that Paste knows, here or in another
 /// Templum. A terminal comes back as a fresh shell in its folder, without its agent.
@@ -58,15 +61,23 @@ impl Workspace {
         self.space.selected = selected;
     }
 
-    /// A press on a selected block's title: dragging moves every selected block.
-    pub(crate) fn begin_group_move(&mut self, pos: PixelPoint<Pixels>) {
+    /// The box drawn around two or more selected blocks (world units); a press in it moves them.
+    pub(crate) fn selection_box(&self) -> Option<Rect> {
+        self.space
+            .canvas
+            .selection_box(&self.space.selected, BOX_MARGIN)
+    }
+
+    /// A press on a selected block's title, or on its body (`picks` it, if let go in place), or on
+    /// the empty canvas in the selection's box: dragging moves every selected block.
+    pub(crate) fn begin_group_move(&mut self, pos: PixelPoint<Pixels>, picks: Option<BlockId>) {
         if self.space.grid.is_some() {
             return;
         }
         let p = self.local(pos);
         self.space.pristine = false;
         self.drag = Gesture::move_blocks(&self.space.canvas, &self.space.selected, p)
-            .map(|g| Drag::held(g, p));
+            .map(|g| Drag::held(g, p, picks));
         self.placing(&self.space.selected.clone());
     }
 

@@ -254,6 +254,7 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
             ws.config.connections.enabled,
             ws.config.connections.sound,
             ws.config.canvas.focus_follows_pointer,
+            ws.config.terminal.copy_on_select,
         )
     };
     for (tab, field, reset, line) in [
@@ -293,6 +294,12 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
             "reset-canvas.focus_follows_pointer",
             "focus_follows_pointer = false",
         ),
+        (
+            "settings-tab-terminal",
+            "field-terminal.copy_on_select",
+            "reset-terminal.copy_on_select",
+            "copy_on_select = false",
+        ),
     ] {
         cx.update_window(handle, |_, window, cx| {
             window.click(tab, cx);
@@ -322,7 +329,7 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
     }
     assert_eq!(
         ws.read_with(cx, |ws, _| on(ws)),
-        (true, true, true, true, true, true),
+        (true, true, true, true, true, true, true),
         "back on"
     );
     ws.update(cx, |ws, _| ws.save());
@@ -333,7 +340,8 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
             && !text.contains("claude_limits")
             && !text.contains("enabled")
             && !text.contains("sound")
-            && !text.contains("focus_follows_pointer"),
+            && !text.contains("focus_follows_pointer")
+            && !text.contains("copy_on_select"),
         "{text}"
     );
 }
@@ -1567,4 +1575,93 @@ fn an_accounts_row_logs_in_and_its_dialog_deletes_it(cx: &mut TestAppContext) {
         let agents = &ws.pending.as_ref().unwrap_or(&ws.config).agents;
         assert!(!agents.contains_key("claude2"));
     });
+}
+
+/// Settings ▸ Agents and its Add an account dialog look for the agents' programs when they open
+/// or change, not at each frame: one PATH scan per agent per frame made the tab lag.
+#[gpui_kit::test]
+fn the_agents_tab_looks_for_programs_when_it_opens_not_each_frame(cx: &mut TestAppContext) {
+    let (_own, _commands) = account_dirs();
+    let (config, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (handle, ws) = open_in(
+        cx,
+        Some(config.path().to_path_buf()),
+        Some(data.path().to_path_buf()),
+    );
+    open_accounts(handle, cx);
+    // The looks for a program made while it is drawn 10 times.
+    let drawn = |cx: &mut TestAppContext| {
+        let before = crate::agents::LOOKS.get();
+        cx.update_window(handle, |_, window, cx| {
+            for _ in 0..10 {
+                window.render_frame(cx);
+            }
+        })
+        .unwrap();
+        crate::agents::LOOKS.get() - before
+    };
+    assert_eq!(drawn(cx), 0, "the agents' rows");
+    add_account(handle, &ws, cx, "claudinho");
+    assert_eq!(drawn(cx), 0, "the dialog, with a name typed");
+    cx.update_window(handle, |_, window, cx| {
+        gpui_kit::component::WindowExt::close_all_dialogs(window, cx)
+    })
+    .unwrap();
+    let mine = crate::agents::Draft {
+        name: "Mine".into(),
+        command: "mine".into(),
+        resume: String::new(),
+        show: true,
+        ..Default::default()
+    };
+    ws.update(cx, |ws, cx| ws.save_agent(None, &mine, cx).unwrap());
+    frame(handle, cx);
+    assert_eq!(drawn(cx), 0, "an agent added while the tab shows");
+}
+
+/// An item Custom can't offer says why under its paths, in the room of the row: beside them, at
+/// the right, the note took all of it and "Settings" broke at each letter.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_item_that_cant_be_chosen_keeps_the_rows_room(cx: &mut TestAppContext) {
+    let (_own, _commands) = account_dirs();
+    let (config, data, chosen, dotfiles) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    // The person's own link: Custom shows it, with no list.
+    std::os::unix::fs::symlink(
+        dotfiles.path().join("settings.json"),
+        chosen.path().join("settings.json"),
+    )
+    .unwrap();
+    let file = format!(
+        "[agents.claude2]\nof = \"claude\"\nfolder = '{}'\n",
+        chosen.path().display()
+    );
+    std::fs::write(config.path().join(crate::config::FILE), file).unwrap();
+    let (handle, _ws) = open_in(
+        cx,
+        Some(config.path().to_path_buf()),
+        Some(data.path().to_path_buf()),
+    );
+    open_accounts(handle, cx);
+    edit_account(handle, cx, "edit-account-claude2");
+    press(handle, cx, "account-setup-custom");
+    cx.update_window(handle, |_, window, _| {
+        let width = |key: &str| {
+            let id = gpui_kit::ElementId::Name(format!("account-item-{key}").into());
+            window.find(id).bounds().size.width
+        };
+        assert!(
+            window.try_find("account-share-settings").is_none(),
+            "no list"
+        );
+        // Its column has the row; one with a list leaves it room.
+        assert!(width("settings") > width("skills"));
+        assert!(width("skills") > px(100.), "{:?}", width("skills"));
+    })
+    .unwrap();
 }

@@ -159,7 +159,7 @@ Painting (in `grid.rs`):
 | Drag the title bar | Move the block |
 | Drag the bottom-right handle | Resize the block. The PTY gets the new grid size, clamped to 20×4 |
 | Drag empty canvas | Pan |
-| Drag in a terminal body | Select text. Double-click selects a word, triple-click selects a line |
+| Drag in a terminal body | Select text. Double-click selects a word, triple-click selects a line. Letting go copies the selection to the clipboard (`terminal.copy_on_select`, on by default) |
 | Wheel or two-finger scroll over a body | Scroll that terminal (see `Terminal::scroll`) |
 | Two-finger scroll over empty canvas or a title bar | Pan |
 | A mouse's wheel over empty canvas or a title bar | Zoom one step around the pointer (pans with a drawing tool) |
@@ -167,6 +167,21 @@ Painting (in `grid.rs`):
 | × button | Close the block, killing its shell |
 
 Drags keep working when the pointer leaves the window, until the button is released.
+
+**Copy on select** (kanban card 119): the selection is copied once per gesture, as the button is let go (not while
+it moves; a release the window never heard, at the next move), through the same clipboard as Ctrl+Shift+C; a click that selects nothing copies nothing, and a selection
+made otherwise (Find's match, an agent's output) isn't copied. Only the clipboard: Templum writes no PRIMARY
+selection on Linux (its middle button pans the canvas, it doesn't paste). Settings ▸ Terminal ▸ Copy selection
+automatically turns it off.
+
+A quiet **"Copied"** says it happened (kanban card 125), not a notification: a pill with a check, in the block's
+surface and hairline colors, where the button was let go, part of the terminal's body, so it moves and zooms with the
+block. It sits above the pointer (below it near the top), grows away from the nearer side and stays inside the body,
+even when the drag ended outside it. It fades in over 120 ms, stays, and fades out over the last 180 ms of 1.2 s
+(`motion::COPIED`); the next copy starts it over where that one was let go, so there is one at a time. A selection of
+several lines says how many ("Copied 3 lines"), counting up to the last line with text. It has no listener: clicks
+and the pointer's text cursor go through it to the grid. Ctrl+Shift+C and the menu's Copy show nothing: the person
+asked for those copies; the pill answers the one they didn't ask for.
 
 ### Keyboard
 
@@ -245,6 +260,11 @@ dev-dependency):
 - clicking `("close", id)` removes the block, and so does Ctrl+Shift+W;
 - dragging `("title", id)` moves the block;
 - dragging `("handle", id)` resizes it, and its terminal's grid size changes;
+- a selection dragged or double-clicked in a terminal lands in the test harness's clipboard as the button is let go,
+  not while it moves, and at the next move after a release the window never heard; a click copies nothing; with `terminal.copy_on_select` off nothing is copied; it is on by
+  default; each copy shows `("copied", id)` inside the body by where it was let go (above the pointer at the bottom
+  right, below it at the top left), with the count of lines with text, gone after `motion::COPIED` on the test
+  clock and started over by the next copy; a click or a copy turned off shows none;
 - scrolling over empty canvas pans the camera;
 - the zoom keybindings change the zoom step, and fit-all frames every block.
 

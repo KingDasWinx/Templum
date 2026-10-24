@@ -14,6 +14,7 @@ use crate::checklist::{self, Checklist};
 use crate::checklists::{self, Checklists};
 use crate::editor::{self, Editor};
 use crate::git_block::{self, Git};
+use crate::instructions::{self, Instructions};
 use crate::kanban::{self, Kanban};
 use crate::note::{self, Note};
 use crate::notes;
@@ -342,6 +343,7 @@ impl Workspace {
                 let checklist = Checklist {
                     list,
                     editing: None,
+                    scroll: Default::default(),
                 };
                 Some(self.add_block(rect, Body::Checklist(checklist)))
             }
@@ -437,8 +439,11 @@ impl Workspace {
         let checklists = (!self.checklists_frozen
             && self.checklists_saved.as_ref() != Some(&self.checklists))
         .then(|| self.checklists.clone());
+        let standing = (!self.standing_frozen
+            && self.standing_saved.as_ref() != Some(&self.standing))
+        .then(|| self.standing.clone());
         cx.spawn_in(window, async move |ws, cx| {
-            let (done, boards, notes, checklists) = cx
+            let (done, boards, notes, checklists, standing) = cx
                 .background_executor()
                 .spawn(async move {
                     let notes = notes.map(|n| {
@@ -466,23 +471,30 @@ impl Workspace {
                         let written = checklists::save(&dir, &c, generation);
                         (c, written)
                     });
-                    (done, boards, notes, checklists)
+                    let standing = standing.map(|s| {
+                        let written = instructions::save(&dir, &s, generation);
+                        (s, written)
+                    });
+                    (done, boards, notes, checklists, standing)
                 })
                 .await;
             ws.update_in(cx, |ws, window, cx| {
-                ws.snapshot_done(done, boards, notes, checklists, window, cx)
+                ws.snapshot_done(done, boards, notes, checklists, standing, window, cx)
             })
             .ok();
         })
         .detach();
     }
 
+    // One argument for each app-wide file a snapshot writes.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn snapshot_done(
         &mut self,
         done: Vec<SpaceSnapshot>,
         boards: Option<(Boards, std::io::Result<()>)>,
         notes: Option<(notes::Notes, std::io::Result<()>)>,
         checklists: Option<(Checklists, std::io::Result<()>)>,
+        standing: Option<(Instructions, std::io::Result<()>)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -513,6 +525,14 @@ impl Workspace {
             Some((_, Err(err))) => failed = Some(err),
             None => {}
         }
+        match standing {
+            Some((standing, Ok(()))) => {
+                wrote = true;
+                self.standing_saved = Some(standing);
+            }
+            Some((_, Err(err))) => failed = Some(err),
+            None => {}
+        }
         let homes = crate::agents::homes(&self.agents);
         for (id, terminals, saved, written) in done {
             let gone = self
@@ -521,19 +541,8 @@ impl Workspace {
                 .unwrap_or_default();
             for terminal in gone {
                 self.agent_left(&terminal, cx);
+                self.subagents_done(&terminal, None, window, cx);
             }
-            // An account found running: `/usage` asks its limits from now on.
-            let ran: Vec<String> = self
-                .space_by_id_mut(&id)
-                .map(|space| {
-                    space
-                        .terminals()
-                        .filter_map(|(_, p)| p.seen.agent.clone().filter(|_| p.seen.pid.is_some()))
-                        .filter(|a| homes.iter().any(|h| h.id == *a))
-                        .collect()
-                })
-                .unwrap_or_default();
-            self.accounts_ran.extend(ran);
             match written {
                 None => {}
                 Some(Ok(())) => {
@@ -567,6 +576,10 @@ impl Workspace {
     /// When the window closes or Templum quits: the last snapshot of every workspace, read and
     /// written at once.
     pub(super) fn save_canvas_now(&mut self, cx: &App) {
+        // A card dialog still open: what was typed in it is kept as a draft.
+        if let Some(work) = &self.card_work {
+            work.borrow().keep(&mut self.boards);
+        }
         // A first run's welcome still open: the next start is a first run too.
         let Some(dir) = self.data_dir.clone().filter(|_| !self.first_run_welcome()) else {
             return;
@@ -584,6 +597,12 @@ impl Workspace {
             match checklists::save(&dir, &self.checklists, generation) {
                 Ok(()) => self.checklists_saved = Some(self.checklists.clone()),
                 Err(err) => eprintln!("templum: couldn't save the checklists: {err}"),
+            }
+        }
+        if !self.standing_frozen && self.standing_saved.as_ref() != Some(&self.standing) {
+            match instructions::save(&dir, &self.standing, generation) {
+                Ok(()) => self.standing_saved = Some(self.standing.clone()),
+                Err(err) => eprintln!("templum: couldn't save the instructions: {err}"),
             }
         }
         if !self.notes_frozen && self.notes_saved.as_ref() != Some(&self.notes) {

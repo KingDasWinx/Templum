@@ -1,6 +1,7 @@
 //! Agents' session usage and plan limits (docs/specs/usage.md).
 
 use super::*;
+use crate::workspace::usage::{CLAUDE_EVERY, CLAUDE_MIN};
 
 /// The Claude Code and Codex Templum types get its server and hooks; Claude Code its status line
 /// too (docs/specs/connections.md, What Templum types into each agent).
@@ -542,9 +543,32 @@ fn claude_code_is_asked_for_its_limits_when_wanted(cx: &mut TestAppContext) {
     });
 }
 
-/// Each Claude Code account seen running since Templum started is asked too, on its folder.
+/// A workspace on a data folder with Claude Code (a made-up program) and its account `claude2`,
+/// which never ran and has a login (its `.claude.json`).
+fn two_claudes(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>, tempfile::TempDir) {
+    let data = tempfile::tempdir().unwrap();
+    let program = data.path().join("my-claude");
+    std::fs::write(&program, "").unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    super::agents::with_agents(
+        &ws,
+        cx,
+        &format!(
+            "[agents.claude]\ncommand = '{}'\n{}",
+            program.display(),
+            super::agents::CLAUDE2
+        ),
+    );
+    let folder = data.path().join("accounts").join("claude2");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join(".claude.json"), "{}").unwrap();
+    (handle, ws, data)
+}
+
+/// Each Claude Code account with a login is asked too, on its folder, whether it ran since
+/// Templum started or not; one without a login has nothing to ask for.
 #[gpui_kit::test]
-fn an_account_that_ran_is_asked_for_its_limits(cx: &mut TestAppContext) {
+fn an_account_with_a_login_is_asked_for_its_limits_without_having_run(cx: &mut TestAppContext) {
     let data = tempfile::tempdir().unwrap();
     let program = data.path().join("my-claude");
     std::fs::write(&program, "").unwrap();
@@ -558,11 +582,13 @@ fn an_account_that_ran_is_asked_for_its_limits(cx: &mut TestAppContext) {
             super::agents::CLAUDE2
         ),
     );
+    let account = data.path().join("accounts").join("claude2");
     ws.update(cx, |ws, _| {
-        assert_eq!(ws.claude_poll_jobs().len(), 1, "not run yet");
-        ws.accounts_ran.insert("claude2".into());
+        assert_eq!(ws.claude_poll_jobs().len(), 1, "no folder");
+        std::fs::create_dir_all(&account).unwrap();
+        assert_eq!(ws.claude_poll_jobs().len(), 1, "no login");
+        std::fs::write(account.join(".claude.json"), "{}").unwrap();
         let jobs = ws.claude_poll_jobs();
-        let account = data.path().join("accounts").join("claude2");
         assert_eq!(
             jobs[1],
             (
@@ -572,6 +598,293 @@ fn an_account_that_ran_is_asked_for_its_limits(cx: &mut TestAppContext) {
                 Some(account)
             )
         );
+    });
+}
+
+/// `/usage` is asked for an account at most once a minute, and every five when nothing else asks;
+/// a trigger asks for its account only.
+#[gpui_kit::test]
+fn an_account_is_asked_at_most_once_a_minute(cx: &mut TestAppContext) {
+    let (_, ws, _data) = two_claudes(cx);
+    ws.update(cx, |ws, _| {
+        let ids = |jobs: Vec<(String, _, _, _)>| -> Vec<String> {
+            jobs.into_iter().map(|(id, ..)| id).collect()
+        };
+        let t = 10_000;
+        assert_eq!(
+            ids(ws.claude_due(t, None, CLAUDE_EVERY)),
+            ["claude", "claude2"]
+        );
+        assert_eq!(
+            ws.claude_due(t + 30, None, CLAUDE_MIN),
+            [],
+            "within a minute"
+        );
+        assert_eq!(
+            ws.claude_due(t + 299, None, CLAUDE_EVERY),
+            [],
+            "nothing asked meanwhile"
+        );
+        assert_eq!(
+            ids(ws.claude_due(t + CLAUDE_MIN, Some("claude2"), CLAUDE_MIN)),
+            ["claude2"],
+            "a trigger asks its account only"
+        );
+        assert_eq!(
+            ws.claude_due(t + CLAUDE_MIN + 59, Some("claude2"), CLAUDE_MIN),
+            [],
+            "and not again within a minute"
+        );
+        assert_eq!(ws.claude_due(t + CLAUDE_MIN, Some("codex"), CLAUDE_MIN), []);
+        assert_eq!(
+            ids(ws.claude_due(t + CLAUDE_EVERY, None, CLAUDE_EVERY)),
+            ["claude"],
+            "five minutes on, the one not asked since"
+        );
+    });
+}
+
+/// The meter turning to an account, the popover opening and a Claude Code turn's end ask for its
+/// limits; hovering the meter (no turn) and agents other than Claude Code's don't.
+#[gpui_kit::test]
+fn the_meter_the_popover_and_a_turns_end_ask_for_limits(cx: &mut TestAppContext) {
+    let (handle, ws, _data) = two_claudes(cx);
+    let asked = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.update(cx, |ws, _| {
+            ws.claude_queue.clear();
+            let mut ids: Vec<String> = ws.claude_asked.drain().map(|(id, _)| id).collect();
+            ids.sort();
+            ids
+        })
+    };
+    ws.update(cx, |ws, _| {
+        ws.limits = vec![limits_of("claude", 27.0), limits_of("claude2", 50.0)];
+    });
+    // The meter turns to the second.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.meter_turned = 0;
+            let limits = ws.limits.clone();
+            ws.usage_done(Vec::new(), (Vec::new(), limits), window, cx)
+        })
+    })
+    .unwrap();
+    assert_eq!(asked(&ws, cx), ["claude2"], "the meter turned");
+    // Held under the pointer, it doesn't turn, and asks nothing.
+    ws.update(cx, |ws, _| ws.meter_hovered = true);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.meter_turned = 0;
+            ws.claude_asked.clear();
+            let limits = ws.limits.clone();
+            ws.usage_done(Vec::new(), (Vec::new(), limits), window, cx)
+        })
+    })
+    .unwrap();
+    assert_eq!(asked(&ws, cx), Vec::<String>::new(), "the meter was held");
+    ws.update(cx, |ws, _| ws.meter_hovered = false);
+    ws.update(cx, |ws, cx| ws.toggle_usage(cx));
+    assert_eq!(asked(&ws, cx), ["claude", "claude2"], "the popover opened");
+    ws.update(cx, |ws, cx| ws.toggle_usage(cx));
+    assert_eq!(asked(&ws, cx), Vec::<String>::new(), "and closed");
+    // A turn's end in a terminal of the account.
+    let first = first_id(&ws, cx);
+    let terminal = ws.update(cx, |ws, _| {
+        let pane = ws.space.terminal_mut(first).unwrap();
+        pane.seen.agent = Some("claude2".into());
+        pane.term.id().to_string()
+    });
+    let stop = serde_json::json!({ "hook_event_name": "Stop", "last_assistant_message": "Done." });
+    let said = templum_mcp::hooks::claude(&stop).expect("an event");
+    let said = serde_json::to_value(said).unwrap();
+    super::bus::event(handle, &ws, cx, &terminal, said.clone());
+    assert_eq!(asked(&ws, cx), ["claude2"], "a turn ended");
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(first).unwrap().seen.agent = Some("codex".into());
+    });
+    super::bus::event(handle, &ws, cx, &terminal, said);
+    assert_eq!(asked(&ws, cx), Vec::<String>::new(), "Codex has no probe");
+}
+
+/// With one agent in the meter, its limits are asked again every minute; with several, only the
+/// five-minute look asks.
+#[gpui_kit::test]
+fn the_one_agent_in_the_meter_is_asked_every_minute(cx: &mut TestAppContext) {
+    let (_, ws, _data) = two_claudes(cx);
+    let now = crate::notes::now();
+    let stamp = |ws: &mut Workspace| {
+        ws.claude_asked = [("claude".into(), now - 61), ("claude2".into(), now - 61)].into();
+    };
+    let asked_at = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.update(cx, |ws, cx| {
+            ws.ask_claude_due(cx);
+            (
+                ws.claude_asked["claude"] > now - 61,
+                ws.claude_asked["claude2"] > now - 61,
+            )
+        })
+    };
+    ws.update(cx, |ws, _| {
+        ws.limits = vec![limits_of("claude", 27.0)];
+        stamp(ws);
+    });
+    assert_eq!(asked_at(&ws, cx), (true, false), "the one shown");
+    ws.update(cx, |ws, _| {
+        ws.limits = vec![limits_of("claude", 27.0), limits_of("claude2", 50.0)];
+        stamp(ws);
+    });
+    assert_eq!(asked_at(&ws, cx), (false, false), "two shown");
+}
+
+/// The probes run one at a time, the one a trigger asks for first; an account waits or runs once,
+/// and is asked for when its probe starts, not when it queued.
+#[gpui_kit::test]
+fn probes_run_one_at_a_time_the_asked_one_first(cx: &mut TestAppContext) {
+    let (_, ws, _data) = two_claudes(cx);
+    let ids = |ws: &Workspace| -> Vec<String> {
+        ws.claude_queue.iter().map(|(id, ..)| id.clone()).collect()
+    };
+    ws.update(cx, |ws, cx| {
+        let t = crate::notes::now();
+        ws.ask_claude(Some("claude"), CLAUDE_MIN, cx);
+        ws.ask_claude(Some("claude2"), CLAUDE_MIN, cx);
+        assert_eq!(ids(ws), ["claude2", "claude"], "the last asked first");
+        // Queued, an account isn't queued again.
+        ws.claude_asked.clear();
+        ws.ask_claude(None, CLAUDE_MIN, cx);
+        assert_eq!(ids(ws), ["claude2", "claude"]);
+        assert_eq!(ws.claude_next(t + 90).unwrap().0, "claude2");
+        assert_eq!(ws.claude_asked["claude2"], t + 90, "asked as it starts");
+        assert!(ws.claude_next(t + 90).is_none(), "one runs");
+        // Nor while it runs, nor within a minute of its start.
+        assert_eq!(ws.claude_due(t + 100, Some("claude2"), CLAUDE_MIN), []);
+        ws.probe_done("claude2".into(), Some(limits_of("claude2", 1.0).1), cx);
+        assert_eq!(ws.claude_due(t + 120, Some("claude2"), CLAUDE_MIN), []);
+        assert_eq!(
+            ws.claude_due(t + 90 + CLAUDE_MIN, Some("claude2"), CLAUDE_MIN)
+                .len(),
+            1
+        );
+        assert_eq!(ws.claude_next(t + 91).unwrap().0, "claude");
+        assert!(ws.claude_next(t + 91).is_none());
+    });
+}
+
+/// A probe that finds nothing (an API key has no plan, an offline machine no answer) isn't asked
+/// again by a trigger for five minutes, as one that finds limits is after one.
+#[gpui_kit::test]
+fn a_probe_that_finds_nothing_is_not_asked_again_by_triggers(cx: &mut TestAppContext) {
+    let (_, ws, _data) = two_claudes(cx);
+    ws.update(cx, |ws, cx| {
+        let t = crate::notes::now();
+        let ask = |ws: &mut Workspace, id: &str, after: u64| {
+            ws.claude_due(t + after, Some(id), CLAUDE_MIN).len()
+        };
+        ws.probe_done("claude".into(), None, cx);
+        ws.claude_asked.insert("claude2".into(), t);
+        assert_eq!(ask(ws, "claude", CLAUDE_MIN + 5), 0, "nothing found");
+        assert_eq!(
+            ask(ws, "claude", CLAUDE_EVERY - 5),
+            0,
+            "within five minutes"
+        );
+        assert_eq!(ask(ws, "claude", CLAUDE_EVERY + 5), 1, "then it may");
+        assert_eq!(
+            ask(ws, "claude2", CLAUDE_MIN + 5),
+            1,
+            "found limits: a minute"
+        );
+        assert_eq!(
+            ws.claude_due(t + 2 * CLAUDE_EVERY, None, CLAUDE_EVERY)
+                .len(),
+            1,
+            "the look"
+        );
+    });
+}
+
+/// A waiting probe of an account that was deleted, or of any when the limits were turned off, is
+/// dropped: running Claude Code on its folder would make the folder again.
+#[gpui_kit::test]
+fn a_queued_probe_is_dropped_with_its_account(cx: &mut TestAppContext) {
+    let (_, ws, _data) = two_claudes(cx);
+    ws.update(cx, |ws, cx| {
+        ws.ask_claude(None, CLAUDE_EVERY, cx);
+        ws.agents.retain(|a| a.id != "claude2");
+        assert_eq!(ws.claude_next(1).unwrap().0, "claude");
+        ws.probe_done("claude".into(), None, cx);
+        assert!(ws.claude_next(1).is_none(), "claude2 is gone");
+        ws.ask_claude(None, CLAUDE_EVERY, cx);
+        ws.config.usage.claude_limits = false;
+        assert!(ws.claude_next(1).is_none(), "turned off");
+    });
+}
+
+/// What `/usage` finds for an account that is gone, or not asked any more, goes with it; a result
+/// that arrives after, or one older than the last, is ignored.
+#[gpui_kit::test]
+fn what_a_probe_found_goes_with_its_account(cx: &mut TestAppContext) {
+    let (handle, ws, _data) = two_claudes(cx);
+    let (_, found) = limits_of("claude2", 61.0);
+    let read = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.usage_done(Vec::new(), (Vec::new(), Vec::new()), window, cx)
+            })
+        })
+        .unwrap()
+    };
+    ws.update(cx, |ws, cx| {
+        ws.claude_polled("claude2".into(), found.clone(), cx)
+    });
+    ws.update(cx, |ws, cx| {
+        let older = templum_usage::Limits {
+            at: found.at - 1,
+            ..found.clone()
+        };
+        ws.claude_polled("claude2".into(), older, cx);
+        assert_eq!(ws.claude_polled["claude2"], found, "not the older");
+        ws.claude_polled("claude9".into(), found.clone(), cx);
+        assert!(!ws.claude_polled.contains_key("claude9"), "no such account");
+    });
+    read(&ws, cx);
+    ws.read_with(cx, |ws, _| assert_eq!(ws.limits.len(), 1));
+    // Turned off: its row goes.
+    ws.update(cx, |ws, _| ws.config.usage.claude_limits = false);
+    read(&ws, cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.limits, []);
+        assert!(ws.claude_polled.is_empty());
+    });
+    // Deleted: the same.
+    ws.update(cx, |ws, cx| {
+        ws.config.usage.claude_limits = true;
+        ws.claude_polled("claude2".into(), found.clone(), cx);
+        ws.agents.retain(|a| a.id != "claude2");
+    });
+    read(&ws, cx);
+    ws.read_with(cx, |ws, _| assert_eq!(ws.limits, []));
+}
+
+/// What `/usage` finds is in the meter's limits at once, and stays through the next read.
+#[gpui_kit::test]
+fn a_fresh_probe_shows_without_waiting_for_the_next_read(cx: &mut TestAppContext) {
+    let (handle, ws, _data) = two_claudes(cx);
+    let (_, found) = limits_of("claude2", 61.0);
+    ws.update(cx, |ws, cx| {
+        ws.claude_polled("claude2".into(), found.clone(), cx)
+    });
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.limits, [("claude2".to_string(), found.clone())]);
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.usage_done(Vec::new(), (Vec::new(), Vec::new()), window, cx)
+        })
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.limits, [("claude2".to_string(), found)])
     });
 }
 

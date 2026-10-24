@@ -120,7 +120,9 @@ Left out: Amp (`--mode` only), Goose (`GOOSE_MODEL`, a variable), Crush (its TUI
   under its name. The list scrolls.
 - **Installed** means its program was found in PATH, in the folders where npm, bun, cargo, Deno, Volta, Go and nvm
   install programs, or among mise's and asdf's shims. An app started from a desktop menu may not get the shell's
-  PATH, and version managers add theirs only in the shell.
+  PATH, and version managers add theirs only in the shell. The menu looks when it opens; Settings ▸ Agents (and its
+  Add an account dialog) when the panel (the dialog) opens and when the agents change, never at each frame: each
+  look scans all those folders.
 - **Choosing one** opens a dialog, "Open *agent*":
   - **The workspace's folder** (chosen in its edit dialog, [cockpit.md](cockpit.md)), when it has one, tagged
     "Workspace folder"; it isn't listed again among the recent ones;

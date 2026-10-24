@@ -507,3 +507,501 @@ fn a_held_title_moves_its_block_until_let_go(cx: &mut TestAppContext) {
     press(cx, false);
     assert_eq!(moving(cx), [false, false, false]);
 }
+
+/// Selects `ids` (which takes the focus away) and draws a frame, so the blocks wear the
+/// selection's handlers.
+fn select(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    ids: &[BlockId],
+) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, _| {
+            ws.space.focused = None;
+            ws.space.selected = ids.to_vec();
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+fn rects(ws: &Entity<Workspace>, cx: &mut TestAppContext, ids: &[BlockId]) -> Vec<Rect> {
+    ws.read_with(cx, |ws, _| {
+        ids.iter()
+            .map(|id| ws.space.canvas.get(*id).unwrap().rect)
+            .collect()
+    })
+}
+
+fn shifted(r: Rect, dx: f32, dy: f32) -> Rect {
+    Rect::new(r.x + dx, r.y + dy, r.w, r.h)
+}
+
+#[gpui_kit::test]
+fn dragging_a_selected_terminals_body_moves_every_selected_block(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, note, terminal) = three_blocks(handle, &ws, cx);
+    select(handle, &ws, cx, &[note, terminal]);
+    let before = rects(&ws, cx, &[note, terminal]);
+    let body = at(&ws, cx, (200.0, 560.0));
+    cx.update_window(handle, |_, window, cx| {
+        press_with(
+            window,
+            cx,
+            MouseButton::Left,
+            Modifiers::default(),
+            body,
+            (body.0 + 100.0, body.1 + 50.0),
+        );
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            [note, terminal].map(|id| ws.space.canvas.get(id).unwrap().rect),
+            [
+                shifted(before[0], 100.0, 50.0),
+                shifted(before[1], 100.0, 50.0)
+            ]
+        );
+        assert_eq!(ws.space.selected, [note, terminal], "still selected");
+        assert_eq!(ws.space.focused, None);
+        let pane = ws.space.terminal(terminal).unwrap();
+        assert!(
+            pane.term.shared().selection_text().is_none(),
+            "the terminal started no text selection"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn dragging_the_empty_canvas_inside_the_box_moves_the_selection(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = three_blocks(handle, &ws, cx);
+    select(handle, &ws, cx, &[kanban, note]);
+    let before = rects(&ws, cx, &[kanban, note]);
+    // Between the two blocks, and in the box's margin.
+    for (n, gap) in [(280.0, 150.0), (36.0, 150.0)].into_iter().enumerate() {
+        let from = at(&ws, cx, gap);
+        let dy = 30.0 * (n + 1) as f32;
+        cx.update_window(handle, |_, window, cx| {
+            press_with(
+                window,
+                cx,
+                MouseButton::Left,
+                Modifiers::default(),
+                from,
+                (from.0, from.1 + dy),
+            );
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let moved = (30.0 * (n + 1) as f32) * (n + 2) as f32 / 2.0;
+        assert_eq!(
+            rects(&ws, cx, &[kanban, note]),
+            [
+                shifted(before[0], 0.0, moved),
+                shifted(before[1], 0.0, moved)
+            ]
+        );
+    }
+    assert_eq!(ws.read_with(cx, |ws, _| ws.space.selected.len()), 2);
+}
+
+#[gpui_kit::test]
+fn the_selection_box_wraps_two_or_more_selected_blocks(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = three_blocks(handle, &ws, cx);
+    select(handle, &ws, cx, &[kanban]);
+    assert_eq!(ws.read_with(cx, |ws, _| ws.selection_box()), None);
+    select(handle, &ws, cx, &[kanban, note]);
+    let margin = crate::workspace::selection::BOX_MARGIN;
+    let [a, b] = rects(&ws, cx, &[kanban, note])[..] else {
+        unreachable!()
+    };
+    let union = a.union(&b);
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.selection_box()),
+        Some(Rect::new(
+            union.x - margin,
+            union.y - margin,
+            union.w + 2.0 * margin,
+            union.h + 2.0 * margin
+        ))
+    );
+}
+
+#[gpui_kit::test]
+fn a_click_on_a_selected_body_picks_that_block_and_ends_the_selection(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    select(handle, &ws, cx, &[kanban, note, terminal]);
+    let before = rects(&ws, cx, &[kanban, note, terminal]);
+    let body = at(&ws, cx, (200.0, 560.0));
+    cx.update_window(handle, |_, window, cx| click(window, cx, body, 1))
+        .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.focused, Some(terminal));
+        assert!(ws.space.selected.is_empty());
+        assert!(ws.drag.is_none());
+    });
+    assert_eq!(
+        rects(&ws, cx, &[kanban, note, terminal]),
+        before,
+        "not moved"
+    );
+}
+
+#[gpui_kit::test]
+fn a_click_on_the_empty_canvas_inside_the_box_ends_the_selection(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = three_blocks(handle, &ws, cx);
+    select(handle, &ws, cx, &[kanban, note]);
+    let before = rects(&ws, cx, &[kanban, note]);
+    let gap = at(&ws, cx, (280.0, 150.0));
+    cx.update_window(handle, |_, window, cx| click(window, cx, gap, 1))
+        .unwrap();
+    assert!(ws.read_with(cx, |ws, _| ws.space.selected.is_empty()));
+    assert_eq!(rects(&ws, cx, &[kanban, note]), before);
+}
+
+#[gpui_kit::test]
+fn shift_click_on_a_selected_body_takes_the_block_out_of_the_selection(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    select(handle, &ws, cx, &[kanban, note, terminal]);
+    let body = at(&ws, cx, (200.0, 560.0));
+    cx.update_window(handle, |_, window, cx| {
+        press_with(window, cx, MouseButton::Left, SHIFT, body, body);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.selected, [kanban, note]);
+        assert_eq!(ws.space.focused, None);
+        assert!(
+            ws.space
+                .terminal(terminal)
+                .unwrap()
+                .term
+                .shared()
+                .selection_text()
+                .is_none()
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn right_click_on_a_selected_body_still_opens_the_menu(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = three_blocks(handle, &ws, cx);
+    select(handle, &ws, cx, &[kanban, note]);
+    let body = at(&ws, cx, (410.0, 140.0));
+    cx.update_window(handle, |_, window, cx| right_click(window, cx, body))
+        .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.menu.is_some());
+        assert!(ws.drag.is_none());
+    });
+}
+
+fn move_to(window: &mut Window, cx: &mut gpui_kit::App, at: (f32, f32)) {
+    window.dispatch_event(
+        PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+            position: point(px(at.0), px(at.1)),
+            pressed_button: None,
+            modifiers: Modifiers::default(),
+        }),
+        cx,
+    );
+}
+
+fn down(window: &mut Window, cx: &mut gpui_kit::App, at: (f32, f32), modifiers: Modifiers) {
+    window.dispatch_event(
+        PlatformInput::MouseDown(MouseDownEvent {
+            button: MouseButton::Left,
+            position: point(px(at.0), px(at.1)),
+            modifiers,
+            click_count: 1,
+            first_mouse: false,
+        }),
+        cx,
+    );
+}
+
+fn up(window: &mut Window, cx: &mut gpui_kit::App, at: (f32, f32)) {
+    window.dispatch_event(
+        PlatformInput::MouseUp(MouseUpEvent {
+            button: MouseButton::Left,
+            position: point(px(at.0), px(at.1)),
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        }),
+        cx,
+    );
+}
+
+/// Held by a body, the wheel pans the canvas (the selected block under the pointer scrolls
+/// nothing) and carries the group; let go without moving the mouse, that is no click: the
+/// blocks stay selected, where they were carried, and Ctrl+Z takes them back.
+#[gpui_kit::test]
+fn the_wheel_while_held_by_a_body_carries_the_group_and_is_no_click(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, note, terminal) = three_blocks(handle, &ws, cx);
+    select(handle, &ws, cx, &[note, terminal]);
+    let before = rects(&ws, cx, &[note, terminal]);
+    let camera = ws.read_with(cx, |ws, _| ws.space.canvas.camera.origin);
+    let body = at(&ws, cx, (200.0, 560.0));
+    cx.update_window(handle, |_, window, cx| {
+        down(window, cx, body, Modifiers::default());
+        wheel(
+            window,
+            cx,
+            body,
+            ScrollDelta::Pixels(point(px(0.0), px(-60.0))),
+            false,
+        );
+        up(window, cx, body);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_ne!(ws.space.canvas.camera.origin, camera, "the canvas panned");
+        assert_eq!(
+            ws.space.selected,
+            [note, terminal],
+            "no click: still selected"
+        );
+        assert_eq!(ws.space.focused, None);
+        assert_eq!(ws.space.undo.len(), 1, "carried: a step");
+    });
+    assert_ne!(rects(&ws, cx, &[note, terminal]), before);
+    cx.update_window(handle, |_, window, cx| window.press(UNDO, cx))
+        .unwrap();
+    assert_eq!(rects(&ws, cx, &[note, terminal]), before);
+}
+
+/// At far zoom the label lies over the top of the body: it is the title, so a click on it keeps
+/// the selection, as on a title near.
+#[gpui_kit::test]
+fn a_click_on_a_selected_far_label_keeps_the_selection(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = three_blocks(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 0.3);
+        ws.space.flight = None;
+    });
+    frame(handle, cx);
+    select(handle, &ws, cx, &[kanban, note]);
+    // The label's lowest row, which is over the body, not the header.
+    let (label, body_top) = cx
+        .update_window(handle, |_, window, _| {
+            let label = window.find(("title", kanban.0 as usize)).bounds();
+            let body = window.find(("body", kanban.0 as usize)).bounds();
+            (label, body.origin.y)
+        })
+        .unwrap();
+    assert!(label.bottom() > body_top + px(4.0), "over the body");
+    let at = (
+        f32::from(label.origin.x + label.size.width / 2.0),
+        f32::from(label.bottom() - px(1.0)),
+    );
+    cx.update_window(handle, |_, window, cx| click(window, cx, at, 1))
+        .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.selected, [kanban, note]);
+        assert_eq!(ws.space.focused, None);
+    });
+}
+
+/// The bottom-left corner's square is twice the strips' width: a press anywhere in it resizes.
+#[gpui_kit::test]
+fn a_press_in_a_selected_blocks_resize_corner_resizes(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, note, terminal) = three_blocks(handle, &ws, cx);
+    select(handle, &ws, cx, &[note, terminal]);
+    let rect = rects(&ws, cx, &[terminal])[0];
+    let inside = at(&ws, cx, (rect.x + 100.0, rect.y + 100.0));
+    let corner = at(&ws, cx, (rect.x + 9.0, rect.bottom() - 9.0));
+    cx.update_window(handle, |_, window, cx| {
+        move_to(window, cx, inside);
+        window.render_frame(cx);
+        down(window, cx, corner, Modifiers::default());
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            matches!(
+                ws.drag,
+                Some(crate::workspace::Drag::Canvas(
+                    templum_canvas::Gesture::Resize { .. }
+                ))
+            ),
+            "a resize, not the group's move nor a text selection"
+        );
+    });
+}
+
+/// Ctrl+click (Cmd on macOS) on a selected terminal is the terminal's (a link opens): no group
+/// move starts.
+#[gpui_kit::test]
+fn ctrl_click_on_a_selected_terminal_starts_no_group_move(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, note, terminal) = three_blocks(handle, &ws, cx);
+    select(handle, &ws, cx, &[note, terminal]);
+    let body = at(&ws, cx, (200.0, 560.0));
+    cx.update_window(handle, |_, window, cx| {
+        down(window, cx, body, Modifiers::secondary_key());
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(!ws.moving(terminal) && !ws.moving(note));
+        assert_eq!(ws.space.focused, Some(terminal), "a click on the terminal");
+    });
+}
+
+/// A click that slips a pixel or two is still a click: the body is picked, or the selection ends,
+/// and the blocks are back where they were, with no step for Ctrl+Z.
+#[gpui_kit::test]
+fn a_click_that_moves_a_little_is_still_a_click(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    let ids = [kanban, note, terminal];
+    let before = rects(&ws, cx, &ids);
+    let slip = |cx: &mut TestAppContext, from: (f32, f32)| {
+        cx.update_window(handle, |_, window, cx| {
+            press_with(
+                window,
+                cx,
+                MouseButton::Left,
+                Modifiers::default(),
+                from,
+                (from.0 + 2.0, from.1 + 1.0),
+            );
+        })
+        .unwrap();
+    };
+    select(handle, &ws, cx, &ids);
+    let body = at(&ws, cx, (200.0, 560.0));
+    slip(cx, body);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.focused, Some(terminal), "the body is picked");
+        assert!(ws.space.selected.is_empty());
+        assert!(ws.space.undo.is_empty());
+    });
+    assert_eq!(rects(&ws, cx, &ids), before);
+    select(handle, &ws, cx, &[kanban, note]);
+    let gap = at(&ws, cx, (280.0, 150.0));
+    slip(cx, gap);
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.selected.is_empty(), "the box's click ends it");
+        assert!(ws.space.undo.is_empty());
+    });
+    assert_eq!(rects(&ws, cx, &ids), before);
+}
+
+/// Far away, a double-click on a selected block's label frames it, as on a title.
+#[gpui_kit::test]
+fn a_double_click_on_a_selected_far_label_frames_the_block(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = three_blocks(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 0.3);
+        ws.space.flight = None;
+    });
+    frame(handle, cx);
+    select(handle, &ws, cx, &[kanban, note]);
+    let label = cx
+        .update_window(handle, |_, window, _| {
+            window.find(("title", kanban.0 as usize)).bounds()
+        })
+        .unwrap();
+    let at = (
+        f32::from(label.origin.x + label.size.width / 2.0),
+        f32::from(label.bottom() - px(1.0)),
+    );
+    cx.update_window(handle, |_, window, cx| click(window, cx, at, 2))
+        .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            ws.space.canvas.camera.zoom() > 0.3,
+            "the camera flies to it"
+        );
+        assert_eq!(ws.space.focused, Some(kanban));
+    });
+}
+
+/// Only a terminal has links: Ctrl+click on a selected note is any other press, a group move.
+#[gpui_kit::test]
+fn ctrl_click_on_a_selected_note_is_a_plain_press(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = three_blocks(handle, &ws, cx);
+    select(handle, &ws, cx, &[kanban, note]);
+    let body = at(&ws, cx, (410.0, 140.0));
+    cx.update_window(handle, |_, window, cx| {
+        down(window, cx, body, Modifiers::secondary_key());
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.moving(note) && ws.moving(kanban));
+    });
+}
+
+fn drag_move(window: &mut Window, cx: &mut gpui_kit::App, at: (f32, f32)) {
+    window.dispatch_event(
+        PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+            position: point(px(at.0), px(at.1)),
+            pressed_button: Some(MouseButton::Left),
+            modifiers: Modifiers::default(),
+        }),
+        cx,
+    );
+}
+
+/// Carried by the canvas's edge and brought back to where it was pressed, a selection held by a
+/// body is no click: it stays selected, where the canvas carried it.
+#[gpui_kit::test]
+fn a_selection_carried_by_the_edge_and_brought_back_is_no_click(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, note, terminal) = three_blocks(handle, &ws, cx);
+    let vp = cx
+        .update_window(handle, |_, window, cx| ws.read(cx).viewport(window))
+        .unwrap();
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.get_mut(terminal).unwrap().rect =
+            Rect::new(40.0, vp.h - 200.0, 400.0, 300.0);
+    });
+    select(handle, &ws, cx, &[note, terminal]);
+    let before = rects(&ws, cx, &[note, terminal]);
+    let (body, edge) = (
+        at(&ws, cx, (200.0, vp.h - 30.0)),
+        at(&ws, cx, (200.0, vp.h - 2.0)),
+    );
+    cx.update_window(handle, |_, window, cx| {
+        down(window, cx, body, Modifiers::default());
+        drag_move(window, cx, edge);
+    })
+    .unwrap();
+    let t = std::time::Instant::now();
+    ws.update(cx, |ws, _| {
+        assert!(ws.drag_edge(vp, t));
+        assert!(ws.drag_edge(vp, t + std::time::Duration::from_millis(40)));
+    });
+    cx.update_window(handle, |_, window, cx| {
+        drag_move(window, cx, body);
+        up(window, cx, body);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.space.selected,
+            [note, terminal],
+            "no click: still selected"
+        );
+        assert_eq!(ws.space.focused, None);
+        assert!(ws.space.canvas.camera.origin.y > 0.0, "the canvas went on");
+    });
+    assert_ne!(
+        rects(&ws, cx, &[note, terminal]),
+        before,
+        "carried, not put back"
+    );
+}

@@ -11,9 +11,9 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Animation, AnimationExt as _, AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, Hsla,
-    MouseButton, MouseDownEvent, ScrollWheelEvent, SharedString, TestSupportExt, Window, div,
-    point, px,
+    Animation, AnimationExt as _, AnyElement, App, BoxShadow, ClickEvent, Context, ElementId,
+    FontWeight, Hsla, MouseButton, MouseDownEvent, ScrollWheelEvent, SharedString, TestSupportExt,
+    Window, div, point, px,
 };
 use templum_canvas::{Block, BlockId, Edges, Level, Point, Rect, chrome};
 
@@ -25,7 +25,7 @@ use crate::grid::{self, hsla};
 use crate::kanban;
 use crate::motion::{self, Look};
 use crate::note;
-use crate::workspace::{AgentState, Body, FindBar, Pane, Workspace};
+use crate::workspace::{AgentState, Body, Copied, FindBar, Pane, Workspace};
 
 /// World units, like everything in a block.
 const TITLE_FONT: f32 = 12.0;
@@ -40,6 +40,9 @@ const EDGE: f32 = 6.0;
 /// Below Full a title is a label this far in from the card's border, and a terminal's status
 /// dot in it is this wide: screen pixels, never zoomed.
 const LABEL_IN: f32 = 4.0;
+/// How far below a block's top its far-zoom label reaches, screen pixels: its inset, border,
+/// padding and a line of text, with room to spare.
+const LABEL_BAND: f32 = 32.0;
 const DOT: f32 = 8.0;
 /// The Templum Agent's mark before a title, world units.
 const MARK: f32 = 10.0;
@@ -107,16 +110,12 @@ pub(crate) fn render(
         Body::Terminal(_) => templum_canvas::level(ws.cell.font_size, ws.space.rest),
         _ => templum_canvas::level(font, ws.space.rest),
     };
-    // The block worked in: focused, holding the keyboard, or its balloon's field holding it.
-    let typing = live
-        && matches!(body, Body::Terminal(pane)
-            if ws.balloon_typing(window, cx) == Some(pane.term.id()));
-    let level =
-        if level != Level::Full && (focused || typing || (live && body.has_focus(window, cx))) {
-            Level::Full
-        } else {
-            level
-        };
+    // The block worked in: focused, or holding the keyboard.
+    let level = if level != Level::Full && (focused || (live && body.has_focus(window, cx))) {
+        Level::Full
+    } else {
+        level
+    };
     let hovered = live && ws.space.hovered == Some(id);
     let ui = ws.ui;
     // 0 at rest, 1 hovered; eased both ways.
@@ -176,7 +175,14 @@ pub(crate) fn render(
         .glow
         .get(uid)
         .and_then(|at| crate::chat::glow(*at, now));
-    if glow.is_some() {
+    // An automatic copy's "Copied", fading in and out.
+    let copied = ws
+        .space
+        .copied
+        .as_ref()
+        .filter(|c| live && c.block == id)
+        .and_then(|c| Some((c, motion::copied(c.since, now)?)));
+    if glow.is_some() || copied.is_some() {
         window.request_animation_frame();
     }
     let title_text = div()
@@ -343,7 +349,7 @@ pub(crate) fn render(
                     ws.frame_block(id, window, cx);
                 } else if ws.space.selected.contains(&id) {
                     // A selected block's title moves every selected block, still selected.
-                    ws.begin_group_move(e.position);
+                    ws.begin_group_move(e.position, None);
                     cx.stop_propagation();
                     return;
                 } else {
@@ -564,6 +570,12 @@ pub(crate) fn render(
                 .child(fade_in(close, ("close-fade", n)))
         });
 
+    // Drawn at the Full level only.
+    let covered = match body {
+        Body::Terminal(pane) => level == Level::Full && pane.find.is_some(),
+        _ => false,
+    };
+    let terminal = matches!(body, Body::Terminal(_));
     let frame = div()
         .id(("body", n))
         .absolute()
@@ -572,7 +584,41 @@ pub(crate) fn render(
         .w_full()
         .h(px((r.h - chrome::TITLE_H * z).max(0.0)))
         .p(px(chrome::PAD * z))
-        .overflow_hidden();
+        .overflow_hidden()
+        // A selected block's body holds the selection like its title does: a press (before the
+        // content hears it) moves every selected block, and a click picks this block; Shift+click
+        // takes it out. A far label over the body's top is the title: there it is the title's press
+        // (a click keeps the selection), taken here because the body's content, a kanban's or a
+        // checklist's, hears presses ahead of the label. Left to the block's own handlers: the
+        // resize zones over the body and a terminal's find field (drawn over it, and not occluding
+        // it; the notice of a request does occlude it), and a terminal's Ctrl+click (a link opens).
+        .when(
+            live && !tiled && !covered && ws.space.selected.contains(&id),
+            |el| {
+                el.capture_any_mouse_down(cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                    let p = ws.local(e.position);
+                    if e.button != MouseButton::Left
+                        || (terminal && e.modifiers.secondary())
+                        || !chrome::on_body(r, edge, z, p)
+                    {
+                        return;
+                    }
+                    if e.modifiers.shift {
+                        ws.toggle_selected(id, window, cx);
+                    } else {
+                        let label = labeled && p.y < r.y + LABEL_BAND;
+                        if label && e.click_count == 2 {
+                            // As the label does: the camera flies to the block, which is picked.
+                            ws.frame_block(id, window, cx);
+                            ws.focus_block(id, window, cx);
+                        } else {
+                            ws.begin_group_move(e.position, (!label).then_some(id));
+                        }
+                    }
+                    cx.stop_propagation();
+                }))
+            },
+        );
     let content = match body {
         Body::Terminal(pane) => {
             frame
@@ -641,6 +687,9 @@ pub(crate) fn render(
                         .filter(|_| live && level != Level::Card),
                     |el, s| el.child(starting_cover(ws, n, s.title.clone(), z)),
                 )
+                .when_some(copied, |el, (c, opacity)| {
+                    el.child(copied_pill(ws, n, c, opacity, r, z))
+                })
         }
         // A fading kanban block is drawn empty: its board is still live elsewhere.
         Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, window, cx))),
@@ -766,15 +815,85 @@ pub(crate) fn render(
         .when(hovered && !tiled, |el| {
             el.child(fade_in(handle, ("handle-fade", n)))
         })
-        // What its agent asks the person, a dialog centered on the terminal, up close only.
-        .children(match body {
-            Body::Terminal(pane) if live && level == Level::Full => {
-                crate::balloon::render(ws, id, pane.term.id(), z, cx)
+        // That its agent waits for an answer, up close only; the inbox has the request. And that
+        // answers wait for the person's message to be sent.
+        .children(
+            match body {
+                Body::Terminal(pane) if live && level == Level::Full => [
+                    crate::inbox::notice(ws, id, pane.term.id(), z, cx),
+                    answers_chip(ws, id, pane.term.id(), z),
+                ],
+                _ => [None, None],
             }
-            _ => None,
-        })
+            .into_iter()
+            .flatten(),
+        )
         .test_support()
         .into_any_element()
+}
+
+/// What the chip of a terminal whose agent has answers waiting for its person's message reads.
+pub(crate) fn answers_text(count: usize) -> String {
+    match count {
+        1 => "1 answer waiting".to_string(),
+        count => format!("{count} answers waiting"),
+    }
+}
+
+/// The chip over the terminal block `id`, whose terminal is `terminal`, at zoom `z`: answers from
+/// other agents wait for its person's unsent message (`Pane::has_draft`). A click does nothing but
+/// show why. It sits over the inbox's notice when that shows. None when no answer waits.
+fn answers_chip(ws: &Workspace, id: BlockId, terminal: &str, z: f32) -> Option<AnyElement> {
+    let count = ws.answers_waiting(terminal);
+    if count == 0 {
+        return None;
+    }
+    let lift = if ws.asking(terminal).is_some() {
+        34.0
+    } else {
+        0.0
+    };
+    // The yellow of the dot of a block waiting for its person.
+    let waiting = hsla(ws.theme.palette.ansi[3], 1.0);
+    Some(
+        div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom(px((12.0 + lift) * z))
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .id(ElementId::Name(format!("answers-waiting-{}", id.0).into()))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0 * z))
+                    .px(px(10.0 * z))
+                    .py(px(5.0 * z))
+                    .rounded(px(8.0 * z))
+                    .bg(ws.ui.surface)
+                    .border_1()
+                    .border_color(waiting)
+                    .text_size(px(12.0 * z))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(hsla(ws.theme.palette.foreground, 1.0))
+                    // A press on it reaches neither its block nor the terminal under it.
+                    .occlude()
+                    .child(
+                        Icon::new(IconName::Clock)
+                            .size(px(14.0 * z))
+                            .text_color(waiting),
+                    )
+                    .child(answers_text(count))
+                    .tooltip(|window, cx| {
+                        Tooltip::new("They go in once your message is sent or cleared")
+                            .build(window, cx)
+                    })
+                    .test_support(),
+            )
+            .into_any_element(),
+    )
 }
 
 /// Over an agent's terminal while it starts (`starting.rs`): its name and a spinner, not its
@@ -804,6 +923,65 @@ fn starting_cover(ws: &Workspace, n: usize, title: SharedString, z: f32) -> impl
                 .child("Starting…"),
         )
         .test_support()
+}
+
+/// What an automatic copy shows where it was let go, inside the terminal's body: "Copied", or
+/// how many lines. It has no listener: clicks go through it to the grid.
+fn copied_pill(ws: &Workspace, n: usize, c: &Copied, opacity: f32, r: Rect, z: f32) -> AnyElement {
+    const H: f32 = 22.0;
+    const GAP: f32 = 8.0;
+    let ui = ws.ui;
+    // The body on screen, the pointer in it, kept there: a drag may end outside the block.
+    let (w, h) = (r.w - 2.0 * BORDER, r.h - chrome::TITLE_H * z);
+    let (x, y) = ((c.at.x * z).clamp(0.0, w), (c.at.y * z).clamp(0.0, h));
+    let (pad, gap) = (chrome::PAD * z, GAP * z);
+    let label = if c.lines > 1 {
+        format!("Copied {} lines", c.lines)
+    } else {
+        "Copied".to_string()
+    };
+    let pill = div()
+        .id(("copied", n))
+        .absolute()
+        .h(px(H * z))
+        .flex()
+        .items_center()
+        .gap(px(4.0 * z))
+        .px(px(8.0 * z))
+        .rounded(px(6.0 * z))
+        .bg(ui.surface.blend(ui.card))
+        .border_1()
+        .border_color(ui.hairline)
+        .shadow(vec![BoxShadow {
+            color: ui.shadow,
+            offset: point(px(0.0), px(2.0 * z)),
+            blur_radius: px(8.0 * z),
+            spread_radius: px(0.0),
+            inset: false,
+        }])
+        .opacity(opacity)
+        .whitespace_nowrap()
+        .text_size(px(TITLE_FONT * z))
+        .text_color(ui.title)
+        .child(
+            Icon::new(IconName::Check)
+                .size(px(12.0 * z))
+                .text_color(ui.accent),
+        )
+        .child(label);
+    // It grows away from the nearer side, so it stays in the body; above the pointer, or below
+    // it near the top.
+    let pill = if x <= w / 2.0 {
+        pill.left(px(x.max(pad)))
+    } else {
+        pill.right(px((w - x).max(pad)))
+    };
+    let pill = if y >= pad + H * z + gap {
+        pill.bottom(px(h - y + gap))
+    } else {
+        pill.top(px((y + gap).min(h - pad - H * z)))
+    };
+    pill.test_support().into_any_element()
 }
 
 /// A button on the left of a block's header (over the title: no move), `tip` its tooltip.
@@ -887,7 +1065,7 @@ fn find_bar(ws: &Workspace, n: usize, bar: &FindBar, z: f32) -> AnyElement {
 /// An invisible strip along a block's edge (`edge` thick), or a square at its corner, that resizes
 /// it by those `edges`, like a window's border.
 fn resize_zone(id: BlockId, edges: Edges, edge: f32, cx: &mut Context<Workspace>) -> AnyElement {
-    let corner = 2.0 * edge;
+    let corner = chrome::corner(edge);
     let name = match (edges.top, edges.bottom, edges.left, edges.right) {
         (true, _, true, _) => "top-left",
         (true, _, _, true) => "top-right",
@@ -993,13 +1171,13 @@ fn shadow(color: Hsla, focused: bool, lift: f32, z: f32) -> BoxShadow {
 
 /// The dot before a terminal's title, and what it says. News first: yellow when it asked for
 /// attention, red or green when a long command ended. Then a question its agent asks the person
-/// (yellow; the balloon shows it up close). Then an agent's turn (its hooks) before the shell's:
+/// (yellow; the notice on the block says so up close). Then an agent's turn (its hooks) before the shell's:
 /// yellow while it waits for the person, the accent while it works. Then a command running, then
 /// a last command that failed. Nothing when the shell doesn't say (no shell integration). Its
 /// text names the block that pressed keys in it, for ANSWERED_FOR.
 pub(crate) fn status_dot(ws: &Workspace, pane: &Pane) -> Option<(Hsla, SharedString)> {
     let ansi = |i: usize| hsla(ws.theme.palette.ansi[i], 1.0);
-    let (color, text) = match (&pane.alert, ws.balloon(pane.term.id())) {
+    let (color, text) = match (&pane.alert, ws.asking(pane.term.id())) {
         // A request waits: its own alert ("Asks you: …") or a bell's says less than this.
         (None | Some(Alert::Attention(_)), Some((wait, _))) => {
             (ansi(3), format!("Waiting for you: {}", wait.summary()))
@@ -1007,6 +1185,29 @@ pub(crate) fn status_dot(ws: &Workspace, pane: &Pane) -> Option<(Hsla, SharedStr
         (Some(a @ Alert::Attention(_)), None) => (ansi(3), a.text()),
         (Some(a), _) if a.failed() => (ansi(1), a.text()),
         (Some(a), _) => (ansi(2), a.text()),
+        // A subagent's block (docs/specs/claude-subagents.md): its dialog in its parent's
+        // screen, its work, its end.
+        (None, None) if pane.follows.is_some() => {
+            let follows = pane.follows.as_ref().expect("a subagent's block");
+            let asks = ws
+                .pane(&follows.parent)
+                .filter(|p| p.asks(Some(&follows.id)))
+                .and_then(|p| match &p.state {
+                    Some(AgentState::NeedsYou(asks)) => Some(asks.clone()),
+                    _ => None,
+                });
+            match (asks, follows.done) {
+                (Some(asks), _) => (
+                    ansi(3),
+                    format!(
+                        "Waiting for you: {} Answer in its Claude Code.",
+                        asks.as_deref().unwrap_or("it asks you something.")
+                    ),
+                ),
+                (None, Some(_)) => (ws.ui.title_dim, "Done".to_string()),
+                (None, None) => (ws.ui.accent, "Working".to_string()),
+            }
+        }
         (None, None) => {
             // An agent the last snapshot no longer sees (it crashed) says nothing of its turn.
             match pane.state.as_ref().filter(|_| pane.seen.agent.is_some()) {
@@ -1017,7 +1218,7 @@ pub(crate) fn status_dot(ws: &Workspace, pane: &Pane) -> Option<(Hsla, SharedStr
                         |a| format!("Waiting for you: {a}"),
                     ),
                 ),
-                Some(AgentState::Working) => (ws.ui.accent, "Working".to_string()),
+                Some(AgentState::Working) => (ws.ui.accent, pane.working()),
                 Some(AgentState::Idle) => return None,
                 None => {
                     let status = pane.term.status();

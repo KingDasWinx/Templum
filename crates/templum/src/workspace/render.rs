@@ -494,8 +494,10 @@ impl Render for Workspace {
                             if e.pressed_button.is_some() {
                                 ws.drag_to(e.position, e.modifiers.shift, cx);
                             } else {
-                                // A release this window never heard still keeps the popup's size.
+                                // A release this window never heard still keeps the popup's size,
+                                // and copies a selection.
                                 if !ws.release_git_resize(window, cx) {
+                                    ws.copy_on_select(e.position, cx);
                                     ws.end_drag();
                                 }
                                 ws.hover_program(e.position, &e.modifiers);
@@ -514,7 +516,7 @@ impl Render for Workspace {
                                 return;
                             }
                             match e.button {
-                                MouseButton::Left => ws.release(e.position, cx),
+                                MouseButton::Left => ws.release(e.position, window, cx),
                                 MouseButton::Middle => ws.end_drag(),
                                 _ => {}
                             }
@@ -536,6 +538,12 @@ impl Render for Workspace {
             }
             _ => None,
         };
+        // The box around two or more selected blocks: a hairline, no events (a press in it is the
+        // workspace's, `on_background_down`).
+        let selection = self
+            .selection_box()
+            .filter(|_| !tiled)
+            .map(|b| self.space.view.rect_to_screen(b));
         let swapping = self.swap_overlay(cx);
         let area = div()
             .id("workspace")
@@ -582,6 +590,16 @@ impl Render for Workspace {
                     .border_1()
                     .border_color(self.ui.accent)
                     .bg(self.ui.accent.opacity(0.08))
+            }))
+            .children(selection.map(|r| {
+                div()
+                    .absolute()
+                    .left(px(r.x))
+                    .top(px(r.y))
+                    .w(px(r.w))
+                    .h(px(r.h))
+                    .border_1()
+                    .border_color(self.ui.accent)
             }))
             .children(swapping)
             .when(self.tool.draws() && !tiled, |el| {
@@ -711,11 +729,28 @@ impl Render for Workspace {
                 )
                 .child(popup)
         });
+        // The requests inbox: where the Git popup sits (they are never open together), with no
+        // backdrop: a press on the canvas reaches it, and the inbox stays open beside it.
+        self.inbox_keeps_keys(window, cx);
+        let inbox = self.inbox_open.then(|| {
+            let Size { w, h } = self.git_popup_size();
+            let left = if self.sidebar { sidebar::WIDTH } else { 0.0 } + GIT_GAP;
+            div()
+                .absolute()
+                .left(px(left))
+                .bottom(px(GIT_GAP))
+                .child(crate::inbox::popup(self, w, h, window, cx))
+        });
         // Window chrome over the canvas's bottom center, above the toolbar: the zoom never scales it.
         let open = self.templum_agent.open;
+        let full = open && self.templum_agent.full;
         let waiting = self.templum_agent.approvals.len();
         let approval = self.templum_agent.approvals.first().map(|a| {
-            let width = 640.0_f32.min(vp.w - 32.0);
+            let width = if open {
+                crate::chat::panel::approval_width(vp.w, full)
+            } else {
+                640.0_f32.min(vp.w - 32.0)
+            };
             crate::chat::approval::render(self, a, (1, waiting), width, window, cx)
         });
         let pill = (!tiled || open)
@@ -739,11 +774,13 @@ impl Render for Workspace {
         }
         .map(|pill| {
             let left = if self.sidebar { sidebar::WIDTH } else { 0.0 };
+            // Full screen fills the canvas to its inset; else the card sits above the toolbar.
+            let bottom = if full { 16.0 } else { toolbar::above(self) };
             div()
                 .absolute()
                 .left(px(left))
                 .right_0()
-                .bottom(px(toolbar::above(self)))
+                .bottom(px(bottom))
                 .flex()
                 .justify_center()
                 .child(pill)
@@ -780,12 +817,15 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h(px(0.0))
                     .flex()
-                    .when(self.sidebar, |el| el.child(sidebar::render(self, cx)))
+                    .when(self.sidebar, |el| {
+                        el.child(sidebar::render(self, window, cx))
+                    })
                     .child(area),
             )
             // The Git popup over the Templum agent.
             .children(agent)
             .children(git)
+            .children(inbox)
             // Under what the title bar opens: the settings, the theme picker, the screen.
             .children(welcome)
             .children(panel)

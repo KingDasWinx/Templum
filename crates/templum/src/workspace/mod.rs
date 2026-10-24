@@ -26,6 +26,7 @@ mod git_ops;
 mod git_switch;
 mod git_sync;
 mod history;
+pub(crate) mod inbox;
 mod input;
 mod note_tabs;
 mod ops;
@@ -38,6 +39,7 @@ mod selection;
 mod spaces;
 mod spawn;
 pub(crate) mod starting;
+pub(crate) mod subagents;
 mod tiling;
 mod update;
 mod usage;
@@ -49,7 +51,7 @@ mod worktrees;
 pub(crate) use bus::templum_in;
 pub(crate) use find::FindBar;
 pub(crate) use git_message::TryIt;
-pub(crate) use waits::{Wait, Waiting};
+pub(crate) use waits::{Approved, Wait, Waiting};
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
@@ -153,6 +155,9 @@ pub(crate) struct Handed {
     pub since: Instant,
     /// After this it is no longer awaited: its dot stops, and another task may be handed over.
     pub until: Instant,
+    /// The task as its sender wrote it, cut to `Handed::TEXT_MAX` characters (the inbox shows its
+    /// first lines as why the agent asks); empty for one made with `new`.
+    pub text: String,
     /// Its agent took it (`Submitted`, the first after it was typed): only now may a turn's end
     /// answer it.
     pub taken: bool,
@@ -164,9 +169,21 @@ pub(crate) struct Handed {
     pub quiet: bool,
     /// Its agent's usage when it was handed over: what its end says it spent counts from it.
     pub usage: Option<templum_usage::Session>,
+    /// The Claude Code subagents its agent had when it took it: their reports come in turns of
+    /// their own, so a turn's end with only them left is its answer
+    /// (docs/specs/claude-subagents.md).
+    pub subagents: Vec<String>,
 }
 
 impl Handed {
+    /// The most characters of a task's text kept.
+    const TEXT_MAX: usize = 2000;
+
+    /// `task` as `text` keeps it.
+    pub(crate) fn text_of(task: &str) -> String {
+        task.chars().take(Self::TEXT_MAX).collect()
+    }
+
     /// Handed over by the terminal `by` now, awaited for `timeout`; not taken yet.
     pub(crate) fn new(by: &str, timeout: Duration) -> Self {
         let since = Instant::now();
@@ -175,12 +192,22 @@ impl Handed {
             by: by.to_string(),
             since,
             until: since + timeout,
+            text: String::new(),
             taken: false,
             behind: false,
             quiet: false,
             usage: None,
+            subagents: Vec::new(),
         }
     }
+}
+
+/// One of Claude Code's subagents, which Templum heard start (docs/specs/claude-subagents.md).
+pub(crate) struct Subagent {
+    pub id: String,
+    /// It finished in the background: its report comes to its agent in a turn of its own,
+    /// not yet begun.
+    pub reported: bool,
 }
 
 /// A prompt `spawn_agent` types into its agent once the agent is ready
@@ -193,6 +220,21 @@ pub(crate) struct Prompt {
     /// Its agent is Claude Code or Codex, whose prompt also waits for its input box
     /// (`Modes::typing`): their trust questions come first.
     pub gated: bool,
+    /// A task `delegate` handed the agent while it started, not its spawn's prompt.
+    pub delegated: bool,
+}
+
+impl Prompt {
+    /// `text`, for an agent built on `builtin`.
+    pub(crate) fn new(text: String, builtin: Option<templum_terminal::Agent>) -> Self {
+        use templum_terminal::Agent;
+        Self {
+            text,
+            screen: None,
+            gated: matches!(builtin, Some(Agent::CLAUDE | Agent::CODEX)),
+            delegated: false,
+        }
+    }
 }
 
 pub(crate) struct Pane {
@@ -225,6 +267,9 @@ pub(crate) struct Pane {
     /// When the person last typed into it (a key, a paste, text): a second Enter for a task
     /// would send their half-written line.
     pub keyed: Cell<Option<Instant>>,
+    /// Text the person typed or pasted into its agent's input and hasn't sent: no notice is
+    /// typed over it, however long ago the last key was (`Pane::person_keyed`).
+    pub draft: Cell<bool>,
     /// The person scrolled it, or its program heard their mouse, since the last look, which then
     /// tells nothing.
     pub scrolled: Cell<bool>,
@@ -257,6 +302,9 @@ pub(crate) struct Pane {
     pub transcript: Option<String>,
     /// Its agent starting, under a cover, until its screen shows (`starting.rs`).
     pub starting: Option<starting::Starting>,
+    /// When Templum last typed its agent's command (a spawn, a restore, the launcher): one no
+    /// snapshot found within STARTS_WITHIN of it never started.
+    pub typed_agent: Option<Instant>,
     /// It came back with its saved canvas: a shell that ends as it starts couldn't start
     /// (`Pane::died_starting`).
     pub restored: bool,
@@ -275,9 +323,88 @@ pub(crate) struct Pane {
     /// The shell chosen for it in a menu (docs/specs/shells.md, The block keeps its shell); none:
     /// it runs the default, and follows it.
     pub shell: Option<templum_terminal::ShellOption>,
+    /// Its agent's subagents at work, or done with a report its agent hasn't taken yet
+    /// (docs/specs/claude-subagents.md): while there are any, a turn's end isn't its answer.
+    pub subagents: Vec<Subagent>,
+    /// Its agent's last turn ended while it had subagents, and none started since: a prompt
+    /// typed now starts a turn, it isn't queued behind one.
+    pub awaits_subagents: bool,
+    /// The subagent whose dialog its agent waits on its person for (`NeedsYou`), by id; None:
+    /// its own. Another's tool ending doesn't close that dialog.
+    pub asked_by: Option<String>,
+    /// Its agent's turn ended with only reported subagents left: unless a turn starts first, they
+    /// are forgotten then, and that turn's end answers (docs/specs/claude-subagents.md).
+    pub settles: Option<Instant>,
+    /// The Claude Code subagent it shows (`templum follow`): read-only, never saved.
+    pub follows: Option<subagents::Follows>,
 }
 
 impl Pane {
+    /// Its agent waits on its person for a dialog of `by`: one of its subagents, by id, or
+    /// itself (None).
+    pub fn asks(&self, by: Option<&str>) -> bool {
+        matches!(self.state, Some(AgentState::NeedsYou(_))) && self.asked_by.as_deref() == by
+    }
+
+    /// How many of its agent's subagents work.
+    pub fn subagents_at_work(&self) -> usize {
+        self.subagents.iter().filter(|s| !s.reported).count()
+    }
+
+    /// What its dot says while its agent works: how many of its subagents do too.
+    pub fn working(&self) -> String {
+        match self.subagents_at_work() {
+            0 => "Working".to_string(),
+            1 => "Working: 1 subagent".to_string(),
+            n => format!("Working: {n} subagents"),
+        }
+    }
+
+    /// Its agent's subagents but those `keep` keeps: a dialog one of those gone asked is over.
+    pub fn keep_subagents(&mut self, keep: impl Fn(&Subagent) -> bool) {
+        self.subagents.retain(|s| keep(s));
+        if let Some(by) = self.asked_by.clone()
+            && !self.subagents.iter().any(|s| s.id == by)
+        {
+            self.dialog_over(&by);
+        }
+    }
+
+    /// The dialog its agent's subagent `id` asked its person is over, if it asked one.
+    pub fn dialog_over(&mut self, id: &str) {
+        if self.asked_by.as_deref() == Some(id) {
+            if self.asks(Some(id)) {
+                self.state = Some(AgentState::Working);
+            }
+            self.asked_by = None;
+        }
+    }
+
+    /// Its agent's subagent `id` is at work, as one heard to start or one a turn's end names.
+    pub fn add_subagent(&mut self, id: String) {
+        match self.subagents.iter_mut().find(|s| s.id == id) {
+            // Resumed: at work again.
+            Some(subagent) => subagent.reported = false,
+            None => self.subagents.push(Subagent {
+                id,
+                reported: false,
+            }),
+        }
+    }
+
+    /// Its agent's turn ended while its subagents work or a report of one is still to come: it
+    /// works on, and the turn's end answers nothing (docs/specs/claude-subagents.md). A task
+    /// queued behind that turn starts now: the next turn's end is its own.
+    pub fn await_subagents(&mut self) {
+        if !matches!(self.state, Some(AgentState::NeedsYou(_))) {
+            self.state = Some(AgentState::Working);
+        }
+        match self.handed.as_mut().filter(|h| h.behind) {
+            Some(handed) => handed.behind = false,
+            None => self.awaits_subagents = true,
+        }
+    }
+
     /// The agent it runs, by id: the one Templum sees running in it, else the one Templum
     /// started there (before the first snapshot read it).
     pub fn agent(&self) -> Option<&str> {
@@ -518,11 +645,15 @@ enum Drag {
     /// A block, or every selected block, held by its title (`gesture` is a `Move` or `MoveGroup`):
     /// pressed at `from`, the pointer now at `pointer` (canvas points). Near the canvas's edge,
     /// once it is past a click, the camera moves, since when the last frame moved it (`scrolled`).
+    /// A selection held by a selected block's body (`picks`) takes the keyboard to that block when
+    /// let go in place, unless the wheel or the canvas's edge `carried` it meanwhile.
     Held {
         gesture: Gesture,
         from: Point,
         pointer: Point,
         scrolled: Option<Instant>,
+        picks: Option<BlockId>,
+        carried: bool,
     },
     /// Selecting text in a block's terminal.
     Select(BlockId),
@@ -582,12 +713,14 @@ enum Drag {
 
 impl Drag {
     /// A title pressed at the canvas point `at`.
-    fn held(gesture: Gesture, at: Point) -> Self {
+    fn held(gesture: Gesture, at: Point, picks: Option<BlockId>) -> Self {
         Drag::Held {
             gesture,
             from: at,
             pointer: at,
             scrolled: None,
+            picks,
+            carried: false,
         }
     }
 }
@@ -605,6 +738,16 @@ pub(crate) struct Grid {
     pub area: Rect,
     /// Tiles sliding to the places they traded: where each was, since when.
     pub slides: HashMap<BlockId, (Rect, Instant)>,
+}
+
+/// What a selection copied as the button was let go shows (`block.rs`): in which terminal,
+/// where it was let go (world units from the top-left of its body), how many lines with text went,
+/// and since when (the executor's clock).
+pub(crate) struct Copied {
+    pub block: BlockId,
+    pub at: Point,
+    pub lines: usize,
+    pub since: Instant,
 }
 
 /// One canvas and everything on it: its blocks, their terminals, the focus, and what is
@@ -654,6 +797,8 @@ pub(crate) struct Space {
     pub appearing: HashMap<BlockId, Instant>,
     /// Closed blocks still fading out.
     pub ghosts: Vec<Ghost>,
+    /// The "Copied" an automatic copy shows, until motion::COPIED is over.
+    pub copied: Option<Copied>,
     /// The block a double-click on its title framed, and the camera before: double-clicking it
     /// again goes back there.
     pub framed: Option<(BlockId, Camera)>,
@@ -782,7 +927,9 @@ impl Space {
         accounts: Arc<Vec<agents::Home>>,
         cx: &App,
     ) -> session::Layout {
-        let blocks = self.canvas.blocks();
+        let blocks: Vec<&Block> = (self.canvas.blocks().iter())
+            .filter(|b| self.kept(b.id))
+            .collect();
         // The canvas as it is, also in grid mode.
         session::Layout {
             camera: self.camera(),
@@ -812,11 +959,14 @@ impl Space {
             accounts,
             ink: self.ink.iter().map(session::InkItem::of).collect(),
             grid: self.grid.as_ref().and_then(|g| {
-                session::SavedTile::of(&g.tiles, &|id| blocks.iter().position(|b| b.id == id))
+                let mut unkept = g.tiles.ids().into_iter().filter(|id| !self.kept(*id));
+                let tiles = unkept.try_fold(g.tiles.clone(), |tiles, id| tiles.without(id))?;
+                session::SavedTile::of(&tiles, &|id| blocks.iter().position(|b| b.id == id))
             }),
             wires: self
                 .wires
                 .iter()
+                .filter(|w| self.kept(w.a) && self.kept(w.b))
                 .filter_map(|w| {
                     Some(session::SavedWire {
                         a: self.uids.get(&w.a)?.clone(),
@@ -885,9 +1035,15 @@ impl Space {
         self.canvas
             .blocks()
             .iter()
-            .filter(|b| self.terminal(b.id).is_some())
+            .filter(|b| self.terminal(b.id).is_some() && self.kept(b.id))
             .map(|b| b.id)
             .collect()
+    }
+
+    /// Block `id` is saved with the canvas: any but a Claude Code subagent's, which belongs to a
+    /// live session (docs/specs/claude-subagents.md).
+    pub(super) fn kept(&self, id: BlockId) -> bool {
+        self.terminal(id).is_none_or(|p| p.follows.is_none())
     }
 
     /// Tells each terminal what a snapshot found in it. The terminals whose agent, found running
@@ -1087,6 +1243,14 @@ pub struct Workspace {
     checklists_saved: Option<Checklists>,
     /// `checklists.json` couldn't be read: it isn't written this session.
     checklists_frozen: bool,
+    /// What the person tells their agents, given as a session starts (`instructions.rs`).
+    pub(crate) standing: crate::instructions::Instructions,
+    /// The instructions as last read or written, to write only what changed.
+    standing_saved: Option<crate::instructions::Instructions>,
+    /// `instructions.json` couldn't be read: it isn't written this session.
+    standing_frozen: bool,
+    /// The open card dialog's work, kept as a draft when the window closes (see `kanban::Work`).
+    pub(crate) card_work: Option<crate::kanban::Open>,
     /// `boards` before each change, newest last, at most BOARD_UNDO (see `edit_boards`).
     boards_undo: Vec<Boards>,
     /// The boards as last read or written, to write only what changed.
@@ -1156,12 +1320,34 @@ pub struct Workspace {
     pub(crate) usage_open: bool,
     /// The Git popup (the sidebar's bottom button) is open, on the workspace shown's Git.
     pub(crate) git_open: bool,
+    /// The requests inbox (docs/specs/ask-inbox.md) is open, on the requests of the workspace
+    /// shown. Never together with the Git popup.
+    pub(crate) inbox_open: bool,
+    /// The key of the request the inbox has selected; none, or one it doesn't list: the first.
+    pub(crate) inbox_at: Option<u64>,
+    /// What holds the keyboard while the inbox has it.
+    pub(crate) inbox_focus: FocusHandle,
+    /// A request ended while the inbox was open: the next frame gives the inbox the keyboard back
+    /// if one of its fields (which ended with it) had it.
+    inbox_refocus: bool,
+    /// When the last request arrived in the workspace shown: the sidebar's button pulses for
+    /// `inbox::PULSE` after it (never with reduced motion).
+    pub(crate) inbox_pulse: Option<Instant>,
+    /// The list's scroll, kept to show the selected row.
+    pub(crate) inbox_list: gpui_kit::ScrollHandle,
+    /// The selection changed: the list scrolls to its row once it is drawn and laid out.
+    pub(crate) inbox_reveal: std::cell::Cell<bool>,
     /// The plan's limits as Claude Code's `/usage` last told them, by account (the agent's id
     /// for its own folder).
     pub(crate) claude_polled: HashMap<String, templum_usage::Limits>,
-    /// The accounts a snapshot found running since Templum started: `/usage` asks theirs too.
-    pub(crate) accounts_ran: std::collections::HashSet<String>,
-    /// Asks Claude Code for them every few minutes.
+    /// When `/usage` was last asked for each account (seconds since the epoch): it is never asked
+    /// again within `usage::CLAUDE_MIN`.
+    pub(crate) claude_asked: HashMap<String, u64>,
+    /// The `/usage` asks waiting their turn, the next first, and the account whose runs: Claude Code
+    /// runs one at a time, so its probes don't hold the background pool's threads.
+    pub(crate) claude_queue: std::collections::VecDeque<usage::Job>,
+    pub(crate) claude_probing: Option<String>,
+    /// Looks every few seconds for the accounts whose limits are due.
     _claude_poll: Task<()>,
     /// The title bar's meter shows the agents in turn: this one (an index among those shown),
     /// since `meter_turned` (seconds since the epoch); not while the pointer is over it.
@@ -1196,6 +1382,10 @@ pub struct Workspace {
     pub(crate) agents: Vec<AgentEntry>,
     /// Each account's command: the file that runs it, or why it has none.
     pub(crate) commands: BTreeMap<String, Result<PathBuf, String>>,
+    /// Whether each agent's program was found, by program, for Settings ▸ Agents: read when the
+    /// panel opens and when the agents change, not each frame (finding a program looks in many
+    /// folders).
+    pub(crate) found: BTreeMap<String, bool>,
     /// The agent Generate ✨ runs, and whether it is ready; read when the config changes, not
     /// each frame (finding a program looks in many folders).
     // ponytail: an agent installed while Templum runs shows its ✨ after the next config change
@@ -1310,6 +1500,9 @@ pub struct Workspace {
     /// What tasks' agents did, waiting to be typed into the agents that handed them over, oldest
     /// first (`delegate.rs`).
     pub(crate) notices: Vec<delegate::Notice>,
+    /// How many ends of tasks each agent handed (by terminal) are on their way to `notices`, the
+    /// short delay before what they spent is read (`tell_end`): tasks still running to it.
+    ending: HashMap<String, usize>,
     /// Texts agents asked to have delivered later, and the last one's id (`schedules.rs`).
     pub(crate) schedules: Vec<schedules::Schedule>,
     pub(crate) next_schedule: u64,
@@ -1456,34 +1649,12 @@ impl Workspace {
         let claude_poll = if cfg!(test) {
             Task::ready(())
         } else {
-            cx.spawn_in(window, async move |ws, cx| {
+            cx.spawn(async move |ws, cx| {
                 loop {
-                    let Ok(jobs) = ws.update(cx, |ws, _| ws.claude_poll_jobs()) else {
+                    if ws.update(cx, |ws, cx| ws.ask_claude_due(cx)).is_err() {
                         break;
-                    };
-                    for (id, program, dir, config_dir) in jobs {
-                        let found = cx
-                            .background_executor()
-                            .spawn(async move {
-                                let now = crate::notes::now();
-                                templum_usage::claude::poll(
-                                    &program,
-                                    &dir,
-                                    config_dir.as_deref(),
-                                    now,
-                                )
-                            })
-                            .await;
-                        // A failed ask keeps what the last one found.
-                        if let Some(found) = found
-                            && ws
-                                .update(cx, |ws, _| ws.claude_polled.insert(id, found))
-                                .is_err()
-                        {
-                            return;
-                        }
                     }
-                    cx.background_executor().timer(usage::CLAUDE_EVERY).await;
+                    cx.background_executor().timer(usage::CLAUDE_LOOK).await;
                 }
             })
         };
@@ -1550,6 +1721,7 @@ impl Workspace {
             others: Vec::new(),
             active: 0,
             boards: Boards::default(),
+            card_work: None,
             boards_undo: Vec::new(),
             boards_saved: None,
             boards_frozen: false,
@@ -1559,6 +1731,9 @@ impl Workspace {
             checklists_undo: Vec::new(),
             checklists_saved: None,
             checklists_frozen: false,
+            standing: Default::default(),
+            standing_saved: None,
+            standing_frozen: false,
             notes_frozen: false,
             index_frozen: false,
             sidebar: true,
@@ -1595,8 +1770,17 @@ impl Workspace {
             watch: templum_usage::Watch::new(crate::notes::now()),
             usage_open: false,
             git_open: false,
+            inbox_open: false,
+            inbox_at: None,
+            inbox_focus: cx.focus_handle(),
+            inbox_refocus: false,
+            inbox_pulse: None,
+            inbox_list: Default::default(),
+            inbox_reveal: Default::default(),
             claude_polled: HashMap::new(),
-            accounts_ran: Default::default(),
+            claude_asked: HashMap::new(),
+            claude_queue: Default::default(),
+            claude_probing: None,
             _claude_poll: claude_poll,
             meter_turn: 0,
             meter_turned: 0,
@@ -1664,6 +1848,7 @@ impl Workspace {
             keymap,
             agents: effective_agents,
             commands: BTreeMap::new(),
+            found: BTreeMap::new(),
             commit_agent,
             bus,
             bus_env,
@@ -1675,6 +1860,7 @@ impl Workspace {
             tool_conns: HashMap::new(),
             templum_agent: Default::default(),
             notices: Vec::new(),
+            ending: HashMap::new(),
             schedules: Vec::new(),
             next_schedule: 0,
             scheduling: false,

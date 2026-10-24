@@ -19,7 +19,7 @@ knowing. **Welcome** in the settings panel's footer shows it again.
 | Scroll over a terminal | Scroll its history |
 | Click, drag or scroll in a program that uses the mouse (htop, vim, Claude Code full screen) | The program gets it; hold Shift to select text instead |
 | Ctrl+scroll, or pinch | Zoom |
-| Drag in a terminal (double-click: word, triple-click: line) | Select text |
+| Drag in a terminal (double-click: word, triple-click: line) | Select text, copied to the clipboard as you let go (Settings ▸ Terminal turns that off) |
 | Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal, Kanban board, Note, Checklist or Editor, where you clicked |
 | Right-click a block, card, column, board or workspace tile | Its menu (copy, paste, move to another workspace, edit, stop, delete, close…) |
 | With a drawing tool on, drag the canvas | Draw; Shift keeps lines at 45° and makes squares and circles |
@@ -112,7 +112,7 @@ dark = "Catppuccin Mocha"
 
 Press **Ctrl+,** (**Cmd+,** on macOS), or the ⚙ in the title bar, to open the settings panel on the right. It has
 Appearance (light/dark mode and themes), Font (with a preview), Terminal (cursor and
-scrollback, system notifications), Shell (for new terminals: pick one of the shells found on your computer, shell
+scrollback, system notifications, copying a selection as you make it), Shell (for new terminals: pick one of the shells found on your computer, shell
 integration), Tools (the `git` program), Agents, Usage (notifications about agents' plan limits) and Shortcuts. The terminals stay usable next to it, so you see each change
 as you make it.
 
@@ -266,7 +266,8 @@ The Claude Code and Codex you open from **AI agent ▸** get Templum's MCP serve
 settings files stay as they are. Wire blocks together with the Wire tool (the cable in the toolbar) or a block's
 **Connect to ▸**: an agent reads and types into the terminals wired to it. They can ask which block they are, list
 the workspace's blocks, read and type into their own terminal, and send you a notification. An agent can ask you a
-question, or to be wired to another block, in a balloon on its block; hand a task to an agent wired to it and get its
+question, or to be wired to another block, in the requests inbox (the button above Git in the sidebar); hand a
+task to an agent wired to it and get its
 answer back (a dot travels along the wire meanwhile); and open another agent beside itself, in a new Git worktree if
 it likes. An agent wired to a kanban reads its cards and creates, moves, comments on and claims them; it reads a
 wired note and adds to it, and opens a file at a line in an editor. The dot before a
@@ -323,6 +324,7 @@ blink = false
 [terminal]
 scrollback = 10000
 notifications = true   # system notifications while Templum is in the background
+copy_on_select = true   # text selected with the mouse goes to the clipboard as you let go
 
 [canvas]
 focus_follows_pointer = true   # the block under the pointer takes the keyboard, no click needed
@@ -358,6 +360,8 @@ Nushell, Command Prompt). The full list is in [specs/config.md](specs/config.md)
 Templum looks for a new release at start and once a day, downloads the file made for your system and for the way
 you installed it (an AppImage replaces the AppImage, the installer runs again, and so on), checks it against the
 SHA-256 GitHub lists, and asks before restarting into it: **Restart to update** in the title bar. Templum installed
-with a `.deb` or the pacman package gets the install command typed in a terminal, for your password. Run from the
-disk image on macOS, it is only told a version is out; a build from source checks only on demand. **Settings ▸
-Updates** checks on demand and turns the automatic check off ([specs/updates.md](specs/updates.md)).
+with a `.deb` or the release's `PKGBUILD` gets the install command typed in a terminal, for your password. Installed
+from the AUR ([`templum-bin`](https://aur.archlinux.org/packages/templum-bin)), it is only told a version is out:
+your AUR helper (`yay`, `paru`) updates it. Run from the disk image on macOS, it is only told too; a build from source
+checks only on demand. **Settings ▸ Updates** checks on demand and turns the automatic check off
+([specs/updates.md](specs/updates.md)).

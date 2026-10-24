@@ -6,6 +6,42 @@ use serde_json::Value;
 /// The method of the notification `templum hook` sends.
 pub const METHOD: &str = "templum/event";
 
+/// The request a hook sends as a session starts: `{"agent": <the hook's agent>}`, answered with
+/// `{"text": <the person's instructions for it, empty when none apply>}`
+/// (docs/specs/instructions.md).
+pub const INSTRUCTIONS: &str = "templum/instructions";
+
+/// Whether a hook's input is a session's start, of any `source` (a new session, a resume, a
+/// `/clear`, a compaction), for the agents whose start takes context from the hook: Claude Code,
+/// Codex, Gemini CLI, Qwen Code, and Copilot CLI, whose `event` is its hook's command word. A
+/// Claude Code subagent's hook (it names an `agent_id`) is not one.
+pub fn session_start(agent: &str, event: Option<&str>, input: &Value) -> bool {
+    match agent {
+        "claude" | "qwen" => {
+            input["hook_event_name"] == "SessionStart" && input["agent_id"].is_null()
+        }
+        "codex" | "gemini" => input["hook_event_name"] == "SessionStart",
+        "copilot" => event == Some("sessionStart"),
+        _ => false,
+    }
+}
+
+/// What the hook of `agent` prints at a session's start to give it `text`, in the agent's own
+/// shape: a line of JSON. None for an agent whose start takes none, or an empty `text`.
+pub fn start_output(agent: &str, text: &str) -> Option<String> {
+    if text.is_empty() {
+        return None;
+    }
+    let output = match agent {
+        "claude" | "codex" | "gemini" | "qwen" => serde_json::json!({
+            "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": text }
+        }),
+        "copilot" => serde_json::json!({ "additionalContext": text }),
+        _ => return None,
+    };
+    Some(output.to_string())
+}
+
 /// An agent's turn, as its hooks report it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -32,18 +68,74 @@ pub enum AgentEvent {
     NeedsYou { message: Option<String> },
     /// The session ended.
     Ended,
+    /// Claude Code finished its turn, with its message, while these subagents of its still work
+    /// in the background (`Stop`'s `background_tasks`, docs/specs/claude-subagents.md): their
+    /// reports come in turns of its own, and the last turn's end is its answer.
+    AwaitsSubagents {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript: Option<String>,
+        subagents: Vec<String>,
+    },
+    /// Claude Code took the reports of these subagents (or background commands) as a prompt of
+    /// its own (`<task-notification>`): a turn starts that no one typed.
+    Reports { subagents: Vec<String> },
+    /// One of Claude Code's subagents started, or was resumed: its id, its type, and the
+    /// session's transcript, whose folder holds the subagent's own.
+    SubagentStarted {
+        id: String,
+        kind: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript: Option<String>,
+    },
+    /// A tool ran in that subagent.
+    SubagentWorking { id: String },
+    /// That subagent asks the person: its dialog is in its parent's screen.
+    SubagentNeedsYou { id: String, message: Option<String> },
+    /// That subagent finished. `reports`: it ran in the background, and its report comes to its
+    /// parent in a turn of its own.
+    SubagentStopped { id: String, reports: bool },
 }
 
 /// A Claude Code hook's input (https://code.claude.com/docs/en/hooks). None for what Templum
 /// doesn't follow.
 pub fn claude(input: &Value) -> Option<AgentEvent> {
     let text = |key: &str| input[key].as_str().map(str::to_string);
-    Some(match input["hook_event_name"].as_str()? {
+    let name = input["hook_event_name"].as_str()?;
+    // A hook fired inside one of its subagents names it: its tools and its dialogs are the
+    // subagent's, never its parent's turn (docs/specs/claude-subagents.md).
+    if let Some(id) = text("agent_id") {
+        return match name {
+            // Claude Code's own agents (prompt suggestions, `/btw`) have no type.
+            _ if input["agent_type"].as_str().is_none_or(str::is_empty) => None,
+            "SubagentStart" => Some(AgentEvent::SubagentStarted {
+                kind: text("agent_type").unwrap_or_default(),
+                transcript: text("transcript_path"),
+                id,
+            }),
+            // One that ran in the background is still among them as it stops.
+            "SubagentStop" => Some(AgentEvent::SubagentStopped {
+                reports: subagents(input).contains(&id),
+                id,
+            }),
+            "PostToolUse" | "PostToolUseFailure" => Some(AgentEvent::SubagentWorking { id }),
+            "PermissionRequest" => Some(AgentEvent::SubagentNeedsYou {
+                message: Some(asks(input)),
+                id,
+            }),
+            _ => None,
+        };
+    }
+    Some(match name {
         // Compaction (auto or /compact) starts the session again in the middle of a turn: it
         // is still working.
         "SessionStart" if input["source"] == "compact" => return None,
         "SessionStart" => AgentEvent::Started,
-        "UserPromptSubmit" => AgentEvent::Submitted { at_enter: true },
+        "UserPromptSubmit" => match reported(input["prompt"].as_str().unwrap_or_default()) {
+            Some(subagents) => AgentEvent::Reports { subagents },
+            None => AgentEvent::Submitted { at_enter: true },
+        },
         "PostToolUse" => AgentEvent::Working,
         // Esc while a tool runs ends the turn: no `Stop` comes.
         "PostToolUseFailure" if input["is_interrupt"] == true => AgentEvent::Stopped {
@@ -52,20 +144,21 @@ pub fn claude(input: &Value) -> Option<AgentEvent> {
         },
         // A tool that failed (an allowed `cargo test` that fails): it works on.
         "PostToolUseFailure" => AgentEvent::Working,
-        "Stop" => AgentEvent::Stopped {
-            message: text("last_assistant_message"),
-            transcript: text("transcript_path"),
+        "Stop" => match subagents(input) {
+            subagents if subagents.is_empty() => AgentEvent::Stopped {
+                message: text("last_assistant_message"),
+                transcript: text("transcript_path"),
+            },
+            subagents => AgentEvent::AwaitsSubagents {
+                message: text("last_assistant_message"),
+                transcript: text("transcript_path"),
+                subagents,
+            },
         },
         // The permission dialog just opened (its notification only comes after seconds
         // without typing). The hook prints nothing, so the dialog still decides.
         "PermissionRequest" => AgentEvent::NeedsYou {
-            message: Some(match input["tool_name"].as_str() {
-                // Claude's own dialogs: nothing to allow.
-                Some("AskUserQuestion") => "Claude asks you a question".to_string(),
-                Some("ExitPlanMode") => "Claude has a plan for you".to_string(),
-                Some(tool) => format!("Allow {tool}?"),
-                None => "Allow a tool?".to_string(),
-            }),
+            message: Some(asks(input)),
         },
         // A turn an API error ended: no `Stop`, and no answer.
         "StopFailure" => AgentEvent::Stopped {
@@ -90,6 +183,41 @@ pub fn claude(input: &Value) -> Option<AgentEvent> {
         "SessionEnd" => AgentEvent::Ended,
         _ => return None,
     })
+}
+
+/// What a Claude Code permission dialog asks the person.
+fn asks(input: &Value) -> String {
+    match input["tool_name"].as_str() {
+        // Claude's own dialogs: nothing to allow.
+        Some("AskUserQuestion") => "Claude asks you a question".to_string(),
+        Some("ExitPlanMode") => "Claude has a plan for you".to_string(),
+        Some(tool) => format!("Allow {tool}?"),
+        None => "Allow a tool?".to_string(),
+    }
+}
+
+/// The subagents a Claude Code hook's `background_tasks` lists as still at work, by id.
+fn subagents(input: &Value) -> Vec<String> {
+    let tasks = input["background_tasks"].as_array().into_iter().flatten();
+    tasks
+        .filter(|task| task["type"] == "subagent")
+        .filter_map(|task| task["id"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// The ids of the work a prompt of Claude Code's own reports on (`<task-notification>`, as of
+/// 2.1.286: a `<task-id>` each); None for any other prompt.
+fn reported(prompt: &str) -> Option<Vec<String>> {
+    let mut rest = prompt.trim_start().strip_prefix("<task-notification>")?;
+    let mut ids = Vec::new();
+    while let Some((_, after)) = rest.split_once("<task-id>") {
+        let Some((id, after)) = after.split_once("</task-id>") else {
+            break;
+        };
+        ids.push(id.trim().to_string());
+        rest = after;
+    }
+    Some(ids)
 }
 
 /// A Codex hook's input (as of 0.154, docs/plans/2026-10-16-connections-batch-7.md, S1). None
@@ -457,6 +585,115 @@ mod tests {
     }
 
     /// As Codex 0.154 hands them over on stdin (docs/plans/2026-10-16-connections-batch-7.md, S1).
+    /// Shapes seen with Claude Code 2.1.286 (docs/plans/2026-10-22-claude-subagents.md, The
+    /// probe): a hook inside a subagent names it with `agent_id` and `agent_type`.
+    #[test]
+    fn claude_codes_subagents_are_told_apart_from_its_own_turn() {
+        let event = |input: Value| claude(&input);
+        let main = "/home/u/.claude/projects/p/s1.jsonl";
+        let running = json!([
+            { "id": "a80a32db516c45194", "type": "subagent", "status": "running",
+              "description": "List files", "agent_type": "Explore" },
+            { "id": "b1", "type": "shell", "status": "running", "description": "npm run dev" },
+        ]);
+        assert_eq!(
+            event(
+                json!({ "hook_event_name": "SubagentStart", "agent_id": "a80a32db516c45194",
+                "agent_type": "Explore", "transcript_path": main })
+            ),
+            Some(AgentEvent::SubagentStarted {
+                id: "a80a32db516c45194".into(),
+                kind: "Explore".into(),
+                transcript: Some(main.into()),
+            })
+        );
+        for hook in ["PostToolUse", "PostToolUseFailure"] {
+            assert_eq!(
+                event(
+                    json!({ "hook_event_name": hook, "agent_id": "a8", "agent_type": "Explore",
+                    "tool_name": "Bash", "is_interrupt": true })
+                ),
+                Some(AgentEvent::SubagentWorking { id: "a8".into() }),
+                "{hook} in a subagent never moves its parent's turn"
+            );
+        }
+        assert_eq!(
+            event(
+                json!({ "hook_event_name": "PermissionRequest", "agent_id": "a8",
+                "agent_type": "general-purpose", "tool_name": "Bash" })
+            ),
+            Some(AgentEvent::SubagentNeedsYou {
+                id: "a8".into(),
+                message: Some("Allow Bash?".into())
+            })
+        );
+        assert_eq!(
+            event(
+                json!({ "hook_event_name": "SubagentStop", "agent_id": "a80a32db516c45194",
+                "agent_type": "Explore", "background_tasks": running })
+            ),
+            Some(AgentEvent::SubagentStopped {
+                id: "a80a32db516c45194".into(),
+                reports: true
+            }),
+            "still listed as it stops: it ran in the background"
+        );
+        assert_eq!(
+            event(json!({ "hook_event_name": "SubagentStop", "agent_id": "c3",
+                "agent_type": "Plan", "background_tasks": [] })),
+            Some(AgentEvent::SubagentStopped {
+                id: "c3".into(),
+                reports: false
+            }),
+            "a foreground one answers in its parent's turn"
+        );
+        for hook in ["SubagentStart", "SubagentStop", "PostToolUse"] {
+            assert_eq!(
+                event(json!({ "hook_event_name": hook, "agent_id": "x", "agent_type": "" })),
+                None,
+                "{hook} of Claude Code's own agents (no type) says nothing"
+            );
+        }
+        assert_eq!(
+            event(
+                json!({ "hook_event_name": "Stop", "last_assistant_message": "Both started.",
+                "transcript_path": main, "background_tasks": running })
+            ),
+            Some(AgentEvent::AwaitsSubagents {
+                message: Some("Both started.".into()),
+                transcript: Some(main.into()),
+                subagents: vec!["a80a32db516c45194".into()]
+            }),
+            "a turn that ends while a subagent works isn't its answer; a command isn't a subagent"
+        );
+        assert_eq!(
+            event(
+                json!({ "hook_event_name": "Stop", "last_assistant_message": "Done.",
+                "background_tasks": [running[1]] })
+            ),
+            Some(AgentEvent::Stopped {
+                message: Some("Done.".into()),
+                transcript: None
+            })
+        );
+        let report = "<task-notification>\n<task-id>a80a32db516c45194</task-id>\n\
+            <tool-use-id>toolu_01</tool-use-id>\n<status>completed</status>\n\
+            <summary>Agent \"List files\" finished</summary>\n</task-notification>";
+        assert_eq!(
+            event(json!({ "hook_event_name": "UserPromptSubmit", "prompt": report })),
+            Some(AgentEvent::Reports {
+                subagents: vec!["a80a32db516c45194".into()]
+            }),
+            "a subagent's report starts a turn no one typed"
+        );
+        assert_eq!(
+            event(json!({ "hook_event_name": "UserPromptSubmit",
+                "prompt": "Explain <task-notification> to me" })),
+            Some(AgentEvent::Submitted { at_enter: true }),
+            "the person's prompt"
+        );
+    }
+
     #[test]
     fn codex_hooks_become_events() {
         let event = |input: Value| codex(&input);
@@ -937,5 +1174,65 @@ mod tests {
             serde_json::from_value::<AgentEvent>(json!({ "event": "submitted" })).unwrap(),
             AgentEvent::Submitted { at_enter: false }
         );
+    }
+
+    #[test]
+    fn each_agent_takes_context_its_own_way() {
+        let nested = |agent: &str| -> Value {
+            serde_json::from_str(&start_output(agent, "a\nb \"q\"").unwrap()).unwrap()
+        };
+        for agent in ["claude", "codex", "gemini", "qwen"] {
+            assert_eq!(
+                nested(agent),
+                json!({ "hookSpecificOutput": {
+                    "hookEventName": "SessionStart", "additionalContext": "a\nb \"q\"" } }),
+                "{agent}"
+            );
+        }
+        assert_eq!(
+            nested("copilot"),
+            json!({ "additionalContext": "a\nb \"q\"" })
+        );
+        assert!(!start_output("claude", "x").unwrap().contains('\n'));
+        for (agent, text) in [
+            ("opencode", "x"),
+            ("pi", "x"),
+            ("claude", ""),
+            ("copilot", ""),
+        ] {
+            assert_eq!(start_output(agent, text), None, "{agent} {text:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_session_start_is_one() {
+        for agent in ["claude", "codex", "gemini", "qwen"] {
+            for source in ["startup", "resume", "clear", "compact"] {
+                let input = json!({ "hook_event_name": "SessionStart", "source": source });
+                assert!(session_start(agent, None, &input), "{agent} {source}");
+            }
+            for name in [
+                "UserPromptSubmit",
+                "Stop",
+                "PermissionRequest",
+                "SessionEnd",
+            ] {
+                let input = json!({ "hook_event_name": name });
+                assert!(!session_start(agent, None, &input), "{agent} {name}");
+            }
+        }
+        let sub = json!({ "hook_event_name": "SessionStart", "agent_id": "a8", "agent_type": "x" });
+        assert!(!session_start("claude", None, &sub));
+        assert!(session_start("copilot", Some("sessionStart"), &json!({})));
+        for event in ["agentStop", "userPromptSubmitted", "sessionEnd"] {
+            assert!(
+                !session_start("copilot", Some(event), &json!({})),
+                "{event}"
+            );
+        }
+        assert!(!session_start("copilot", None, &json!({})));
+        let start = json!({ "hook_event_name": "SessionStart", "type": "session_start" });
+        assert!(!session_start("opencode", Some("sessionStart"), &start));
+        assert!(!session_start("pi", None, &start));
     }
 }

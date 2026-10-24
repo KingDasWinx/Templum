@@ -41,12 +41,15 @@ pub(crate) fn rest(ws: &Workspace) -> &'static str {
     }
 }
 
-/// The engine chip: the agent and its model ("Claude Code · opus").
+/// The engine chip: the agent and its model ("Claude Code · opus"): the one the engine reported,
+/// else the one chosen.
 pub(crate) fn engine(ws: &Workspace) -> String {
     let settings = &ws.config.templum_agent;
-    let model = Some(settings.model.clone())
-        .filter(|m| !m.is_empty())
-        .or_else(|| ws.templum_agent.model.clone());
+    let model = ws
+        .templum_agent
+        .model
+        .clone()
+        .or_else(|| Some(settings.model.clone()).filter(|m| !m.is_empty()));
     match model {
         Some(model) => format!("Claude Code · {model}"),
         None => "Claude Code".to_string(),
