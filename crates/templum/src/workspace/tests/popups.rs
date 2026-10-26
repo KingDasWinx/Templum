@@ -232,4 +232,9 @@ fn the_headers_count_what_is_there() {
         "3 running · 1 needs you"
     );
     assert_eq!(crate::automations_view::count_words(1), "1 automation");
+    assert_eq!(
+        crate::inbox::where_words(Some("/src/api"), "Main"),
+        "/src/api · Main"
+    );
+    assert_eq!(crate::inbox::where_words(None, "Main"), "Main");
 }

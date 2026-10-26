@@ -234,8 +234,9 @@ fn list(
         )
 }
 
-/// The right column, `w` wide: where the request comes from, why it is asked, and the request
-/// itself, its body scrolling over a foot that stays.
+/// The right column, `w` wide and `h` high: a card of where the request comes from and why it is
+/// asked, then the request itself, its body scrolling over a foot that stays; both at most
+/// `popup::CONTENT_MAX` wide, centered.
 fn detail(ws: &Workspace, wait: &Wait, w: f32, h: f32, cx: &mut Context<Workspace>) -> AnyElement {
     let ui = ws.ui;
     // Presses count from TOO_SOON after it first shows.
@@ -244,7 +245,8 @@ fn detail(ws: &Workspace, wait: &Wait, w: f32, h: f32, cx: &mut Context<Workspac
     }
     let key = wait.key;
     let n = ws.asker(wait).map_or(0, |(_, BlockId(id))| id as usize);
-    let Some(request) = balloon::request(ws, wait, n, w, h - 2.0 - FOOT, cx) else {
+    let width = w.min(popup::CONTENT_MAX);
+    let Some(request) = balloon::request(ws, wait, n, width, h - 2.0 - FOOT, cx) else {
         return div().flex_1().into_any_element();
     };
     let why = ws.why(wait);
@@ -255,22 +257,19 @@ fn detail(ws: &Workspace, wait: &Wait, w: f32, h: f32, cx: &mut Context<Workspac
         .map(|f| f.display().to_string());
     let from = div()
         .flex()
-        .items_start()
-        .gap(px(10.0))
+        .items_center()
+        .gap(px(8.0))
         .child(
             div()
                 .flex_1()
                 .min_w(px(0.0))
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .child(section(ws, "From"))
-                .child(div().font_weight(FontWeight::MEDIUM).child(asker(ws, wait)))
-                .when_some(folder, |el, folder| el.child(dim(ws, folder)))
-                .child(dim(ws, format!("in {}", ws.space.name))),
+                .truncate()
+                .font_weight(FontWeight::MEDIUM)
+                .child(asker(ws, wait)),
         )
         .children(ws.asker(wait).is_some().then(|| {
             balloon::ghost("inbox-go", "Go to terminal", ui, 1.0)
+                .flex_shrink_0()
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                     ws.go_to_request(key, window, cx)
                 }))
@@ -282,57 +281,52 @@ fn detail(ws: &Workspace, wait: &Wait, w: f32, h: f32, cx: &mut Context<Workspac
             .id("inbox-why")
             .flex()
             .flex_col()
-            .gap(px(4.0))
-            .child(section(ws, "Why"))
+            .gap(px(6.0))
             .when_some(why.card, |el, (id, title)| {
-                el.child(div().child(format!("Working on #{id} {title}")))
+                el.child(popup::row(ws, "Working on", text(format!("#{id} {title}"))))
             })
             .when_some(why.task, |el, task| {
-                el.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .child(dim(ws, "Handed the task".to_string()))
-                        .child(div().child(task)),
-                )
+                el.child(popup::row(ws, "Handed", text(task)))
             })
             .when_some(why.agent, |el, said| {
-                el.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .child(dim(ws, "The agent says".to_string()))
-                        .child(div().child(said)),
-                )
+                el.child(popup::row(ws, "The agent says", text(said)))
             })
             .test_support()
     });
-    // Its key in the body's and the foot's ids: a press on a request withdrawn before its release
-    // is no click on the next one's button drawn in its place.
-    let content = div()
-        .id(("balloon-wait", key))
+    let card = div()
         .flex()
         .flex_col()
+        .gap(px(6.0))
+        .p(px(12.0))
+        .rounded(px(8.0))
+        .bg(ui.card)
+        .child(popup::row(ws, "From", from))
+        .child(popup::row(
+            ws,
+            "Where",
+            dim_line(ws, where_words(folder.as_deref(), &ws.space.name)),
+        ))
+        .children(why);
+    // Its key in the body's and the foot's ids: a press on a request withdrawn before its release
+    // is no click on the next one's button drawn in its place.
+    let content = popup::content()
+        .id(("balloon-wait", key))
         .gap(px(14.0))
         .px(px(SIDE))
         .py(px(14.0))
-        .child(from)
-        .children(why)
-        .child(div().h(px(1.0)).bg(ui.hairline))
+        .child(card)
         .child(request.body)
         .test_support();
-    let foot = div()
-        .id(("balloon-foot", key))
-        .flex()
-        .items_center()
-        .flex_shrink_0()
-        .gap(px(8.0))
-        .px(px(SIDE))
-        .py(px(10.0))
-        .border_t_1()
-        .border_color(ui.hairline)
-        .child(request.foot)
-        .test_support();
+    let foot = popup::foot(ws).child(
+        popup::content()
+            .id(("balloon-foot", key))
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .px(px(SIDE))
+            .child(request.foot)
+            .test_support(),
+    );
     let body = div()
         .id(part(n, "body"))
         .flex_1()
@@ -360,6 +354,35 @@ fn detail(ws: &Workspace, wait: &Wait, w: f32, h: f32, cx: &mut Context<Workspac
         )
         .child(foot)
         .into_any_element()
+}
+
+/// Where the asking terminal works: its folder, when known, and the workspace.
+pub(crate) fn where_words(folder: Option<&str>, space: &str) -> String {
+    match folder {
+        Some(folder) => format!("{folder} · {space}"),
+        None => space.to_string(),
+    }
+}
+
+/// A field of the card: text on as many lines as it takes, the height of a label's line at least.
+fn text(words: String) -> Div {
+    div()
+        .min_h(px(24.0))
+        .flex()
+        .flex_col()
+        .justify_center()
+        .child(words)
+}
+
+/// A dim field of the card, cut to one line.
+fn dim_line(ws: &Workspace, words: String) -> Div {
+    div()
+        .h(px(24.0))
+        .flex()
+        .flex_col()
+        .justify_center()
+        .text_color(ws.ui.title_dim)
+        .child(div().truncate().child(words))
 }
 
 /// A section's name over its lines.

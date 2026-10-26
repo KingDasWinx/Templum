@@ -79,10 +79,13 @@ answer", "Nothing waits for you"); under it, two columns:
   asking agent and its block's title, the card it works on ("#152 Attachments", when there is one), what it is (a
   question, "2 questions", a plan, a request to connect, to delete or merge a worktree), and how long it has waited
   ("2m"). The selected row is lit. New requests join at the end, never moving the selection.
-- **The request** (right), from top to bottom:
-  - **From:** the agent and block title, its folder, its workspace; a **Go to terminal** button that reveals the block
-    (as a notification's click does) and closes the inbox.
-  - **Why:** what Templum knows and what the agent said, each line only when known:
+- **The request** (right), from top to bottom, at most 680 px wide and centered, its foot as wide as it (card 217):
+  - **A card** (`ui.card`) of where it comes from and why, each line a label at the left of its words, as the popups'
+    form (design-system.md):
+  - **From:** the agent and block title, with a **Go to terminal** button at the line's right that reveals the block
+    (as a notification's click does) and closes the inbox; **Where:** its folder and its workspace ("~/api · Main").
+  - **Why**, in the same card: what Templum knows and what the agent said, each line only when known (**Working on**,
+    **Handed**, **The agent says**):
     - the kanban card the agent works on: a card of any board whose assignee is this block (`Assignee::Block(uid)`),
       not in the board's last column, the newest (highest id) if several (*the designer's call*: Templum records no
       move time, and one card per agent is the usual case); its number and title;
