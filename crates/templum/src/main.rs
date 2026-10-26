@@ -36,6 +36,7 @@ mod mirror;
 mod motion;
 mod note;
 mod notes;
+mod popup;
 mod prompt;
 mod session;
 mod settings;

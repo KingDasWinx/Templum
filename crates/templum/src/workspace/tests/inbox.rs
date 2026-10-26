@@ -657,10 +657,10 @@ fn a_stopped_question_keeps_its_banner_in_the_inbox(cx: &mut TestAppContext) {
     });
 }
 
-/// The inbox has no backdrop: a click on a terminal reaches it, gives it the keyboard, and the
-/// inbox stays open beside it.
+/// A press outside the inbox closes it, as any popup's backdrop does: the terminal under the press
+/// never gets it, and the keyboard goes back to the canvas.
 #[gpui_kit::test]
-fn a_press_outside_the_inbox_reaches_the_canvas_and_keeps_it_open(cx: &mut TestAppContext) {
+fn a_press_outside_the_inbox_closes_it_and_reaches_nothing(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let (_, _, a) = three_blocks(handle, &ws, cx);
     let (terminal, _) = me(&ws, cx, a);
@@ -674,15 +674,15 @@ fn a_press_outside_the_inbox_reaches_the_canvas_and_keeps_it_open(cx: &mut TestA
             })
         })
         .unwrap();
+    // The block opened has the focus: it goes back to the asker's.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(a, window, cx))
+    })
+    .unwrap();
     let _answers = asks(handle, &ws, cx, &terminal, 1);
     drawn_inbox(handle, &ws, cx);
-    let has_keys = |cx: &mut TestAppContext| {
-        cx.update_window(handle, |_, window, cx| {
-            ws.read(cx).inbox_keys(window, cx).is_some()
-        })
-        .unwrap()
-    };
-    assert!(has_keys(cx), "opened with the keyboard");
+    let focused_before = ws.read_with(cx, |ws, _| ws.space.focused);
+    assert_eq!(focused_before, Some(a));
     let at = at(&ws, cx, (1050.0, 210.0));
     cx.update_window(handle, |_, window, cx| {
         click(window, cx, at, 1);
@@ -690,10 +690,19 @@ fn a_press_outside_the_inbox_reaches_the_canvas_and_keeps_it_open(cx: &mut TestA
     })
     .unwrap();
     ws.read_with(cx, |ws, _| {
-        assert_eq!(ws.space.focused, Some(b), "the terminal was clicked");
-        assert!(ws.inbox_open, "the inbox stays");
+        assert!(!ws.inbox_open, "closed");
+        assert_ne!(ws.space.focused, Some(b), "the terminal got nothing");
+        assert_eq!(ws.space.focused, focused_before);
+        assert_eq!(ws.waits.len(), 1, "the request still waits");
     });
-    assert!(!has_keys(cx), "the keyboard went where it was clicked");
+    cx.update_window(handle, |_, window, cx| {
+        assert!(ws.read(cx).inbox_keys(window, cx).is_none());
+        assert!(
+            ws.read(cx).focus_handle.is_focused(window),
+            "the canvas has the keyboard"
+        );
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]

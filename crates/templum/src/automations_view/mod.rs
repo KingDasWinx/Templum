@@ -1,5 +1,5 @@
 //! The Automations popup (docs/specs/automations.md): the person's rules at the left, the selected
-//! one's editor at the right, drawn like the Agents popup; and the sidebar's button with the count
+//! one's editor at the right, drawn as every popup is (crate::popup); and the sidebar's button with the count
 //! of the rules whose last run went wrong. Window chrome: the canvas's zoom never scales it. Its
 //! model is `workspace/automations.rs`.
 
@@ -13,14 +13,15 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, BoxShadow, ClickEvent, Context, Div, ElementId, FontWeight, KeyDownEvent,
-    MouseButton, ScrollWheelEvent, Stateful, TestSupportExt, Window, div, point, px,
+    AnyElement, App, ClickEvent, Context, Div, ElementId, FontWeight, KeyDownEvent, MouseButton,
+    ScrollWheelEvent, Stateful, TestSupportExt, Window, div, px,
 };
 
 use crate::automations::{Do, FIRED, Went};
 use crate::git_block::widgets::icon_button;
 use crate::grid::hsla;
 use crate::inbox::{count_badge, section};
+use crate::popup;
 use crate::workspace::Workspace;
 use crate::workspace::automations::NEW;
 use crate::workspace::remote::Deed;
@@ -36,32 +37,49 @@ pub(crate) const EMPTY_HINT: &str = "Type a prompt, run a command, start an agen
 /// The most pixels of a row's last run: the words after it give way.
 const LAST_W: f32 = 150.0;
 
-/// The popup, `w` by `h` pixels: the list at the left, the selected automation at the right.
+/// What the header says under "Automations": how many this computer has.
+pub(crate) fn count_words(count: usize) -> String {
+    match count {
+        0 => "No automations yet".to_string(),
+        1 => "1 automation".to_string(),
+        n => format!("{n} automations"),
+    }
+}
+
+/// The popup, `w` by `h` pixels: the header with New, then the list at the left and the selected
+/// automation at the right.
 pub(crate) fn popup(ws: &Workspace, w: f32, h: f32, cx: &mut Context<Workspace>) -> AnyElement {
     let ui = ws.ui;
-    let fg = hsla(ws.theme.palette.foreground, 1.0);
     let selected = ws.automation_selected();
-    div()
-        .id("automations")
-        .w(px(w))
-        .h(px(h))
+    let mine = ws
+        .automation_ids()
+        .into_iter()
+        .filter(|id| *id != NEW && key_home(*id).is_none())
+        .count();
+    let new = div()
+        .id("automation-new")
         .flex()
-        .overflow_hidden()
-        .bg(ui.surface)
-        .text_color(fg)
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(6.0))
+        .h(px(28.0))
+        .px(px(12.0))
+        .rounded(px(8.0))
+        .bg(ui.accent.opacity(0.16))
+        .text_color(ui.accent)
+        .font_weight(FontWeight::MEDIUM)
+        .cursor_pointer()
+        .hover(move |s| s.bg(ui.accent.opacity(0.24)))
+        .child(Icon::new(IconName::Plus).size(px(14.0)))
+        .child("New")
+        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| {
+            ws.new_automation(cx);
+            ws.select_automation(NEW, window, cx);
+        }))
+        .test_support()
+        .into_any_element();
+    popup::frame("automations", ws, w, h)
         .text_size(px(TEXT))
-        .border_1()
-        .border_color(ui.hairline)
-        .rounded(px(12.0))
-        .shadow(vec![BoxShadow {
-            color: ui.shadow,
-            offset: point(px(0.0), px(12.0)),
-            blur_radius: px(32.0),
-            spread_radius: px(0.0),
-            inset: false,
-        }])
-        // Presses inside never reach the canvas below.
-        .occlude()
         .track_focus(&ws.automations_focus)
         // Before the fields, which may have the keyboard, hear them.
         .capture_key_down(
@@ -69,68 +87,34 @@ pub(crate) fn popup(ws: &Workspace, w: f32, h: f32, cx: &mut Context<Workspace>)
         )
         // The wheel scrolls the lists and stops there: the popup occludes the canvas under it.
         .on_scroll_wheel(|_: &ScrollWheelEvent, _, cx| cx.stop_propagation())
-        .child(list(ws, selected, cx))
-        .child(div().w(px(1.0)).h_full().flex_shrink_0().bg(ui.hairline))
-        .child(match selected {
-            Some(id) => editor::editor(ws, id, cx),
-            None => div().flex_1().into_any_element(),
-        })
+        .child(popup::header(
+            ws,
+            "automations",
+            popup::tile(IconName::AlarmClock, ui.accent),
+            "Automations",
+            Some(popup::subtitle(ws, count_words(mine))),
+            vec![new],
+            cx,
+        ))
+        .child(
+            div()
+                .flex_1()
+                .min_h(px(0.0))
+                .flex()
+                .child(list(ws, selected, cx))
+                .child(div().w(px(1.0)).h_full().flex_shrink_0().bg(ui.hairline))
+                .child(match selected {
+                    Some(id) => editor::editor(ws, id, cx),
+                    None => div().flex_1().into_any_element(),
+                }),
+        )
         .test_support()
         .into_any_element()
 }
 
-/// The left column: a header, the automations, then what agents asked for.
+/// The left column: the automations, then what agents asked for, then home's.
 fn list(ws: &Workspace, selected: Option<u64>, cx: &mut Context<Workspace>) -> Div {
     let ui = ws.ui;
-    let header = div()
-        .flex()
-        .items_center()
-        .flex_shrink_0()
-        .gap(px(8.0))
-        .px(px(12.0))
-        .py(px(10.0))
-        .child(
-            Icon::new(IconName::AlarmClock)
-                .size(px(15.0))
-                .text_color(ui.accent),
-        )
-        .child(
-            div()
-                .flex_1()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child("Automations"),
-        )
-        .child(
-            div()
-                .id("automation-new")
-                .flex()
-                .items_center()
-                .gap(px(4.0))
-                .h(px(24.0))
-                .px(px(8.0))
-                .rounded(px(6.0))
-                .cursor_pointer()
-                .hover(move |s| s.bg(ui.hover))
-                .child(
-                    Icon::new(IconName::Plus)
-                        .size(px(14.0))
-                        .text_color(ui.title),
-                )
-                .child("New")
-                .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| {
-                    ws.new_automation(cx);
-                    ws.select_automation(NEW, window, cx);
-                }))
-                .test_support(),
-        )
-        .child(
-            icon_button("automations-close", IconName::Close, ui, 1.0)
-                .tooltip(|window, cx| Tooltip::new("Close (Esc)").build(window, cx))
-                .on_click(
-                    cx.listener(|ws, _: &ClickEvent, window, cx| ws.close_automations(window, cx)),
-                )
-                .test_support(),
-        );
     let now = SystemTime::now();
     // This computer's rules; home's are in the groups of their remotes.
     let ids: Vec<u64> = ws
@@ -193,8 +177,6 @@ fn list(ws: &Workspace, selected: Option<u64>, cx: &mut Context<Workspace>) -> D
         .flex_shrink_0()
         .flex()
         .flex_col()
-        .child(header)
-        .child(div().h(px(1.0)).flex_shrink_0().bg(ui.hairline))
         .child(
             div()
                 .id("automations-rows")

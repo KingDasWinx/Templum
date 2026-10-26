@@ -1,5 +1,5 @@
 //! The requests inbox (docs/specs/ask-inbox.md): every question, plan and yes/no request of the
-//! workspace in one popup, drawn like the Git popup, each with where it comes from and why it is
+//! workspace in one popup, drawn as every popup is (crate::popup), each with where it comes from and why it is
 //! asked; and the notice on a terminal whose agent waits for an answer. Window chrome: the
 //! canvas's zoom never scales the popup. The request itself is `balloon.rs`'s.
 
@@ -10,15 +10,15 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, BoxShadow, ClickEvent, Context, Div, ElementId, FontWeight, Hsla, KeyDownEvent,
-    ScrollWheelEvent, TestSupportExt, Window, div, point, px,
+    AnyElement, ClickEvent, Context, Div, ElementId, FontWeight, Hsla, KeyDownEvent,
+    ScrollWheelEvent, TestSupportExt, Window, div, px,
 };
 use templum_canvas::BlockId;
 
 use crate::balloon::{self, SIDE, part};
-use crate::git_block::widgets::icon_button;
 use crate::grid::hsla;
 use crate::kanban::scrollbar_over;
+use crate::popup;
 use crate::workspace::{Approved, Wait, Waiting, Workspace};
 
 /// The list's width, pixels.
@@ -76,8 +76,17 @@ fn asker(ws: &Workspace, wait: &Wait) -> String {
     }
 }
 
-/// The popup, `w` by `h` pixels: the list of the workspace's requests at the left, the selected
-/// one at the right.
+/// What the header says under "Requests": how many wait.
+pub(crate) fn waiting_words(count: usize) -> String {
+    match count {
+        0 => "Nothing waits for you".to_string(),
+        1 => "1 request waits for your answer".to_string(),
+        n => format!("{n} requests wait for your answer"),
+    }
+}
+
+/// The popup, `w` by `h` pixels: the header, then the list of the workspace's requests at the
+/// left and the selected one at the right.
 pub(crate) fn popup(
     ws: &Workspace,
     w: f32,
@@ -86,54 +95,50 @@ pub(crate) fn popup(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
-    let fg = hsla(ws.theme.palette.foreground, 1.0);
     let selected = ws.inbox_selected();
     let right = w - LIST_W - 1.0;
-    div()
-        .id("inbox")
-        .w(px(w))
-        .h(px(h))
-        .flex()
-        .overflow_hidden()
-        .bg(ui.surface)
-        .text_color(fg)
+    let yellow = hsla(ws.theme.palette.ansi[3], 1.0);
+    popup::frame("inbox", ws, w, h)
         .text_size(px(TEXT))
-        .border_1()
-        .border_color(ui.hairline)
-        .rounded(px(12.0))
-        .shadow(vec![BoxShadow {
-            color: ui.shadow,
-            offset: point(px(0.0), px(12.0)),
-            blur_radius: px(32.0),
-            spread_radius: px(0.0),
-            inset: false,
-        }])
-        // Presses inside never reach the canvas below.
-        .occlude()
         .track_focus(&ws.inbox_focus)
         .on_key_down(cx.listener(|ws, e: &KeyDownEvent, window, cx| ws.on_inbox_key(e, window, cx)))
         // The wheel scrolls the lists and stops there: the popup occludes the canvas under it.
         .on_scroll_wheel(|_: &ScrollWheelEvent, _, cx| cx.stop_propagation())
-        .child(list(ws, selected.map(|w| w.key), window, cx))
-        .child(div().w(px(1.0)).h_full().flex_shrink_0().bg(ui.hairline))
-        .child(match selected {
-            Some(wait) => detail(ws, wait, right, h, cx),
-            None => div()
-                .id("inbox-empty")
+        .child(popup::header(
+            ws,
+            "inbox",
+            popup::tile(IconName::CircleQuestionMark, yellow),
+            "Requests",
+            Some(popup::subtitle(ws, waiting_words(ws.inbox().len()))),
+            Vec::new(),
+            cx,
+        ))
+        .child(
+            div()
                 .flex_1()
+                .min_h(px(0.0))
                 .flex()
-                .items_center()
-                .justify_center()
-                .text_color(ui.title_dim)
-                .child("Nothing waits for you")
-                .test_support()
-                .into_any_element(),
-        })
+                .child(list(ws, selected.map(|w| w.key), window, cx))
+                .child(div().w(px(1.0)).h_full().flex_shrink_0().bg(ui.hairline))
+                .child(match selected {
+                    Some(wait) => detail(ws, wait, right, h - popup::HEADER, cx),
+                    None => div()
+                        .id("inbox-empty")
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(ui.title_dim)
+                        .child("Nothing waits for you")
+                        .test_support()
+                        .into_any_element(),
+                }),
+        )
         .test_support()
         .into_any_element()
 }
 
-/// The left column: a header, then a row per request, oldest first.
+/// The left column: a row per request, oldest first.
 fn list(
     ws: &Workspace,
     selected: Option<u64>,
@@ -142,30 +147,6 @@ fn list(
 ) -> Div {
     let ui = ws.ui;
     let now = cx.background_executor().now();
-    let header = div()
-        .flex()
-        .items_center()
-        .flex_shrink_0()
-        .gap(px(8.0))
-        .px(px(12.0))
-        .py(px(10.0))
-        .child(
-            Icon::new(IconName::CircleQuestionMark)
-                .size(px(15.0))
-                .text_color(hsla(ws.theme.palette.ansi[3], 1.0)),
-        )
-        .child(
-            div()
-                .flex_1()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child("Requests"),
-        )
-        .child(
-            icon_button("inbox-close", IconName::Close, ui, 1.0)
-                .tooltip(|window, cx| Tooltip::new("Close (Esc)").build(window, cx))
-                .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.close_inbox(window, cx)))
-                .test_support(),
-        );
     // The selection moved: its row comes into view, once the list has a size to scroll in.
     if ws.inbox_reveal.get() {
         if ws.inbox_list.bounds().size.height > px(0.0) {
@@ -231,8 +212,6 @@ fn list(
         .flex_shrink_0()
         .flex()
         .flex_col()
-        .child(header)
-        .child(div().h(px(1.0)).flex_shrink_0().bg(ui.hairline))
         .child(
             div()
                 .id("inbox-list")

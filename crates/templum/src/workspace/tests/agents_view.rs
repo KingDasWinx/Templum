@@ -769,11 +769,16 @@ fn opening_gives_the_search_the_keyboard(cx: &mut TestAppContext) {
             })
         })
         .unwrap();
-    let _ = a;
+    // The block opened has the focus: it goes back to the first.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(a, window, cx))
+    })
+    .unwrap();
     open_agents(handle, &ws, cx);
     assert!(keys(handle, &ws, cx), "opened with the keyboard");
     cx.simulate_input(handle, "rev");
     ws.read_with(cx, |ws, _| assert_eq!(ws.agents_query, "rev"));
+    // A press outside closes it, as any popup's backdrop does: the terminal under it gets nothing.
     let to = at(&ws, cx, (1050.0, 210.0));
     cx.update_window(handle, |_, window, cx| {
         click(window, cx, to, 1);
@@ -781,13 +786,19 @@ fn opening_gives_the_search_the_keyboard(cx: &mut TestAppContext) {
     })
     .unwrap();
     ws.read_with(cx, |ws, _| {
-        assert_eq!(ws.space.focused, Some(b), "the terminal was clicked");
-        assert!(ws.agents_open, "the popup stays");
+        assert_eq!(ws.space.focused, Some(a), "the terminal got nothing");
+        assert!(!ws.agents_open, "the popup closed");
     });
     assert!(
         !keys(handle, &ws, cx),
-        "the keyboard went where it was clicked"
+        "the keyboard went back to the canvas"
     );
+    // Closing never moves the canvas's focused block.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(b, window, cx))
+    })
+    .unwrap();
+    open_agents(handle, &ws, cx);
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| ws.close_agents(window, cx))
     })

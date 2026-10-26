@@ -80,10 +80,11 @@ for list). It works with the sidebar shown or hidden, and closes the popup when 
 
 ### The popup
 
-Drawn like the Requests inbox (*the orchestrator's call*): the same `git_popup_size` rule, place (the canvas's bottom
-left, beside the sidebar), layering, hairlines, colors, shadow and corner radius; window chrome, so the canvas's zoom
-never scales it; no backdrop, so it stays open while the person clicks the canvas or a block, and the click reaches
-what was clicked. Only one of Git, Requests and Agents is open at a time: opening one closes the others.
+Drawn as every popup is ([design-system.md](design-system.md#popups), card 217): the same place (the canvas's bottom
+left, beside the sidebar), size (`git_popup_size`, resized by its right and top edges like Git's), frame, header
+(the Bot tile, "Agents" over "8 running · 1 needs you"), full screen and closing; window chrome, so the canvas's zoom
+never scales it. A press outside it closes it, and what is under the press doesn't get it (card 217: one rule for
+every popup). Only one of Git, Requests, Agents and Automations is open at a time: opening one closes the others.
 
 Two columns: **the list** at the left (340 px wide; *the designer's call*: a row says more than an inbox row), **the
 details** of the selected agent at the right.
@@ -146,8 +147,9 @@ New per-terminal tracking (*the orchestrator's call*), kept in memory only, neve
 
 ### The list
 
-- **The top:** a header (the Bot icon, "Agents", a close button "Close (Esc)"); a search field ("Find an agent");
-  the filter chips; with the **Done** chip chosen and something Done, a **Mark all seen** button.
+- **The top:** under the popup's header (card 217: it runs across the popup, with Full screen and Close "Close
+  (Esc)"), a search field ("Find an agent"); the filter chips; with the **Done** chip chosen and something Done, a
+  **Mark all seen** button.
 - **Filter chips** with counts (*the orchestrator's call*): **All**, **Needs you**, **Working** (Waiting for
   subagents included), **Done**, **Idle**. *The designer's call:* **Idle** includes **Starting**; the counts are of the
   agents the search matches, so each says what its chip would list; the chips wrap when the list is narrow; **All** is
@@ -225,8 +227,8 @@ call*); the keyboard is the search field's:
 - ↑ and ↓ move the selection to the previous and the next row, skipping headers, none past the ends;
 - Enter is **Go to terminal** on the selected row;
 - Esc clears the search first; with the field empty, it closes the popup;
-- a click on a row selects it and gives the popup the keyboard; a click on the canvas or a block gives the keyboard to
-  what was clicked, and the popup stays open beside it, as the inbox does;
+- a click on a row selects it and gives the popup the keyboard; a press outside the popup closes it, and what is
+  under the press doesn't get it (card 217, as every popup);
 - *the designer's call*, as the inbox: the workspace's shortcuts still work while the popup has the keyboard, but
   those that act on the terminal in front (copy, paste, close, find, previous and next prompt); the Agents shortcut
   closes the popup.

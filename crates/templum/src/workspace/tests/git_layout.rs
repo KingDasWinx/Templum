@@ -145,7 +145,7 @@ fn dragging_the_popups_free_edges_resizes_it_around_its_corner(cx: &mut TestAppC
         "nothing set: the size it always had"
     );
     // The right edge, 100 px to the right: wider, the left edge and the height stay.
-    drag_zone(handle, cx, "git-resize-right", (100.0, 30.0));
+    drag_zone(handle, cx, "popup-resize-right", (100.0, 30.0));
     let wide = popup_box(handle, cx);
     assert!(close_to(
         wide.size.width,
@@ -154,7 +154,7 @@ fn dragging_the_popups_free_edges_resizes_it_around_its_corner(cx: &mut TestAppC
     assert_eq!(wide.size.height, before.size.height);
     assert_eq!(wide.origin, before.origin);
     // The top edge, 60 px up: taller, the bottom edge and the width stay.
-    drag_zone(handle, cx, "git-resize-top", (20.0, -60.0));
+    drag_zone(handle, cx, "popup-resize-top", (20.0, -60.0));
     let tall = popup_box(handle, cx);
     assert!(close_to(
         tall.size.height,
@@ -164,7 +164,7 @@ fn dragging_the_popups_free_edges_resizes_it_around_its_corner(cx: &mut TestAppC
     assert_eq!(tall.bottom(), before.bottom());
     assert_eq!(tall.origin.x, before.origin.x);
     // The corner: both at once; dragging back down and left shrinks it.
-    drag_zone(handle, cx, "git-resize-top-right", (-50.0, 40.0));
+    drag_zone(handle, cx, "popup-resize-top-right", (-50.0, 40.0));
     let small = popup_box(handle, cx);
     assert!(close_to(
         small.size.width,
@@ -193,7 +193,7 @@ fn the_popup_stays_between_its_minimum_and_the_window(cx: &mut TestAppContext) {
         .unwrap();
     // Far past the window: the window's room, not the pointer's, and the pointer going back
     // shrinks it at once.
-    drag_zone(handle, cx, "git-resize-top-right", (5000.0, -5000.0));
+    drag_zone(handle, cx, "popup-resize-top-right", (5000.0, -5000.0));
     let big = popup_box(handle, cx);
     assert!(close_to(big.size.width, room.0) && close_to(big.size.height, room.1));
     let set = ws.read_with(cx, |ws, _| ws.git_size).expect("a size set");
@@ -203,7 +203,7 @@ fn the_popup_stays_between_its_minimum_and_the_window(cx: &mut TestAppContext) {
         "what is kept never passes the room it was set in"
     );
     // Far the other way: the minimum.
-    drag_zone(handle, cx, "git-resize-top-right", (-5000.0, 5000.0));
+    drag_zone(handle, cx, "popup-resize-top-right", (-5000.0, 5000.0));
     let small = popup_box(handle, cx);
     assert!(close_to(small.size.width, crate::git_block::MIN.w));
     assert!(close_to(small.size.height, crate::git_block::MIN.h));
@@ -218,7 +218,7 @@ fn a_smaller_window_shrinks_the_popup_and_a_larger_one_gives_the_size_back(
     let repo = git_repo();
     let (handle, ws) = open(cx);
     open_git(handle, &ws, cx, repo.path());
-    drag_zone(handle, cx, "git-resize-top-right", (300.0, -150.0));
+    drag_zone(handle, cx, "popup-resize-top-right", (300.0, -150.0));
     let set = popup_box(handle, cx);
     let kept = ws.read_with(cx, |ws, _| ws.git_size);
     cx.simulate_window_resize(handle, size(px(800.), px(560.)));
@@ -245,12 +245,12 @@ fn dragging_one_edge_in_a_smaller_window_keeps_the_other_side_set(cx: &mut TestA
     let repo = git_repo();
     let (handle, ws) = open(cx);
     open_git(handle, &ws, cx, repo.path());
-    drag_zone(handle, cx, "git-resize-top-right", (300.0, -150.0));
+    drag_zone(handle, cx, "popup-resize-top-right", (300.0, -150.0));
     let set = popup_box(handle, cx);
     cx.simulate_window_resize(handle, size(px(800.), px(560.)));
     assert!(popup_box(handle, cx).size.width < set.size.width);
     // Only the top edge, on the small window: the width set on the big one stays.
-    drag_zone(handle, cx, "git-resize-top", (0.0, 10.0));
+    drag_zone(handle, cx, "popup-resize-top", (0.0, 10.0));
     cx.simulate_window_resize(handle, size(px(1280.), px(800.)));
     assert_eq!(popup_box(handle, cx).size.width, set.size.width);
 }
@@ -261,7 +261,7 @@ fn the_size_set_comes_back_when_the_popup_opens_again_and_after_a_restart(cx: &m
     let data = tempfile::tempdir().unwrap();
     let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
     open_git(handle, &ws, cx, repo.path());
-    drag_zone(handle, cx, "git-resize-top-right", (140.0, -90.0));
+    drag_zone(handle, cx, "popup-resize-top-right", (140.0, -90.0));
     let set = popup_box(handle, cx);
     // Written at once, as dragged.
     let crate::session::Loaded::Saved(index) = crate::session::load_index(data.path()) else {

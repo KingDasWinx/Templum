@@ -97,6 +97,44 @@ Alacritty's format dropped into a folder, all switchable from a picker in the ti
 - Scales snap to 0.02 steps: a block is drawn at zoom × scale, so text is rasterized at only a few extra sizes.
 - Nothing else animates (no animated zoom).
 
+### Popups
+
+*(Kanban card 217.)* Every popup over the canvas — Git, Requests, Agents and Automations today, and any new modal of
+their kind — follows this one standard, built from the helpers of `crates/templum/src/popup.rs`: a new popup calls
+them and never redraws its own frame.
+
+- **Place and layering** (`popup::slot`): over the canvas's bottom-left corner, `popup::GAP` (8 px) from the sidebar
+  and from the window's bottom edge; window chrome, so the canvas's zoom never scales it. Only one is open at a time:
+  opening one closes the others.
+- **Size:** they share one, `Workspace::git_popup_size`: `git_block::SIZE` (760 × 540) until the person drags it, at
+  least `git_block::MIN` (600 × 420), at most the room the window leaves (`git_room`), which wins when it is smaller
+  than the minimum. What is drawn is clamped, the size set is kept: a window that grows back gives it back. The size
+  set is window chrome, saved in the index as `git_size`; it is not in the Templum API.
+- **Resize:** the free edges, the right and the top, and the square at the corner between them resize it like a
+  window's border (`popup-resize-right`, `popup-resize-top`, `popup-resize-top-right`; 6 px outside the box, 2 px
+  inside); the left edge rests against the sidebar and the bottom one against the window, so they have none. A drag
+  writes the size in the index as it ends. No edges at full screen.
+- **Frame** (`popup::frame`): `ui.surface`, a 1 px `ui.hairline` border, 12 px corners, the shadow (offset y 12, blur
+  32, `ui.shadow`), a column: the header, then the body. It occludes the canvas, and the wheel stops in it.
+- **Header** (`popup::header`), across the full width, `popup::HEADER` (55 px) high with a hairline under it, 12 px at
+  its sides and 10 px between its parts: the icon's tile (`popup::tile`: 34 px, 9 px corners, the icon at 17 px in
+  its color on 14% of it: the accent, the palette's yellow for Requests); the title (14 px, semibold) over a dim line
+  of what it holds (`popup::subtitle`, 12 px `ui.title_dim`: "3 automations", "8 running · 1 needs you"; Git's is its
+  branch line); the popup's own actions (one tinted primary, as Git's Sync or Automations' New, then 24 px icon
+  buttons); **Full screen** (`Maximize2`, "Full screen"; `Minimize2`, "Exit full screen" while on); **Close**
+  (`Close`, "Close (Esc)"). Ids: `{name}-header`, `{name}-close`, `popup-full`.
+- **Body:** a list column at the left with a hairline at its right, and the selected item at the right (or one
+  panel).
+- **Full screen:** the header's toggle makes the popups of this place fill the room (the canvas beside the sidebar,
+  less `GAP` on every side) until it is toggled back; it holds for every popup of the place, Git's included, for this
+  session (`Workspace::popup_full`): window chrome, never saved, not in the API. The size set stays and comes back.
+- **Closing:** a press anywhere outside the popup closes it, and nothing under it gets the press (`popup-backdrop`).
+  The sidebar stays out of the backdrop: its buttons switch from one popup to another, and the open one's button
+  closes it. Esc closes it, and so does Close (`Workspace::close_popup` closes whichever is open). Closing gives the
+  keyboard back to the canvas when the popup had it.
+- **Colors:** the theme's tokens only (`ui.surface`, `hairline`, `hover`, `card`, `accent`, `title_dim`, `shadow`) and
+  the palette's yellow and red for what waits or failed: a popup adds no color.
+
 ## Themes
 
 ### Theme files

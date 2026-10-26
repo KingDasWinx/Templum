@@ -809,6 +809,7 @@ mod notes;
 #[cfg(unix)]
 mod notices;
 mod persistence;
+mod popups;
 mod remote;
 mod remote_boards;
 mod remote_content;

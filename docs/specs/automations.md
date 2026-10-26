@@ -398,18 +398,19 @@ editor and fields; J for jobs). It works with the sidebar shown or hidden.
 
 ### The popup
 
-Drawn like the Agents popup (*the orchestrator's call*): the same `git_popup_size` rule, place (the canvas's bottom
-left, beside the sidebar), layering, hairlines, colors, shadow and corner radius; window chrome, never scaled by the
-zoom; no backdrop: a click on the canvas reaches it and the popup stays. Only one of Git, Requests, Agents and
-Automations is open at a time: opening one closes the others.
+Drawn as every popup is ([design-system.md](design-system.md#popups), card 217): the same place (the canvas's bottom
+left, beside the sidebar), size (`git_popup_size`, resized by its right and top edges like Git's), frame, header,
+full screen and closing; window chrome, never scaled by the zoom. A press outside it closes it, as Esc does. Only one
+of Git, Requests, Agents and Automations is open at a time: opening one closes the others.
 
-Two columns (*the orchestrator's call*): the list at the left (340 px, as the Agents list), the selected automation's
-editor at the right.
+Under the header, two columns (*the orchestrator's call*): the list at the left (340 px, as the Agents list), the
+selected automation's editor at the right.
 
 ### The list
 
-- **The top:** a header (the AlarmClock icon, "Automations", a **New** button with a plus, a close button "Close
-  (Esc)").
+- **The header**, across the popup (card 217): the AlarmClock tile, "Automations" over how many this computer has
+  ("3 automations", "No automations yet"), a tinted **New** button with a plus, Full screen, and Close "Close (Esc)".
+  The list starts right under it.
 - **A row** (*the orchestrator's call* for what it says; *the designer's call* for where), two lines:
   1. its switch (on/off); its name (or its sentence); at the right its next run: "17:00" today, "Tomorrow 09:00",
      "Mon 09:00" within a week, "3 Nov 09:00", "3 Jan 2027 09:00" in another year; "Off" when off; batch 2, the event
@@ -501,8 +502,8 @@ sentence and its next run; *the designer's call* for the rest):
 ### Keys
 
 Opening the popup gives it the keyboard (*the designer's call*): ↑ and ↓ select the previous and the next row of the
-person's automations; Esc in a field gives the keyboard back to the list, Esc on the list closes the popup; a click on
-the canvas gives the keyboard to what was clicked and the popup stays. The workspace's shortcuts work while it has the
+person's automations; Esc in a field gives the keyboard back to the list, Esc on the list closes the popup; a press
+outside the popup closes it, and what is under the press doesn't get it (card 217). The workspace's shortcuts work while it has the
 keyboard, but those that act on the terminal in front, as in the Agents popup; the Automations shortcut closes it.
 Closing gives the keyboard back to the canvas only if the popup had it.
 

@@ -16,6 +16,7 @@ use crate::block;
 use crate::git_block;
 use crate::menu;
 use crate::motion;
+use crate::popup;
 use crate::settings;
 use crate::sidebar;
 use crate::theme_picker;
@@ -23,9 +24,6 @@ use crate::title_bar;
 use crate::toolbar;
 
 use super::{Drag, SAVE_DELAY, Tool, Workspace, hint_keys};
-
-/// The Git popup's distance from the window's edges and the sidebar, pixels.
-const GIT_GAP: f32 = 8.0;
 
 impl Workspace {
     /// Every BLINK: toggles a blinking cursor, and makes sure a steady one is shown.
@@ -732,77 +730,36 @@ impl Render for Workspace {
             .as_ref()
             .map(|p| theme_picker::render(self, p, cx));
         let usage = self.usage_open.then(|| crate::usage::popover(self, cx));
-        // Over the canvas's bottom-left corner, beside the sidebar's Git button, at the size the
-        // person dragged it to; a small window gets a smaller popup.
-        self.git_room = Size::new(vp.w - 2.0 * GIT_GAP, vp.h - 2.0 * GIT_GAP);
-        let git = self.space.git().filter(|_| self.git_open).map(|g| {
-            let Size { w, h } = self.git_popup_size();
-            let left = if self.sidebar { sidebar::WIDTH } else { 0.0 } + GIT_GAP;
-            let popup = div()
-                .absolute()
-                .left(px(left))
-                .bottom(px(GIT_GAP))
-                .w(px(w))
-                .h(px(h))
-                // Presses inside the popup don't reach the backdrop.
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(git_block::popup(self, g, w, h, cx))
-                .children(git_block::resize_zones(cx));
-            // A press anywhere outside the popup closes it, and nothing below gets it.
-            div()
-                .id("git-backdrop")
-                .absolute()
-                .inset_0()
-                .occlude()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|ws, _: &MouseDownEvent, window, cx| {
-                        ws.close_git(window, cx);
-                        cx.stop_propagation();
-                    }),
-                )
-                .child(popup)
-        });
-        // The requests inbox: where the Git popup sits (they are never open together), with no
-        // backdrop: a press on the canvas reaches it, and the inbox stays open beside it.
+        // The popups (crate::popup): over the canvas's bottom-left corner, beside the sidebar, at
+        // the size the person dragged them to; a small window gets a smaller one. Only one is open.
+        self.git_room = Size::new(vp.w - 2.0 * popup::GAP, vp.h - 2.0 * popup::GAP);
+        let Size { w, h } = self.git_popup_size();
+        let git = self
+            .space
+            .git()
+            .filter(|_| self.git_open)
+            .map(|g| git_block::popup(self, g, w, h, cx));
         self.inbox_keeps_keys(window, cx);
-        let inbox = self.inbox_open.then(|| {
-            let Size { w, h } = self.git_popup_size();
-            let left = if self.sidebar { sidebar::WIDTH } else { 0.0 } + GIT_GAP;
-            div()
-                .absolute()
-                .left(px(left))
-                .bottom(px(GIT_GAP))
-                .child(crate::inbox::popup(self, w, h, window, cx))
-        });
-        // The Agents popup: the same place, size and layering as the inbox (never open together).
+        let inbox = self
+            .inbox_open
+            .then(|| crate::inbox::popup(self, w, h, window, cx));
         // The rows are made once a frame: the selection is pinned on them, and the popup draws them.
-        let rows = self.agents_open.then(|| {
+        let agents = self.agents_open.then(|| {
             let all = self.agent_rows();
             let listed = self.listed_in(&all);
             self.pin_agent(&all, &listed);
-            (all, listed)
+            crate::agents_view::popup(self, w, h, &all, listed, window, cx)
         });
-        let agents =
-            rows.map(|(all, listed)| {
-                let Size { w, h } = self.git_popup_size();
-                let left = if self.sidebar { sidebar::WIDTH } else { 0.0 } + GIT_GAP;
-                div().absolute().left(px(left)).bottom(px(GIT_GAP)).child(
-                    crate::agents_view::popup(self, w, h, &all, listed, window, cx),
-                )
-            });
-        // The Automations popup: the same place, size and layering again (never open together).
         self.prepare_automation_form(window, cx);
         self.follow_automation_draft(window, cx);
-        let automations = self.automations_open.then(|| {
-            let Size { w, h } = self.git_popup_size();
-            let left = if self.sidebar { sidebar::WIDTH } else { 0.0 } + GIT_GAP;
-            div()
-                .absolute()
-                .left(px(left))
-                .bottom(px(GIT_GAP))
-                .child(crate::automations_view::popup(self, w, h, cx))
-        });
+        let automations = self
+            .automations_open
+            .then(|| crate::automations_view::popup(self, w, h, cx));
+        let popup = git
+            .or(inbox)
+            .or(agents)
+            .or(automations)
+            .map(|p| popup::slot(self, w, h, p, cx));
         // Window chrome over the canvas's bottom center, above the toolbar: the zoom never scales it.
         let open = self.templum_agent.open;
         // Rows that come while it is closed show at once when it opens.
@@ -888,12 +845,9 @@ impl Render for Workspace {
                     })
                     .child(area),
             )
-            // The Git popup over the Templum agent.
+            // The popups over the Templum agent.
             .children(agent)
-            .children(git)
-            .children(inbox)
-            .children(agents)
-            .children(automations)
+            .children(popup)
             // Under what the title bar opens: the settings, the theme picker, the screen.
             .children(welcome)
             .children(panel)

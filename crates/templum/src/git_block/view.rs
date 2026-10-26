@@ -7,10 +7,9 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, Div, ElementId, Hsla, KeyDownEvent, MouseButton,
-    MouseDownEvent, ScrollWheelEvent, SharedString, Stateful, TestSupportExt, div, px,
+    AnyElement, ClickEvent, Context, Div, ElementId, Hsla, KeyDownEvent, ScrollWheelEvent,
+    SharedString, TestSupportExt, div, px,
 };
-use templum_canvas::Edges;
 use templum_git::Operation;
 
 use super::branches::branches;
@@ -23,6 +22,7 @@ use super::{FONT, Found, Git, Sync, Tab, words};
 use crate::editor::button;
 use crate::grid::hsla;
 use crate::menu::Target;
+use crate::popup;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
 use crate::workspace::remote::Deed;
@@ -38,9 +38,9 @@ pub(crate) fn install_hint() -> &'static str {
     }
 }
 
-/// The popup over the canvas's bottom-left corner, `w` × `h` pixels: the header (the folder, a
-/// click lists the others; the branch and where it stands with the server; Sync and the other
-/// actions; close), and the body.
+/// The popup, `w` × `h` pixels: the header (the folder, a click lists the others; the branch
+/// and where it stands with the server; Sync and the other actions; full screen; close), and the
+/// body.
 pub(crate) fn popup(
     ws: &Workspace,
     git: &Git,
@@ -49,31 +49,14 @@ pub(crate) fn popup(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
-    let fg = hsla(ws.theme.palette.foreground, 1.0);
     let (name, path) = (git.name(), SharedString::from(git.place()));
     let repo = git.has_repo() && !git.gone;
-    let tile = div()
-        .flex()
-        .items_center()
-        .justify_center()
-        .flex_shrink_0()
-        .size(px(34.0))
-        .rounded(px(9.0))
-        .bg(ui.accent.opacity(0.14))
-        .child(
-            Icon::new(IconName::FolderGit2)
-                .size(px(17.0))
-                .text_color(ui.accent),
-        );
     let title = div()
         .id("git-folder")
         .flex()
         .items_center()
         .gap(px(4.0))
         .min_w(px(0.0))
-        .text_size(px(14.0))
-        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-        .text_color(fg)
         .cursor_pointer()
         .hover(move |st| st.text_color(ui.accent))
         .child(div().truncate().child(name))
@@ -87,108 +70,25 @@ pub(crate) fn popup(
             ws.open_menu(Target::GitFolders, e.position(), window, cx)
         }))
         .test_support();
-    let header = div()
-        .id("git-popup-header")
-        .flex()
-        .items_center()
-        .flex_shrink_0()
-        .gap(px(10.0))
-        .px(px(12.0))
-        .py(px(10.0))
-        .child(tile)
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .min_w(px(0.0))
-                .child(title)
-                .when(repo, |el| el.child(branch_line(ws, git, cx))),
-        )
-        .child(div().flex_1())
-        .when(repo, |el| el.children(actions(ws, git, cx)))
-        .child(
-            icon_button("git-close", IconName::Close, ui, 1.0)
-                .tooltip(|window, cx| Tooltip::new("Close (Esc)").build(window, cx))
-                .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.close_git(window, cx)))
-                .test_support(),
-        );
-    div()
-        .id("git-popup")
-        .w(px(w))
-        .h(px(h))
-        .flex()
-        .flex_col()
-        .overflow_hidden()
-        .bg(ui.surface)
-        .text_color(fg)
-        .border_1()
-        .border_color(ui.hairline)
-        .rounded(px(12.0))
-        .shadow(vec![gpui_kit::BoxShadow {
-            color: ui.shadow,
-            offset: gpui_kit::point(px(0.0), px(12.0)),
-            blur_radius: px(32.0),
-            spread_radius: px(0.0),
-            inset: false,
-        }])
-        // Presses inside never reach the canvas below.
-        .occlude()
-        .child(header)
+    let subtitle = repo.then(|| branch_line(ws, git, cx).into_any_element());
+    let actions = if repo {
+        actions(ws, git, cx)
+    } else {
+        Vec::new()
+    };
+    popup::frame("git-popup", ws, w, h)
+        .child(popup::header(
+            ws,
+            "git",
+            popup::tile(IconName::FolderGit2, ui.accent),
+            title,
+            subtitle,
+            actions,
+            cx,
+        ))
         .child(div().flex_1().min_h(px(0.0)).child(body(ws, git, 1.0, cx)))
         .test_support()
         .into_any_element()
-}
-
-/// How far the resize strips reach out of the popup and into it, pixels: outside it they take
-/// nothing the canvas needs, inside it they leave the diff's scrollbar its width.
-const EDGE_OUT: f32 = 6.0;
-const EDGE_IN: f32 = 2.0;
-
-/// Invisible strips on the popup's free edges, the right and the top, and a square at the corner
-/// between them, that resize it like a window's border (children of the popup's box, which they
-/// stick out of). The left edge rests against the sidebar and the bottom one against the
-/// window's, so they have none.
-pub(crate) fn resize_zones(cx: &mut Context<Workspace>) -> [AnyElement; 3] {
-    let thick = EDGE_OUT + EDGE_IN;
-    // Along an edge, clear of the corner's square.
-    let clear = 2.0 * thick - EDGE_OUT;
-    [
-        zone("git-resize-right", Edges::RIGHT, cx)
-            .right(px(-EDGE_OUT))
-            .w(px(thick))
-            .top(px(clear))
-            .bottom(px(0.0))
-            .cursor_ew_resize()
-            .test_support()
-            .into_any_element(),
-        zone("git-resize-top", Edges::TOP, cx)
-            .top(px(-EDGE_OUT))
-            .h(px(thick))
-            .left(px(0.0))
-            .right(px(clear))
-            .cursor_ns_resize()
-            .test_support()
-            .into_any_element(),
-        zone("git-resize-top-right", Edges::TOP_RIGHT, cx)
-            .top(px(-EDGE_OUT))
-            .right(px(-EDGE_OUT))
-            .size(px(2.0 * thick))
-            .cursor_nesw_resize()
-            .test_support()
-            .into_any_element(),
-    ]
-}
-
-/// A strip that starts the resize by `edges` when pressed.
-fn zone(name: &'static str, edges: Edges, cx: &mut Context<Workspace>) -> Stateful<Div> {
-    div().id(name).absolute().on_mouse_down(
-        MouseButton::Left,
-        cx.listener(move |ws, e: &MouseDownEvent, _, cx| {
-            ws.begin_git_resize(edges, e.position);
-            cx.stop_propagation();
-        }),
-    )
 }
 
 /// Under the folder's name: the branch (a click opens the branch dialog), where it stands with the

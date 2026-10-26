@@ -825,8 +825,8 @@ enum Drag {
         from: BlockId,
         to: Point,
     },
-    /// The Git popup's top or right edge (a corner is both) pressed at `from` (canvas points)
-    /// while the popup was drawn at `start`; the others rest against the sidebar and the window.
+    /// A popup's top or right edge (a corner is both) pressed at `from` (canvas points) while the
+    /// popup was drawn at `start`; the others rest against the sidebar and the window.
     GitResize {
         edges: Edges,
         from: Point,
@@ -1439,12 +1439,16 @@ pub struct Workspace {
     index_frozen: bool,
     /// The sidebar is shown.
     pub(crate) sidebar: bool,
-    /// The Git popup's size the person dragged it to (none: `git_block::SIZE`), kept as dragged
-    /// and written in the index; what is drawn is `git_popup_size`.
+    /// The popups' size the person dragged it to (none: `git_block::SIZE`), kept as dragged
+    /// and written in the index; what is drawn is `git_popup_size`. Git, Requests, Agents and
+    /// Automations share it (crate::popup).
     pub(crate) git_size: Option<Size>,
-    /// What the window leaves the Git popup, as the last frame measured it (infinite before the
+    /// What the window leaves the popups, as the last frame measured it (infinite before the
     /// first): the drag and the diff panel read it without a window.
     git_room: Size,
+    /// The popups fill their room (the header's Full screen) until the person restores them;
+    /// window chrome for this session, like the Templum Agent's.
+    pub(crate) popup_full: bool,
     pub(crate) cell: CellMetrics,
     /// IME pre-edit text, drawn at the cursor until committed.
     pub(crate) marked: Option<String>,
@@ -1984,6 +1988,7 @@ impl Workspace {
             sidebar: true,
             git_size: None,
             git_room: Size::new(f32::INFINITY, f32::INFINITY),
+            popup_full: false,
             cell,
             marked: None,
             ime_cursor: None,

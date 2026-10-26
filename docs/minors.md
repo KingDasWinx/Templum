@@ -2162,6 +2162,14 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   `scrollbar_over` (`crates/templum/src/agents_view.rs`, `detail`): a tall details column (many subagents, a long
   task) gives no hint that it goes on. Fix: keep a `ScrollHandle` for it in the Workspace and draw `scrollbar_over`.
 
+## Popups
+
+- [ ] **Git stays "open" across a workspace switch.** The sidebar is out of the popups' backdrop
+  (`crates/templum/src/popup.rs`, `slot`), so a workspace picked there while the Git popup is open keeps `git_open`:
+  a workspace with no Git shows no popup, and coming back shows Git again without a click. Requests, Agents and
+  Automations just show the new workspace's. Fix: `close_git` when the workspace shown changes, or open the new
+  workspace's Git as the button would.
+
 ## Automations
 
 - [ ] **A command typed into a terminal at its prompt joins what the person half-typed and left there.** Templum can't

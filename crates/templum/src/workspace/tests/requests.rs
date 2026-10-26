@@ -938,6 +938,8 @@ fn a_far_selected_terminal_with_a_pending_request_moves_the_group(cx: &mut TestA
     );
     shown(handle, cx);
     ws.update(cx, |ws, _| {
+        // Closed: its backdrop would take the press.
+        ws.inbox_open = false;
         ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 0.3);
         ws.space.flight = None;
         ws.space.focused = None;

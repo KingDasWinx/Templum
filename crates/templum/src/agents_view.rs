@@ -1,5 +1,5 @@
 //! The Agents popup (docs/specs/agents-view.md): every running agent of every workspace in one
-//! list, drawn like the requests inbox, each with its state and age; the selected one's details
+//! list, drawn as every popup is (crate::popup), each with its state and age; the selected one's details
 //! at the right; and the sidebar's button with the count of the agents that finished unseen.
 //! Window chrome: the canvas's zoom never scales the popup. Its model is `workspace/agents_view.rs`.
 
@@ -13,14 +13,13 @@ use gpui_kit::component::input::Input;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, BoxShadow, ClickEvent, Context, Div, ElementId, FontWeight, Hsla, KeyDownEvent,
-    ScrollWheelEvent, TestSupportExt, Window, div, point, px, uniform_list,
+    AnyElement, ClickEvent, Context, Div, ElementId, FontWeight, Hsla, KeyDownEvent,
+    ScrollWheelEvent, TestSupportExt, Window, div, px, uniform_list,
 };
 
 use crate::balloon::{self, SIDE};
-use crate::git_block::widgets::icon_button;
-use crate::grid::hsla;
 use crate::inbox::{age, count_badge, dim, section};
+use crate::popup;
 use crate::usage;
 use crate::workspace::agents_view::{AgentRow, Doing, Item, SCREEN_LINES, Show, items};
 use crate::workspace::{Pane, Workspace};
@@ -47,53 +46,65 @@ pub(crate) fn popup(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
-    let fg = hsla(ws.theme.palette.foreground, 1.0);
     let selected = ws.selected_in(&listed).map(|at| listed[at].clone());
     let now = cx.background_executor().now();
-    div()
-        .id("agents")
-        .w(px(w))
-        .h(px(h))
-        .flex()
-        .overflow_hidden()
-        .bg(ui.surface)
-        .text_color(fg)
+    let needs = all
+        .iter()
+        .filter(|row| matches!(row.doing, Doing::NeedsYou(_)))
+        .count();
+    popup::frame("agents", ws, w, h)
         .text_size(px(TEXT))
-        .border_1()
-        .border_color(ui.hairline)
-        .rounded(px(12.0))
-        .shadow(vec![BoxShadow {
-            color: ui.shadow,
-            offset: point(px(0.0), px(12.0)),
-            blur_radius: px(32.0),
-            spread_radius: px(0.0),
-            inset: false,
-        }])
-        // Presses inside never reach the canvas below.
-        .occlude()
         // Before the search field, which has the keyboard, hears them.
         .capture_key_down(
             cx.listener(|ws, e: &KeyDownEvent, window, cx| ws.on_agents_key(e, window, cx)),
         )
         // The wheel scrolls the lists and stops there: the popup occludes the canvas under it.
         .on_scroll_wheel(|_: &ScrollWheelEvent, _, cx| cx.stop_propagation())
-        .child(list(
+        .child(popup::header(
             ws,
-            all,
-            listed,
-            selected.as_ref().map(|r| r.terminal.clone()),
+            "agents",
+            popup::tile(IconName::Bot, ui.accent),
+            "Agents",
+            Some(popup::subtitle(ws, running_words(all.len(), needs))),
+            Vec::new(),
             cx,
         ))
-        .child(div().w(px(1.0)).h_full().flex_shrink_0().bg(ui.hairline))
-        .child(match &selected {
-            Some(row) => detail(ws, row, now, cx),
-            None => div().flex_1().into_any_element(),
-        })
+        .child(
+            div()
+                .flex_1()
+                .min_h(px(0.0))
+                .flex()
+                .child(list(
+                    ws,
+                    all,
+                    listed,
+                    selected.as_ref().map(|r| r.terminal.clone()),
+                    cx,
+                ))
+                .child(div().w(px(1.0)).h_full().flex_shrink_0().bg(ui.hairline))
+                .child(match &selected {
+                    Some(row) => detail(ws, row, now, cx),
+                    None => div().flex_1().into_any_element(),
+                }),
+        )
         .test_support()
         .into_any_element()
 }
 
-/// The left column: a header, the search, the chips, then the agents grouped by workspace.
+/// What the header says under "Agents": how many run, and how many of them need the person.
+pub(crate) fn running_words(running: usize, needs: usize) -> String {
+    let running = match running {
+        0 => "No agent is running".to_string(),
+        n => format!("{n} running"),
+    };
+    match needs {
+        0 => running,
+        1 => format!("{running} · 1 needs you"),
+        n => format!("{running} · {n} need you"),
+    }
+}
+
+/// The left column: the search, the chips, then the agents grouped by workspace.
 fn list(
     ws: &Workspace,
     all: &[AgentRow],
@@ -102,30 +113,6 @@ fn list(
     cx: &mut Context<Workspace>,
 ) -> Div {
     let ui = ws.ui;
-    let header = div()
-        .flex()
-        .items_center()
-        .flex_shrink_0()
-        .gap(px(8.0))
-        .px(px(12.0))
-        .py(px(10.0))
-        .child(
-            Icon::new(IconName::Bot)
-                .size(px(15.0))
-                .text_color(ui.accent),
-        )
-        .child(
-            div()
-                .flex_1()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child("Agents"),
-        )
-        .child(
-            icon_button("agents-close", IconName::Close, ui, 1.0)
-                .tooltip(|window, cx| Tooltip::new("Close (Esc)").build(window, cx))
-                .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.close_agents(window, cx)))
-                .test_support(),
-        );
     let counts = ws.counts_in(all);
     let chips = Show::ALL.into_iter().zip(counts).map(|(show, count)| {
         let chosen = ws.agents_show == show;
@@ -228,11 +215,11 @@ fn list(
         .flex_shrink_0()
         .flex()
         .flex_col()
-        .child(header)
         .children(ws.agents_search.as_ref().map(|search| {
             div()
                 .id("agents-find")
                 .px(px(12.0))
+                .pt(px(12.0))
                 .pb(px(8.0))
                 .child(Input::new(search))
                 .test_support()

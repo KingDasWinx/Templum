@@ -190,13 +190,32 @@ impl Workspace {
         self.placing(&[id]);
     }
 
-    /// The Git popup's size as drawn: the one the person set, kept inside the room the window
-    /// leaves it (`git_block::fit`).
+    /// The popups' size as drawn: the room at full screen, else the one the person set, kept
+    /// inside the room the window leaves it (`git_block::fit`).
     pub(crate) fn git_popup_size(&self) -> Size {
+        if self.popup_full {
+            return self.git_room;
+        }
         git_block::fit(self.git_size, self.git_room)
     }
 
-    /// Pressed on the popup's right edge, top edge or the corner between them (`edges`).
+    /// Closes whichever popup is open (only one ever is): its Close button, a press outside it.
+    pub(crate) fn close_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.git_open {
+            self.close_git(window, cx);
+        }
+        if self.inbox_open {
+            self.close_inbox(window, cx);
+        }
+        if self.agents_open {
+            self.close_agents(window, cx);
+        }
+        if self.automations_open {
+            self.close_automations(window, cx);
+        }
+    }
+
+    /// Pressed on a popup's right edge, top edge or the corner between them (`edges`).
     pub(crate) fn begin_git_resize(&mut self, edges: Edges, pos: PixelPoint<Pixels>) {
         self.drag = Some(Drag::GitResize {
             edges,
@@ -331,7 +350,7 @@ impl Workspace {
                 }
             }
             Some(Drag::Wire { to, .. }) => *to = self.space.canvas.camera.to_world(p),
-            // The popup sits at the bottom-left: its right edge grows it to the right, its top
+            // A popup sits at the bottom-left: its right edge grows it to the right, its top
             // edge upward, so the pointer's way is the size's. Kept inside the room as dragged,
             // so the popup never trails a pointer that went past the window. A side not dragged
             // keeps what was set, not what a smaller window draws.

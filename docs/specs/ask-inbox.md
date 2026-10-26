@@ -69,8 +69,11 @@ and Ctrl+Shift+A. It sits where the Git popup sits with no sidebar.
 
 ### The inbox popup
 
-Drawn like the Git popup: same size rule (`git_popup_size`), place, layering, hairlines and colors; Esc closes it, as
-does the button. Only one of the Git popup and the inbox is open at a time. Two columns:
+Drawn as every popup is ([design-system.md](design-system.md#popups), card 217): the same place, size
+(`git_popup_size`, resized by its right and top edges like Git's), frame, full screen and closing; Esc closes it, as do
+its Close button and a press outside it. Only one of Git, Requests, Agents and Automations is open at a time. The
+header runs across it (the yellow CircleQuestionMark tile, "Requests" over how many wait: "1 request waits for your
+answer", "Nothing waits for you"); under it, two columns:
 
 - **The list** (left): one row per waiting request of the current workspace, **oldest first**, each showing the
   asking agent and its block's title, the card it works on ("#152 Attachments", when there is one), what it is (a
@@ -92,11 +95,10 @@ does the button. Only one of the Git popup and the inbox is open at a time. Two 
     ("The agent stopped waiting: your answer will be typed into its terminal.").
 - **After an answer** (Send, Dismiss, a button), the next request in the list is selected; with none left, the right
   column says nothing waits ("Nothing waits for you") and the inbox stays open.
-- **Keys** (*the designer's call*; unlike the Git popup, whose backdrop closes it on a press outside, the inbox has no
-  backdrop): opening the inbox (its button, the notice, Ctrl+Shift+A — all the person's own acts) gives it the
-  keyboard, and so does a click in it; a click on the canvas or a block reaches what was clicked, gives it the
-  keyboard, and the inbox **stays open** beside it, so the person
-  can read or type into an agent's terminal and come back. While it has the keyboard, ask-user.md's keys work on the
+- **Keys** (*the designer's call*): opening the inbox (its button, the notice, Ctrl+Shift+A — all the person's own
+  acts) gives it the keyboard, and so does a click in it. A press outside it closes it, as the Git popup's backdrop
+  does, and what is under the press doesn't get it (card 217, the person's call: it replaced the inbox staying open
+  beside a clicked terminal); the keyboard goes back to the canvas. While it has the keyboard, ask-user.md's keys work on the
   selected request, and ↑/↓ with Alt (or the builder's choice that doesn't clash with the dialog's own arrows) move in
   the list; Esc closes it. This replaces the balloon's `balloon_keys`/`away` routing (workspace/input.rs).
 - **TOO_SOON** (waits.rs) still guards a request that just appeared from a press meant for something else.

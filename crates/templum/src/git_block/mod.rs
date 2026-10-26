@@ -32,10 +32,10 @@ mod view;
 pub(crate) mod widgets;
 pub(crate) mod words;
 
-pub(crate) use view::{popup, resize_zones};
+pub(crate) use view::popup;
 pub(crate) use widgets::field;
 
-/// The Git popup's size, pixels, until the person drags it to another; a smaller window gets a
+/// The popups' size (Git's, and the others in its place: crate::popup), pixels, until the person drags it to another; a smaller window gets a
 /// smaller one.
 pub(crate) const SIZE: Size = Size { w: 760.0, h: 540.0 };
 /// The smallest the person can drag the popup to: the header's actions, a list column and a
