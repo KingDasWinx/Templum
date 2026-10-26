@@ -30,6 +30,13 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing structure. Dec
   and the lessons in [ADR-0002](docs/adr/0002-ui-framework.md) instead of guessing APIs. The `spike/gpui` branch has a working
   canvas-of-terminals prototype to learn from.
 - **Tests:** every logic change ships a test that fails without it. For UI-only changes, state how you verified them.
+- **One layout and design standard** ([docs/specs/design-system.md](docs/specs/design-system.md), its Popups section;
+  the Git popup is the reference): every popup or modal is built from `crates/templum/src/popup.rs` (`frame`,
+  `header`, `slot`, `content`, `section`, `row`, `line`, `foot`) and never draws its own frame, so each one has the
+  full-width header (tile, title, subtitle, actions, Full screen, Close), the resize edges, full screen, Esc and a
+  press outside to close, and forms as sections of labelled rows, not a column of stacked fields. Colors come only
+  from the theme's tokens, sizes and spacing from the spec's values. A new kind of UI writes its standard in that
+  spec in the same change, and its look is checked by running the app beside the Git popup.
 - **Every feature in the API** (kanban card 171, [docs/specs/api.md](docs/specs/api.md)): a new feature ships its
   Templum API surface (a tool in the registry, or its data in the API's state) and its lines in `docs/api.md`, in the
   same change. A control tool is in the API by itself; give it its scope (`control::reads`, `control::rule`).
