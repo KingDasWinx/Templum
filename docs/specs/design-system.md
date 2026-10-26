@@ -124,7 +124,11 @@ them and never redraws its own frame.
   buttons); **Full screen** (`Maximize2`, "Full screen"; `Minimize2`, "Exit full screen" while on); **Close**
   (`Close`, "Close (Esc)"). Ids: `{name}-header`, `{name}-close`, `popup-full`.
 - **Body:** a list column at the left with a hairline at its right, and the selected item at the right (or one
-  panel).
+  panel). The content of a detail or a form grows to `popup::CONTENT_MAX` (680 px) and stays centered past it
+  (`popup::content`), so full screen never stretches a field across the window; a list keeps its width.
+- **Foot** (`popup::foot`): what stays under a scrolling body, a hairline over it and 10 px above and under its
+  content, which has the body's side padding and width. Its buttons sit at the right, the secondary (ghost) before
+  the primary (solid); a problem shows above them in the palette's red.
 - **Full screen:** the header's toggle makes the popups of this place fill the room (the canvas beside the sidebar,
   less `GAP` on every side) until it is toggled back; it holds for every popup of the place, Git's included, for this
   session (`Workspace::popup_full`): window chrome, never saved, not in the API. The size set stays and comes back.
@@ -132,6 +136,14 @@ them and never redraws its own frame.
   The sidebar stays out of the backdrop: its buttons switch from one popup to another, and the open one's button
   closes it. Esc closes it, and so does Close (`Workspace::close_popup` closes whichever is open). Closing gives the
   keyboard back to the canvas when the popup had it.
+- **A form** (`popup::section`, `popup::row`, `popup::line`): its fields grouped in sections, each one's name in
+  small dim capitals (`inbox::section`, 11.5 px) over its rows; 18 px between sections, 8 px between rows. A row is
+  its label in a column of its own (`popup::LABEL_W`, 92 px, 11.5 px `ui.title_dim`, on the middle of a 24 px small
+  field) and the field beside it, 12 px apart. Related controls share a line (`popup::line`, 8 px apart: When and its
+  time, Where with Stop after and Cooldown); a narrow column wraps them under the field, never under the label. A
+  short choice's dropdown is as wide as its words; a text field, a block's dropdown and a text area take the line.
+  What sums the form up without being a field (a sentence, the next run, the last one; where a request comes from)
+  is a card above it: `ui.card`, 8 px corners, 12 px padding.
 - **Colors:** the theme's tokens only (`ui.surface`, `hairline`, `hover`, `card`, `accent`, `title_dim`, `shadow`) and
   the palette's yellow and red for what waits or failed: a popup adds no color.
 

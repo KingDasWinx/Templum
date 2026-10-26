@@ -19,6 +19,7 @@ use crate::automations::clock::{Cron, next_after, time_words};
 use crate::automations::{Automation, COOLDOWN, Do, FIRED, Heard, When, Who};
 use crate::balloon;
 use crate::grid::hsla;
+use crate::popup;
 use crate::settings::row::menu_button;
 use crate::workspace::Workspace;
 use crate::workspace::automations::NEW;
@@ -806,12 +807,22 @@ impl Form {
     }
 }
 
-fn label(ws: &Workspace, words: &'static str) -> Div {
+/// A field with its name before it and its unit after it, kept together on a row's line.
+fn pair(ws: &Workspace, name: &'static str, field: Div, unit: Option<&'static str>) -> Div {
+    let dim = |words: &'static str| {
+        div()
+            .flex_shrink_0()
+            .text_size(px(SMALL))
+            .text_color(ws.ui.title_dim)
+            .child(words)
+    };
     div()
-        .mt(px(4.0))
-        .text_size(px(SMALL))
-        .text_color(ws.ui.title_dim)
-        .child(words)
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .child(dim(name))
+        .child(field)
+        .children(unit.map(dim))
 }
 
 /// A small toggle: a weekday, a day of the month.
@@ -1146,13 +1157,17 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
     let fixed = |input: &Entity<InputState>, width: f32| {
         div().w(px(width)).child(Input::new(input).small())
     };
-    let when_fields: AnyElement = match &a.when {
-        When::Once { .. } => div()
-            .flex()
-            .gap(px(8.0))
-            .child(fixed(&form.date, 140.0))
-            .child(fixed(&form.time, 90.0))
-            .into_any_element(),
+    // What sits beside the When dropdown, and the rows under it.
+    let (when_inline, when_rows): (Option<AnyElement>, Vec<AnyElement>) = match &a.when {
+        When::Once { .. } => (
+            Some(
+                popup::line()
+                    .child(fixed(&form.date, 140.0))
+                    .child(fixed(&form.time, 90.0))
+                    .into_any_element(),
+            ),
+            Vec::new(),
+        ),
         When::Every { .. } => {
             let unit = {
                 let entity = entity.clone();
@@ -1166,15 +1181,17 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
                     },
                 )
             };
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .child(fixed(&form.minutes, 90.0))
-                .child(unit)
-                .into_any_element()
+            (
+                Some(
+                    popup::line()
+                        .child(fixed(&form.minutes, 90.0))
+                        .child(unit)
+                        .into_any_element(),
+                ),
+                Vec::new(),
+            )
         }
-        When::Daily { .. } => fixed(&form.time, 90.0).into_any_element(),
+        When::Daily { .. } => (Some(fixed(&form.time, 90.0).into_any_element()), Vec::new()),
         When::Agent { event, who } => {
             let who_kind = match who {
                 Who::Blocks { .. } => "blocks",
@@ -1190,7 +1207,7 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
                     move |value, cx| entity.update(cx, |ws, cx| ws.set_who_kind(&value, cx)),
                 )
             };
-            let choose: AnyElement = match who {
+            let choose = match who {
                 Who::Blocks {
                     blocks: chosen,
                     all,
@@ -1274,24 +1291,28 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
                             },
                         )
                     });
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(6.0))
-                        .child(
-                            div()
-                                .w_full()
-                                .flex()
-                                .flex_wrap()
-                                .gap(px(4.0))
-                                .children(chips),
-                        )
-                        .children(set)
-                        .into_any_element()
+                    popup::row(
+                        ws,
+                        "Agents",
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap(px(4.0))
+                                    .children(chips),
+                            )
+                            .children(set),
+                    )
+                    .into_any_element()
                 }
                 Who::Kind { kind } => {
                     let choices = agent_choices(ws, &home);
-                    block_menu(
+                    let menu = block_menu(
                         "automation-kind",
                         choices,
                         kind,
@@ -1307,26 +1328,21 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
                             }
                         },
                         id,
-                    )
-                    .into_any_element()
+                    );
+                    popup::row(ws, "Kind", menu).into_any_element()
                 }
             };
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.0))
-                .child(label(ws, "Who"))
-                .child(who_menu)
-                .child(choose)
-                .into_any_element()
+            (
+                None,
+                vec![
+                    popup::row(ws, "Who", popup::line().child(who_menu)).into_any_element(),
+                    choose,
+                ],
+            )
         }
         When::Command { terminal, failures } => {
             let on = *failures;
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.0))
-                .child(label(ws, "Terminal"))
+            let line = popup::line()
                 .child(block_menu(
                     "automation-event-terminal",
                     blocks(ws, a, false, cx),
@@ -1341,33 +1357,34 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
                     id,
                 ))
                 .child(
-                    div().flex().child(
-                        toggle(
-                            ws,
-                            ElementId::Name("automation-failures".into()),
-                            "Failures only".into(),
-                            on,
-                            cx,
-                            move |ws, cx| {
-                                let Some(id) = ws.automation_form.as_ref().and_then(|f| f.for_id)
-                                else {
-                                    return;
-                                };
-                                ws.edit_automation(
-                                    id,
-                                    |a| {
-                                        if let When::Command { failures, .. } = &mut a.when {
-                                            *failures = !on;
-                                        }
-                                    },
-                                    cx,
-                                );
-                            },
-                        )
-                        .test_support(),
-                    ),
-                )
-                .into_any_element()
+                    toggle(
+                        ws,
+                        ElementId::Name("automation-failures".into()),
+                        "Failures only".into(),
+                        on,
+                        cx,
+                        move |ws, cx| {
+                            let Some(id) = ws.automation_form.as_ref().and_then(|f| f.for_id)
+                            else {
+                                return;
+                            };
+                            ws.edit_automation(
+                                id,
+                                |a| {
+                                    if let When::Command { failures, .. } = &mut a.when {
+                                        *failures = !on;
+                                    }
+                                },
+                                cx,
+                            );
+                        },
+                    )
+                    .test_support(),
+                );
+            (
+                None,
+                vec![popup::row(ws, "Terminal", line).into_any_element()],
+            )
         }
         When::Weekly { days, .. } => {
             let chips = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -1404,13 +1421,17 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
                         },
                     )
                 });
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(8.0))
-                .child(div().flex().flex_wrap().gap(px(4.0)).children(chips))
-                .child(fixed(&form.time, 90.0))
-                .into_any_element()
+            (
+                Some(fixed(&form.time, 90.0).into_any_element()),
+                vec![
+                    popup::row(
+                        ws,
+                        "Days",
+                        div().flex().flex_wrap().gap(px(4.0)).children(chips),
+                    )
+                    .into_any_element(),
+                ],
+            )
         }
         When::Monthly { days, .. } => {
             let rows = (0..5u8).map(|row| {
@@ -1449,19 +1470,16 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
                     });
                 div().flex().gap(px(4.0)).children(chips)
             });
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(4.0))
-                .children(rows)
-                .child(
-                    div()
-                        .text_size(px(SMALL))
-                        .text_color(ui.title_dim)
-                        .child("29, 30 and 31 run on the last day of shorter months."),
-                )
-                .child(fixed(&form.time, 90.0))
-                .into_any_element()
+            let days = div().flex().flex_col().gap(px(4.0)).children(rows).child(
+                div()
+                    .text_size(px(SMALL))
+                    .text_color(ui.title_dim)
+                    .child("29, 30 and 31 run on the last day of shorter months."),
+            );
+            (
+                Some(fixed(&form.time, 90.0).into_any_element()),
+                vec![popup::row(ws, "Days", days).into_any_element()],
+            )
         }
         When::Cron { expr } => {
             let under = match cron_preview(expr) {
@@ -1471,13 +1489,16 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
                     .child(next),
                 Err(why) => div().text_size(px(SMALL)).text_color(red).child(why),
             };
-            div()
+            let field = div()
                 .flex()
                 .flex_col()
                 .gap(px(4.0))
                 .child(Input::new(&form.cron).small())
-                .child(under.id("automation-cron-next").test_support())
-                .into_any_element()
+                .child(under.id("automation-cron-next").test_support());
+            (
+                None,
+                vec![popup::row(ws, "Expression", field).into_any_element()],
+            )
         }
     };
 
@@ -1498,40 +1519,44 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
         )
     };
     let draft = id;
-    let do_fields: AnyElement = match &a.act {
-        Do::Prompt { block, .. } => div()
-            .flex()
-            .flex_col()
-            .gap(px(6.0))
-            .child(label(ws, "Agent"))
-            .child(block_menu(
-                "automation-block",
-                {
-                    // An agent event can type into the agent that fired it.
-                    let mut choices = blocks(ws, a, true, cx);
-                    if matches!(a.when, When::Agent { .. }) {
-                        choices.insert(0, (FIRED.into(), "The agent that fired it".into()));
-                    }
-                    choices
-                },
-                block,
-                kept_label(ws, block),
-                &entity,
-                |a, value| {
-                    if let Do::Prompt { block, .. } = &mut a.act {
-                        *block = value;
-                    }
-                },
-                draft,
-            ))
-            .child(label(ws, "Prompt"))
-            .child(
+    // The rows under the Do dropdown.
+    let do_rows: Vec<AnyElement> = match &a.act {
+        Do::Prompt { block, .. } => vec![
+            popup::row(
+                ws,
+                "Agent",
+                block_menu(
+                    "automation-block",
+                    {
+                        // An agent event can type into the agent that fired it.
+                        let mut choices = blocks(ws, a, true, cx);
+                        if matches!(a.when, When::Agent { .. }) {
+                            choices.insert(0, (FIRED.into(), "The agent that fired it".into()));
+                        }
+                        choices
+                    },
+                    block,
+                    kept_label(ws, block),
+                    &entity,
+                    |a, value| {
+                        if let Do::Prompt { block, .. } = &mut a.act {
+                            *block = value;
+                        }
+                    },
+                    draft,
+                ),
+            )
+            .into_any_element(),
+            popup::row(
+                ws,
+                "Prompt",
                 div()
                     .id("automation-prompt")
                     .child(Textarea::new(&form.prompt).w_full())
                     .test_support(),
             )
             .into_any_element(),
+        ],
         Do::Command { terminal, .. } => {
             let in_terminal = terminal.is_some();
             let place = {
@@ -1561,13 +1586,11 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
                     },
                 )
             };
-            let target: AnyElement = match terminal {
-                Some(current) => div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.0))
-                    .child(label(ws, "Terminal"))
-                    .child(block_menu(
+            let target = match terminal {
+                Some(current) => popup::row(
+                    ws,
+                    "Terminal",
+                    block_menu(
                         "automation-terminal",
                         blocks(ws, a, false, cx),
                         current,
@@ -1579,88 +1602,63 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
                             }
                         },
                         draft,
-                    ))
-                    .into_any_element(),
-                None => div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.0))
-                    .child(label(ws, "Folder"))
-                    .child(Input::new(&form.folder).small())
-                    .into_any_element(),
+                    ),
+                ),
+                None => popup::row(ws, "Folder", Input::new(&form.folder).small()),
             };
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.0))
-                .child(label(ws, "In"))
-                .child(place)
-                .child(target)
-                .child(label(ws, "Command"))
-                .child(Input::new(&form.command).small())
-                .into_any_element()
+            vec![
+                popup::row(ws, "In", popup::line().child(place)).into_any_element(),
+                target.into_any_element(),
+                popup::row(ws, "Command", Input::new(&form.command).small()).into_any_element(),
+            ]
         }
         Do::Agent { agent, .. } => {
             let choices = agent_choices(ws, &home);
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.0))
-                .child(label(ws, "Agent"))
-                .child(block_menu(
-                    "automation-agent",
-                    choices,
-                    agent,
-                    format!("{agent} (removed)"),
-                    &entity,
-                    |a, value| {
-                        if let Do::Agent { agent, .. } = &mut a.act {
-                            *agent = value;
-                        }
-                    },
-                    draft,
-                ))
-                .child(label(ws, "Folder"))
-                .child(Input::new(&form.folder).small())
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(8.0))
-                        .child(
-                            div()
-                                .flex_1()
-                                .flex()
-                                .flex_col()
-                                .gap(px(6.0))
-                                .child(label(ws, "Model"))
-                                .child(Input::new(&form.model).small()),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .flex()
-                                .flex_col()
-                                .gap(px(6.0))
-                                .child(label(ws, "Effort"))
-                                .child(Input::new(&form.effort).small()),
-                        ),
+            vec![
+                popup::row(
+                    ws,
+                    "Agent",
+                    block_menu(
+                        "automation-agent",
+                        choices,
+                        agent,
+                        format!("{agent} (removed)"),
+                        &entity,
+                        |a, value| {
+                            if let Do::Agent { agent, .. } = &mut a.act {
+                                *agent = value;
+                            }
+                        },
+                        draft,
+                    ),
                 )
-                .child(label(ws, "Prompt"))
-                .child(
+                .into_any_element(),
+                popup::row(ws, "Folder", Input::new(&form.folder).small()).into_any_element(),
+                popup::row(
+                    ws,
+                    "Model",
+                    popup::line().child(fixed(&form.model, 140.0)).child(pair(
+                        ws,
+                        "Effort",
+                        fixed(&form.effort, 110.0),
+                        None,
+                    )),
+                )
+                .into_any_element(),
+                popup::row(
+                    ws,
+                    "Prompt",
                     div()
                         .id("automation-agent-prompt")
                         .child(Textarea::new(&form.agent_prompt).w_full())
                         .test_support(),
                 )
-                .into_any_element()
+                .into_any_element(),
+            ]
         }
-        Do::Notify { .. } => div()
-            .flex()
-            .flex_col()
-            .gap(px(6.0))
-            .child(label(ws, "Text"))
-            .child(Input::new(&form.notify).small())
-            .into_any_element(),
+        Do::Notify { .. } => {
+            vec![popup::row(ws, "Text", Input::new(&form.notify).small()).into_any_element()]
+        }
     };
 
     // Where.
@@ -1706,63 +1704,18 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
         .clone()
         .or_else(|| form.unreadable.map(|(_, why)| why.to_string()));
 
-    let body = div()
-        .id("automation-editor")
-        .flex_1()
-        .min_h(px(0.0))
-        .overflow_y_scroll()
-        .px(px(16.0))
-        .py(px(14.0))
+    // What it does and when it runs next, apart from the fields that say it.
+    let summary = div()
+        .id("automation-summary")
         .flex()
         .flex_col()
-        .gap(px(8.0))
-        .child(label(ws, "Name"))
-        .child(Input::new(&form.name).small())
-        .child(label(ws, "When"))
-        .child(when_menu)
-        .child(when_fields)
-        .child(label(ws, "Do"))
-        .child(do_menu)
-        .child(do_fields)
-        .children(ws.automation_loop(a).map(|words| {
-            div()
-                .id("automation-loop")
-                .w_full()
-                .text_size(px(SMALL))
-                .text_color(yellow)
-                .child(words)
-                .test_support()
-        }))
-        .child(label(ws, "Where"))
-        .child(where_menu)
-        .child(label(ws, "Stop after"))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .child(div().w(px(90.0)).child(Input::new(&form.stop).small()))
-                .child(div().text_color(ui.title_dim).child("runs")),
-        )
-        .children(a.when.is_event().then(|| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(8.0))
-                .child(label(ws, "Cooldown"))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .child(div().w(px(90.0)).child(Input::new(&form.cooldown).small()))
-                        .child(div().text_color(ui.title_dim).child("minutes")),
-                )
-        }))
+        .gap(px(4.0))
+        .p(px(12.0))
+        .rounded(px(8.0))
+        .bg(ui.card)
         .child(
             div()
                 .id("automation-sentence")
-                .mt(px(8.0))
                 .w_full()
                 .overflow_hidden()
                 .font_weight(FontWeight::MEDIUM)
@@ -1788,7 +1741,58 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
                 .text_color(ui.title_dim)
                 .child(words)
                 .test_support()
-        }));
+        }))
+        .test_support();
+    let numbers = popup::line()
+        .child(where_menu)
+        .child(pair(
+            ws,
+            "Stop after",
+            fixed(&form.stop, 80.0),
+            Some("runs"),
+        ))
+        .children(
+            a.when
+                .is_event()
+                .then(|| pair(ws, "Cooldown", fixed(&form.cooldown, 80.0), Some("minutes"))),
+        );
+    let body = div()
+        .id("automation-editor")
+        .flex_1()
+        .min_h(px(0.0))
+        .overflow_y_scroll()
+        .py(px(14.0))
+        .child(
+            popup::content()
+                .px(px(16.0))
+                .gap(px(18.0))
+                .child(summary)
+                .child(popup::row(ws, "Name", Input::new(&form.name).small()))
+                .child(
+                    popup::section(ws, "Trigger")
+                        .child(popup::row(
+                            ws,
+                            "When",
+                            popup::line().child(when_menu).children(when_inline),
+                        ))
+                        .children(when_rows),
+                )
+                .child(
+                    popup::section(ws, "Action")
+                        .child(popup::row(ws, "Do", popup::line().child(do_menu)))
+                        .children(do_rows)
+                        .children(ws.automation_loop(a).map(|words| {
+                            div()
+                                .id("automation-loop")
+                                .pl(px(popup::LABEL_W + 12.0))
+                                .text_size(px(SMALL))
+                                .text_color(yellow)
+                                .child(words)
+                                .test_support()
+                        })),
+                )
+                .child(popup::section(ws, "Options").child(popup::row(ws, "Where", numbers))),
+        );
 
     // Home's rule is saved at home: from another computer it turns off when the share ends, and
     // Save says why when this share can't.
@@ -1826,34 +1830,37 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
             ws.reload_automation_form();
         }))
         .test_support();
-    let foot = div()
-        .flex_shrink_0()
-        .px(px(16.0))
-        .py(px(10.0))
-        .flex()
-        .flex_col()
-        .gap(px(6.0))
-        .border_t_1()
-        .border_color(ui.hairline)
-        .children(from_elsewhere.map(|words| {
-            div()
-                .id("automation-elsewhere")
-                .w_full()
-                .text_size(px(SMALL))
-                .text_color(ui.title_dim)
-                .child(words)
-                .test_support()
-        }))
-        .children(problem.map(|why| {
-            div()
-                .id("automation-problem")
-                .w_full()
-                .text_size(px(SMALL))
-                .text_color(red)
-                .child(why)
-                .test_support()
-        }))
-        .child(div().flex().gap(px(8.0)).child(save).child(revert));
+    let foot = popup::foot(ws).child(
+        popup::content()
+            .px(px(16.0))
+            .gap(px(6.0))
+            .children(from_elsewhere.map(|words| {
+                div()
+                    .id("automation-elsewhere")
+                    .w_full()
+                    .text_size(px(SMALL))
+                    .text_color(ui.title_dim)
+                    .child(words)
+                    .test_support()
+            }))
+            .children(problem.map(|why| {
+                div()
+                    .id("automation-problem")
+                    .w_full()
+                    .text_size(px(SMALL))
+                    .text_color(red)
+                    .child(why)
+                    .test_support()
+            }))
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(revert)
+                    .child(save),
+            ),
+    );
 
     div()
         .flex_1()

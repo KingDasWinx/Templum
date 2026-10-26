@@ -1,8 +1,8 @@
 //! The popups over the canvas's bottom-left corner — Git, Requests, Agents and Automations —
 //! drawn one way (docs/specs/design-system.md, Popups): the frame, the header across its width,
-//! the slot (its place, its resize edges, the backdrop a press outside closes it on) and full
-//! screen. Window chrome: the canvas's zoom never scales them. Only one is open at a time, and
-//! they share one size (`Workspace::git_popup_size`).
+//! the slot (its place, its resize edges, the backdrop a press outside closes it on), full screen
+//! and a form's layout. Window chrome: the canvas's zoom never scales them. Only one is open at a
+//! time, and they share one size (`Workspace::git_popup_size`).
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
@@ -23,6 +23,13 @@ use crate::workspace::Workspace;
 pub(crate) const GAP: f32 = 8.0;
 /// The header's height: the icon's tile, its padding and the hairline under it.
 pub(crate) const HEADER: f32 = 55.0;
+/// The widest a form's or a detail's content grows: full screen leaves the rest at its sides.
+pub(crate) const CONTENT_MAX: f32 = 680.0;
+/// A form's label column, and the height of a small field a label sits beside.
+pub(crate) const LABEL_W: f32 = 92.0;
+const FIELD_H: f32 = 24.0;
+/// What is said about things: a subtitle, a form's labels.
+const SMALL: f32 = 11.5;
 
 /// The popup's box, `w` × `h` pixels, a column: the header, then its body. Presses inside never
 /// reach the canvas below.
@@ -232,4 +239,58 @@ fn zone(name: &'static str, edges: Edges, cx: &mut Context<Workspace>) -> Statef
             cx.stop_propagation();
         }),
     )
+}
+
+/// A column of a body that grows to `CONTENT_MAX` and stays centered past it.
+pub(crate) fn content() -> Div {
+    div()
+        .w_full()
+        .max_w(px(CONTENT_MAX))
+        .mx_auto()
+        .flex()
+        .flex_col()
+}
+
+/// A form's section: its name over its rows.
+pub(crate) fn section(ws: &Workspace, name: &'static str) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .child(crate::inbox::section(ws, name))
+}
+
+/// A form's row: `label` in the label column, `field` beside it; what the field holds wraps
+/// under itself, never under the label.
+pub(crate) fn row(ws: &Workspace, label: &'static str, field: impl IntoElement) -> Div {
+    div()
+        .flex()
+        .items_start()
+        .gap(px(12.0))
+        .child(
+            div()
+                .w(px(LABEL_W))
+                .h(px(FIELD_H))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .text_size(px(SMALL))
+                .text_color(ws.ui.title_dim)
+                .child(label),
+        )
+        .child(div().flex_1().min_w(px(0.0)).child(field))
+}
+
+/// Related controls on one line of a row, wrapping onto the next when the column is narrow.
+pub(crate) fn line() -> Div {
+    div().flex().flex_wrap().items_center().gap(px(8.0))
+}
+
+/// The foot under a body, which stays while the body scrolls: a hairline over its actions.
+pub(crate) fn foot(ws: &Workspace) -> Div {
+    div()
+        .flex_shrink_0()
+        .py(px(10.0))
+        .border_t_1()
+        .border_color(ws.ui.hairline)
 }

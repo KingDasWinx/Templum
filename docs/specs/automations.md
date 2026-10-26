@@ -450,7 +450,13 @@ and a **Cancel** button (tooltip "Cancel s3"), which ends it as its block's menu
 ### The editor
 
 The selected automation, top to bottom (*the orchestrator's call*: a form with a When picker and a Do picker, its
-sentence and its next run; *the designer's call* for the rest):
+sentence and its next run; *the designer's call* for the rest). Card 217 laid it out as design-system.md's form: at
+most 680 px wide and centered; first **the summary card** (the preview and the last run below, apart from the
+fields); then **Name**; then the sections **Trigger** (When and its fields), **Action** (Do and its fields, the loop
+warning) and **Options** (Where, Stop after and Cooldown on one line). Every label sits in a column at the left of its
+field; what belongs together shares a line: When with its date and time, its number and unit, or its time (Days on a
+row of their own under it); Model with Effort. Short choices (When, Do, Who, In, the unit) are dropdowns as wide as
+their words; the blocks' dropdowns and the text fields take the line.
 
 - **Name**, a field whose placeholder is the preview sentence.
 - **When**, a dropdown: Once, Every, Every day, On weekdays, On days of the month, Advanced (cron); batch 2 adds When
@@ -484,11 +490,11 @@ sentence and its next run; *the designer's call* for the rest):
 - **Where**, a dropdown: All workspaces, then the workspaces in the sidebar's order (only workspaces for a new
   terminal or Start an agent); new: the workspace shown.
 - **Stop after** (a number field, empty for no limit, "runs"); batch 2, for an event, **Cooldown** ("minutes").
-- **The preview:** its sentence, and "Next: Tomorrow 09:00" ("Next: never, it is off"; "Target missing: abc12 isn't
+- **The preview** (the summary card, at the top): its sentence, and "Next: Tomorrow 09:00" ("Next: never, it is off"; "Target missing: abc12 isn't
   open"; batch 2: "Runs when abc12 finishes its turn").
-- **Last run:** "Failed Yesterday 16:00: abc12 runs no agent now: a prompt is never typed into a shell." in full, once
-  there is one.
-- **The foot:** **Save** and **Revert**. Edits are a draft until saved (*the designer's call*: a half-typed prompt
+- **Last run** (in the summary card, under the next run): "Failed Yesterday 16:00: abc12 runs no agent now: a prompt
+  is never typed into a shell." in full, once there is one.
+- **The foot:** **Revert** and **Save** at its right (card 217: the popups' foot). Edits are a draft until saved (*the designer's call*: a half-typed prompt
   must never run): the row shows a dot while it has one, and the draft stays while the person selects another row or
   closes the popup, until Save, Revert or a restart. Save checks the draft: a problem shows in red above the buttons
   ("Choose an agent.", "Choose a terminal.", "Write the prompt.", "Write the command.", "Write the text.", "Choose at
