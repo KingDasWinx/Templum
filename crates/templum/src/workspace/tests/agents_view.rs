@@ -640,19 +640,23 @@ fn the_order_holds_while_the_pointer_is_over_the_list() {
 #[gpui_kit::test]
 fn the_listed_order_is_kept_under_the_pointer(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
-    let a = agent(handle, &ws, cx, 0);
-    let b = agent(handle, &ws, cx, 1);
+    // Same state and title: their terminals order them, as text ("…-100" before "…-94").
+    let mut first = agent(handle, &ws, cx, 0);
+    let mut second = agent(handle, &ws, cx, 1);
+    if second.1 < first.1 {
+        std::mem::swap(&mut first, &mut second);
+    }
     // Listed as the popup does each frame; the pointer then comes over it.
     frame(handle, cx);
-    assert_eq!(listed(&ws, cx), [a.1.clone(), b.1.clone()]);
+    assert_eq!(listed(&ws, cx), [first.1.clone(), second.1.clone()]);
     ws.update(cx, |ws, _| ws.agents_hover = true);
     ws.update(cx, |ws, _| {
-        ws.space.terminal_mut(b.0).unwrap().state = Some(AgentState::NeedsYou(None))
+        ws.space.terminal_mut(second.0).unwrap().state = Some(AgentState::NeedsYou(None))
     });
     frame(handle, cx);
-    assert_eq!(listed(&ws, cx), [a.1.clone(), b.1.clone()]);
+    assert_eq!(listed(&ws, cx), [first.1.clone(), second.1.clone()]);
     ws.update(cx, |ws, _| ws.agents_hover = false);
-    assert_eq!(listed(&ws, cx), [b.1, a.1]);
+    assert_eq!(listed(&ws, cx), [second.1, first.1]);
 }
 
 #[gpui_kit::test]
