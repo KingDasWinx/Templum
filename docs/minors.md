@@ -713,6 +713,18 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## Kanban
 
+- [ ] **The card's dialog isn't built on the Popups standard.** Seen with card 258. `open_draft`
+  (`crates/templum/src/kanban.rs`) opens gpui-kit's `Dialog`, centered a tenth down the window, with a header and a
+  footer of its own: no tile, title and subtitle, no Full screen or Close, no resize edges. A person meets a window
+  of another kind than Git, Requests, Agents and Automations, can't make the card larger than 600 wide, and closes it
+  only with Done, Esc or a press outside. Fix: draw it with `popup::frame`, `header` (the kanban tile, "Card #40",
+  "In Doing on Board 3", Full screen, Close) and `foot` (Delete card, Done), its body as it is, keeping its ids; the
+  design system's Popups section says where a modal of this kind sits.
+- [ ] **The description's grip dragged below the card dialog's footer goes under it.** The dialog's body (gpui-kit's)
+  doesn't scroll while the grip is dragged (`description_field`, `crates/templum/src/kanban.rs`): a field low in the
+  body can be made taller than what shows, the grip and the field's bottom out of sight until the person lets go and
+  scrolls. Fix: scroll the body by what the field's bottom passes its edge during the drag (the body's scroll handle
+  is the kit's, so it needs one of ours around the body), with a test.
 - [ ] **Ctrl+Z of a Done on a reopened draft loses the draft's content.** `Boards::finish_draft`
   (`crates/templum/src/board.rs`) drops the draft inside the undo step, and `undo_boards`
   (`crates/templum/src/workspace/blocks.rs`) keeps only the drafts kept now, so the card goes back as it was and the
