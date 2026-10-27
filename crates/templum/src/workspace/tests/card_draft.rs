@@ -121,6 +121,16 @@ fn done_creates_the_card_with_its_title_item_and_comment_as_one_undo_step(cx: &m
     press_key(handle, cx, "enter");
     click_on(handle, cx, "comment-field");
     cx.simulate_input(handle, "Hello");
+    // Comment is under the body's fold in the test's window, as the person would find it.
+    cx.update_window(handle, |_, window, cx| {
+        window.scroll(
+            "card-checklist",
+            gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-5000.))),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
     click_on(handle, cx, "add-comment");
     assert!(cards(&ws, cx, board).is_empty(), "nothing before Done");
     click_on(handle, cx, "card-done");
