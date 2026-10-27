@@ -584,6 +584,11 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **The Home's Waiting for you tiles cut their words in a narrow window.** (`home.rs`, `tiles`: 2 columns under
   960 px.) Under about 560 px of column the 2 columns leave "automations went wr…" cut, which the Screens standard
   says never happens. Fix: one column when a tile's longest words don't fit in half the column.
+- [ ] **The Edit… and New workspace dialog is gpui-kit's alert dialog, not a `popup.rs` modal.** (`space_dialog.rs`,
+  `show`.) It has the kit's title and Cancel/Save (Create) foot, a column of stacked labelled fields instead of
+  sections of labelled rows, and no full screen or resize edges, unlike the Git popup's standard (CLAUDE.md). Fix:
+  build it from `popup::frame`, `header`, `section`, `row` and `foot` as the Automations editor is, keeping Enter,
+  Esc and the name selected on open.
 - [ ] **The Home's pointer presses were checked headlessly only.** (`home.rs`: the tiles, a card's ⋯, a recent
   folder, Open folder….) On a display only its keys and looks were checked (`--dev`, keys sent to the test window
   alone): no pointer tool was at hand. Fix: click each one on a display, light and dark, beside the Git popup.
