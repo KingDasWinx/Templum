@@ -304,7 +304,7 @@ fn detail(ws: &Workspace, wait: &Wait, w: f32, h: f32, cx: &mut Context<Workspac
         .child(popup::row(
             ws,
             "Where",
-            dim_line(ws, where_words(folder.as_deref(), &ws.space.name)),
+            one_line(where_words(folder.as_deref(), &ws.space.name)).text_color(ui.title_dim),
         ))
         .children(why);
     // Its key in the body's and the foot's ids: a press on a request withdrawn before its release
@@ -365,7 +365,7 @@ pub(crate) fn where_words(folder: Option<&str>, space: &str) -> String {
 }
 
 /// A field of the card: text on as many lines as it takes, the height of a label's line at least.
-fn text(words: String) -> Div {
+pub(crate) fn text(words: String) -> Div {
     div()
         .min_h(px(24.0))
         .flex()
@@ -374,14 +374,13 @@ fn text(words: String) -> Div {
         .child(words)
 }
 
-/// A dim field of the card, cut to one line.
-fn dim_line(ws: &Workspace, words: String) -> Div {
+/// A field of the card cut to one line, the height of a label's line.
+pub(crate) fn one_line(words: String) -> Div {
     div()
         .h(px(24.0))
         .flex()
         .flex_col()
         .justify_center()
-        .text_color(ws.ui.title_dim)
         .child(div().truncate().child(words))
 }
 

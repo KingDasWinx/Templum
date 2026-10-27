@@ -262,7 +262,7 @@ pub(crate) fn section(ws: &Workspace, name: &'static str) -> Div {
 
 /// A form's row: `label` in the label column, `field` beside it; what the field holds wraps
 /// under itself, never under the label.
-pub(crate) fn row(ws: &Workspace, label: &'static str, field: impl IntoElement) -> Div {
+pub(crate) fn row(ws: &Workspace, label: impl Into<SharedString>, field: impl IntoElement) -> Div {
     div()
         .flex()
         .items_start()
@@ -276,7 +276,7 @@ pub(crate) fn row(ws: &Workspace, label: &'static str, field: impl IntoElement) 
                 .items_center()
                 .text_size(px(SMALL))
                 .text_color(ws.ui.title_dim)
-                .child(label),
+                .child(label.into()),
         )
         .child(div().flex_1().min_w(px(0.0)).child(field))
 }

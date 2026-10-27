@@ -148,6 +148,13 @@ them and never redraws its own frame.
   What sums the form up without being a field (a sentence, the next run, the last one; where a request comes from)
   is a card above it: `ui.card`, 8 px corners, 12 px padding. The item's actions are 24 px icon buttons at the card's
   top right, 2 px apart, each named by its tooltip; the card's words sit beside them, never under them.
+- **A detail** (card 222; Requests, Agents): what is read there, not typed, is laid out as a form is. A summary card
+  first, its words in rows beside their labels (Requests' From and Where, Agents' Agent, State, Terminal and Where);
+  then sections of labelled rows (Agents' Work and Cost). A name, a title or a folder is cut to one line; a text the
+  person reads (a task, what an agent asks) wraps under its field. A block of monospace lines (an agent's screen) is
+  a card the content's width under its section's name, with no label. An action with words on the item shown (Go to
+  terminal) is a button of the foot, the one Enter does solid. Its content and its foot share their sides: 16 px, as
+  the Automations editor's (Requests keeps its request balloon's 18).
 - **Colors:** the theme's tokens only (`ui.surface`, `hairline`, `hover`, `card`, `accent`, `title_dim`, `shadow`) and
   the palette's yellow and red for what waits or failed: a popup adds no color.
 

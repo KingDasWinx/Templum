@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
@@ -17,8 +17,8 @@ use gpui_kit::{
     ScrollWheelEvent, TestSupportExt, Window, div, px, uniform_list,
 };
 
-use crate::balloon::{self, SIDE};
-use crate::inbox::{age, count_badge, dim, section};
+use crate::balloon;
+use crate::inbox::{age, count_badge, dim, one_line, text as text_field, where_words};
 use crate::popup;
 use crate::usage;
 use crate::workspace::agents_view::{AgentRow, Doing, Item, SCREEN_LINES, Show, items};
@@ -33,6 +33,8 @@ const TEXT: f32 = 13.0;
 const SMALL: f32 = 11.5;
 /// The lines of a handed task the details show.
 const TASK_LINES: usize = 3;
+/// The details' sides, as the Automations editor's.
+const PAD: f32 = 16.0;
 
 /// The popup, `w` by `h` pixels: the list of every agent at the left, the selected one at the
 /// right.
@@ -395,8 +397,9 @@ fn named(ws: &Workspace, terminal: &str) -> Option<String> {
     })
 }
 
-/// The right column: where the agent comes from, what it does and costs, and its screen, over a
-/// foot that stays.
+/// The right column: a card of the agent, its state and where it is, then its work, its cost and
+/// its screen in sections, labels beside their words; at most `popup::CONTENT_MAX` wide and
+/// centered, over a foot that stays with Open request and Go to terminal.
 fn detail(ws: &Workspace, row: &AgentRow, now: Instant, cx: &mut Context<Workspace>) -> AnyElement {
     let ui = ws.ui;
     let Some(pane) = ws.pane(&row.terminal) else {
@@ -418,100 +421,130 @@ fn detail(ws: &Workspace, row: &AgentRow, now: Instant, cx: &mut Context<Workspa
             Some(effort) => format!("{model} · {effort}"),
             None => model,
         });
-    let from = div()
+    let agent = div()
+        .h(px(24.0))
         .flex()
-        .flex_col()
-        .gap(px(2.0))
-        .child(section(ws, "From"))
-        .child(
+        .items_center()
+        .gap(px(6.0))
+        .child(div().flex_shrink_0().font_weight(FontWeight::MEDIUM).child(
+            if row.agent.is_empty() {
+                "Agent".to_string()
+            } else {
+                row.agent.clone()
+            },
+        ))
+        .children(model.map(|model| {
             div()
-                .font_weight(FontWeight::MEDIUM)
-                .child(if row.agent.is_empty() {
-                    "Agent".to_string()
-                } else {
-                    row.agent.clone()
-                }),
-        )
-        .children(model.map(|model| dim(ws, model)))
-        .children(role.map(|role| dim(ws, format!("Role: {role}"))))
-        .child(dim(ws, row.title.clone()))
-        .children(row.folder.clone().map(|folder| dim(ws, folder)))
-        .child(dim(ws, format!("in {}", row.space_name)));
-    let waited = age(now.saturating_duration_since(row.since));
+                .min_w(px(0.0))
+                .truncate()
+                .text_color(ui.title_dim)
+                .child(model)
+        }));
     let state = div()
         .flex()
         .flex_col()
-        .gap(px(2.0))
-        .child(section(ws, "State"))
-        .child(div().child(format!("{} for {waited}", row.doing.label())))
+        .child(
+            div()
+                .h(px(24.0))
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(tone(ws, row, Some(pane)).unwrap_or(ui.title_dim))
+                        .child(row.doing.label()),
+                )
+                .child(
+                    div()
+                        .text_color(ui.title_dim)
+                        .child(held_words(now.saturating_duration_since(row.since))),
+                ),
+        )
         .children(match &row.doing {
             Doing::NeedsYou(asks) if !asks.is_empty() => Some(dim(ws, asks.clone())),
             _ => None,
         });
+    // What it is and where, apart from what it does.
+    let summary = div()
+        .id("agents-summary")
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .p(px(12.0))
+        .rounded(px(8.0))
+        .bg(ui.card)
+        .child(popup::row(ws, "Agent", agent))
+        .children(role.map(|role| popup::row(ws, "Role", one_line(role))))
+        .child(popup::row(ws, "State", state))
+        .child(popup::row(ws, "Terminal", one_line(row.title.clone())))
+        .child(popup::row(
+            ws,
+            "Where",
+            one_line(where_words(row.folder.as_deref(), &row.space_name)).text_color(ui.title_dim),
+        ))
+        .test_support();
+    // The task: its first lines, then its id, who handed it over and when.
     let task = match home {
         Some(home) => home
             .task
             .as_ref()
             .filter(|t| !t.text.is_empty())
             .map(|task| {
-                let lines: Vec<&str> = task.text.lines().take(TASK_LINES).collect();
                 let from = task.by.as_ref().map(|by| match by.as_str() {
-                    templum_api::ASKER => "from the API".to_string(),
-                    by => match ws.uid_title_in(&row.space, by, cx) {
-                        Some(title) => format!("from {title}"),
-                        None => format!("from {by}"),
-                    },
+                    templum_api::ASKER => "the API".to_string(),
+                    by => ws
+                        .uid_title_in(&row.space, by, cx)
+                        .unwrap_or_else(|| by.to_string()),
                 });
                 let wall = crate::workspace::automations::unix(std::time::SystemTime::now());
                 let since =
                     std::time::Duration::from_secs(wall.saturating_sub(task.since).max(0) as u64);
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .child(section(ws, "Task"))
-                    .child(dim(ws, task.id.clone()))
-                    .child(div().child(lines.join("\n")))
-                    .children(from.map(|from| dim(ws, from)))
-                    .child(dim(ws, format!("{} ago", age(since))))
+                (
+                    task.text.clone(),
+                    handed_words(Some(&task.id), from.as_deref(), since),
+                )
             }),
         None => pane
             .handed
             .as_ref()
             .filter(|h| !h.text.is_empty())
             .map(|handed| {
-                let lines: Vec<&str> = handed.text.lines().take(TASK_LINES).collect();
-                let from = named(ws, &handed.by).map(|by| format!("from {by}"));
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .child(section(ws, "Task"))
-                    .children((handed.id > 0).then(|| dim(ws, format!("t{}", handed.id))))
-                    .child(div().child(lines.join("\n")))
-                    .children(from.map(|from| dim(ws, from)))
-                    .child(dim(
-                        ws,
-                        format!("{} ago", age(now.saturating_duration_since(handed.since))),
-                    ))
+                let id = (handed.id > 0).then(|| format!("t{}", handed.id));
+                (
+                    handed.text.clone(),
+                    handed_words(
+                        id.as_deref(),
+                        named(ws, &handed.by).as_deref(),
+                        now.saturating_duration_since(handed.since),
+                    ),
+                )
             }),
     };
-    let card = row.card.as_ref().map(|(id, title)| {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(2.0))
-            .child(section(ws, "Card"))
-            .child(div().child(format!("#{id} {title}")))
+    let task = task.map(|(text, about)| {
+        let lines: Vec<&str> = text.lines().take(TASK_LINES).collect();
+        popup::row(
+            ws,
+            "Task",
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(text_field(lines.join("\n")))
+                .child(dim(ws, about)),
+        )
     });
+    let card = row
+        .card
+        .as_ref()
+        .map(|(id, title)| popup::row(ws, "Card", text_field(format!("#{id} {title}"))));
     // Home's agent has its subagents' count, not their lines.
     let remote_subagents = home.filter(|a| a.subagents > 0).map(|a| {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(2.0))
-            .child(section(ws, "Subagents"))
-            .child(div().child(format!("{} subagents", a.subagents)))
+        popup::row(
+            ws,
+            "Subagents",
+            text_field(format!("{} subagents", a.subagents)),
+        )
     });
     let subagents = (!pane.subagents.is_empty()).then(|| {
         let working = pane.subagents_at_work();
@@ -531,36 +564,44 @@ fn detail(ws: &Workspace, row: &AgentRow, now: Instant, cx: &mut Context<Workspa
             div()
                 .flex()
                 .gap(px(6.0))
-                .child(div().flex_1().truncate().child(title))
-                .child(div().text_color(ui.title_dim).child(what))
+                .text_size(px(SMALL))
+                .child(div().flex_1().min_w(px(0.0)).truncate().child(title))
+                .child(div().flex_shrink_0().text_color(ui.title_dim).child(what))
         });
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(2.0))
-            .child(section(ws, "Subagents"))
-            .child(div().child(format!("{working} working · {reported} reported")))
-            .children(lines)
+        popup::row(
+            ws,
+            "Subagents",
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(text_field(format!(
+                    "{working} working · {reported} reported"
+                )))
+                .children(lines),
+        )
     });
-    let spent = pane.usage.as_ref().and_then(|s| {
+    let work: Vec<Div> = [task, card, subagents, remote_subagents]
+        .into_iter()
+        .flatten()
+        .collect();
+    let work = (!work.is_empty()).then(|| popup::section(ws, "Work").children(work));
+    // The usage chip's words, each beside its label; the context's with its bar.
+    let cost = pane.usage.as_ref().and_then(|s| {
         let (_, tip) = usage::chip(s)?;
-        Some((
-            s.context_percent,
-            usage::with_effort(tip, effort.as_deref()),
-        ))
-    });
-    let spent = spent.map(|(percent, tip)| {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(4.0))
-            .child(section(ws, "Usage"))
-            .children(percent.map(|p| usage::bar(p, 200.0, ui.accent, ui.hairline)))
-            .children(
-                tip.lines()
-                    .map(|line| dim(ws, line.to_string()))
-                    .collect::<Vec<_>>(),
+        let tip = usage::with_effort(tip, effort.as_deref());
+        let rows = usage_rows(&tip).into_iter().map(|(label, words)| {
+            let bar = (label == "Context")
+                .then_some(s.context_percent)
+                .flatten()
+                .map(|p| usage::bar(p, 120.0, ui.accent, ui.hairline));
+            popup::row(
+                ws,
+                label,
+                popup::line().min_h(px(24.0)).children(bar).child(words),
             )
+        });
+        Some(popup::section(ws, "Cost").children(rows))
     });
     // The viewer's lines when home streams it, else the last read of its screen.
     let mut lines = pane.term.shared().lines(SCREEN_LINES);
@@ -575,58 +616,52 @@ fn detail(ws: &Workspace, row: &AgentRow, now: Instant, cx: &mut Context<Workspa
         lines = read.clone();
     }
     let screen = (!lines.is_empty()).then(|| {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(4.0))
-            .child(section(ws, "Screen"))
-            .child(
-                div()
-                    .id("agents-screen")
-                    .w_full()
-                    .overflow_hidden()
-                    .p(px(8.0))
-                    .rounded(px(6.0))
-                    .bg(ui.card)
-                    .font_family(ws.cell.font.family.clone())
-                    .text_size(px(SMALL))
-                    .children(lines.into_iter().map(|line| {
-                        let line = if line.is_empty() {
-                            "\u{a0}".to_string()
-                        } else {
-                            line
-                        };
-                        div().truncate().child(line)
-                    }))
-                    .test_support(),
-            )
+        popup::section(ws, "Screen").child(
+            div()
+                .id("agents-screen")
+                .w_full()
+                .overflow_hidden()
+                .p(px(12.0))
+                .rounded(px(8.0))
+                .bg(ui.card)
+                .font_family(ws.cell.font.family.clone())
+                .text_size(px(SMALL))
+                .children(lines.into_iter().map(|line| {
+                    let line = if line.is_empty() {
+                        "\u{a0}".to_string()
+                    } else {
+                        line
+                    };
+                    div().truncate().child(line)
+                }))
+                .test_support(),
+        )
     });
     let terminal = row.terminal.clone();
     let asked = ws.asking(&row.terminal).is_some();
-    let foot = div()
-        .flex()
-        .items_center()
-        .flex_shrink_0()
-        .gap(px(8.0))
-        .px(px(SIDE))
-        .py(px(10.0))
-        .border_t_1()
-        .border_color(ui.hairline)
-        .child({
-            let terminal = terminal.clone();
-            balloon::ghost("agents-go", "Go to terminal", ui, 1.0)
-                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.go_to_agent(&terminal, window, cx)
-                }))
-                .test_support()
-        })
-        .children(asked.then(|| {
-            balloon::ghost("agents-request", "Open request", ui, 1.0)
-                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.open_agent_request(&terminal, window, cx)
-                }))
-                .test_support()
-        }));
+    let foot = popup::foot(ws).child(
+        popup::content()
+            .flex_row()
+            .justify_end()
+            .items_center()
+            .gap(px(8.0))
+            .px(px(PAD))
+            .children(asked.then(|| {
+                let terminal = terminal.clone();
+                balloon::ghost("agents-request", "Open request", ui, 1.0)
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        ws.open_agent_request(&terminal, window, cx)
+                    }))
+                    .test_support()
+            }))
+            .child(
+                balloon::solid("agents-go", "Go to terminal", None, ui, 1.0)
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        ws.go_to_agent(&terminal, window, cx)
+                    }))
+                    .test_support(),
+            ),
+    );
     let body = div()
         .id(ElementId::Name(
             format!("agents-details-{}", row.terminal).into(),
@@ -634,20 +669,14 @@ fn detail(ws: &Workspace, row: &AgentRow, now: Instant, cx: &mut Context<Workspa
         .flex_1()
         .min_h(px(0.0))
         .overflow_y_scroll()
+        .py(px(14.0))
         .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(14.0))
-                .px(px(SIDE))
-                .py(px(14.0))
-                .child(from)
-                .child(state)
-                .children(task)
-                .children(card)
-                .children(subagents)
-                .children(remote_subagents)
-                .children(spent)
+            popup::content()
+                .px(px(PAD))
+                .gap(px(18.0))
+                .child(summary)
+                .children(work)
+                .children(cost)
                 .children(screen),
         );
     div()
@@ -658,6 +687,38 @@ fn detail(ws: &Workspace, row: &AgentRow, now: Instant, cx: &mut Context<Workspa
         .child(body)
         .child(foot)
         .into_any_element()
+}
+
+/// How long an agent has been in its state, after its state's words: "for 12m", "just now".
+pub(crate) fn held_words(since: Duration) -> String {
+    match age(since).as_str() {
+        "now" => "just now".to_string(),
+        age => format!("for {age}"),
+    }
+}
+
+/// Who handed a task over and when, under its lines: "t7, from Codex · Main, 2m ago". `id` and
+/// `from` are left out when unknown.
+pub(crate) fn handed_words(id: Option<&str>, from: Option<&str>, since: Duration) -> String {
+    let when = match age(since).as_str() {
+        "now" => "just now".to_string(),
+        age => format!("{age} ago"),
+    };
+    id.map(str::to_string)
+        .into_iter()
+        .chain(from.map(|from| format!("from {from}")))
+        .chain([when])
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The usage chip's tooltip as rows: "Tokens: 1.2M" is "1.2M" beside Tokens. A line that says no
+/// label, the model, is left to the card.
+pub(crate) fn usage_rows(tip: &str) -> Vec<(String, String)> {
+    tip.lines()
+        .filter_map(|line| line.split_once(": "))
+        .map(|(label, words)| (label.to_string(), words.to_string()))
+        .collect()
 }
 
 /// The sidebar's button: the popup toggled, and the count of the agents that finished unseen. It

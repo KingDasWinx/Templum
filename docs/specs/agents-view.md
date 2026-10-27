@@ -187,29 +187,34 @@ Two lines (*the orchestrator's call*):
 
 ### The details
 
-The selected agent, top to bottom, each section only when it has something to say (*the orchestrator's call* for
-what; *the designer's call* for the words):
+*(Card 222: drawn as the Requests detail and the Automations editor are, design-system.md, Popups.)* The selected
+agent, top to bottom, each part only when it has something to say (*the orchestrator's call* for what; *the
+designer's call* for the words). Every line is a label beside its words; the content grows to `popup::CONTENT_MAX`
+(680 px) and stays centered past it, so full screen never stretches it; it scrolls over the foot.
 
-- **From:** the agent's or account's name; its model and effort ("opus · xhigh": `spawn_agent`'s, else the session's
-  model); its role; the block's title; its folder; "in *workspace*".
-- **State:** its state as the row says it, what it asks when it needs you, and since when ("for 12m").
-- **Task:** its id ("t7"; none for one made without), its first 3 lines, who handed it over (the handing block's agent
-  and title, as the inbox's "From" names a block), since when.
-- **Card:** the card it works on, by the inbox's rule (a card of any board assigned to this block, not in its board's
-  last column, the newest if several): "#152 Attachments".
-- **Subagents:** "2 working · 1 reported", then one line per subagent: its block's title when it has one, else its
-  id, and "working" or "reported".
-- **Usage:** a context bar with its percentage, then the usage chip's tooltip lines: model, "Context: 42% used",
-  "Tokens: 1.2M", "Cost: $3.10 at API prices" (*the orchestrator's call*: the same data and words as the chip).
+- **The summary card** (`agents-summary`, `ui.card`): **Agent**, the agent's or account's name, then dim its model
+  and effort ("Opus · xhigh": `spawn_agent`'s, else the session's model); **Role**, its role; **State**, its state as
+  the row says it, in its color, then dim since when ("for 12m", "just now"), and under them what it asks when it
+  needs you; **Terminal**, the block's title; **Where**, dim, its folder and its workspace ("~/Templum · Main"), cut
+  to one line.
+- **Work:** **Task**, its first 3 lines, under them dim its id, who handed it over (the handing block's agent and
+  title, as the inbox's "From" names a block; "the API" for a task handed through it) and when: "t7, from Codex ·
+  Main, 2m ago"; **Card**, the card it works on, by the inbox's rule (a card of any board assigned to this block, not
+  in its board's last column, the newest if several): "#152 Attachments"; **Subagents**, "2 working · 1 reported",
+  then one line per subagent: its block's title when it has one, else its id, and "working" or "reported".
+- **Cost:** the usage chip's tooltip lines, each beside its label (*the orchestrator's call*: the same data and words
+  as the chip): **Context** with its bar ("42% used"), **Tokens** ("1.2M"), **Cost** ("$3.10 at API prices"),
+  **Effort**. The model is the card's.
 - **Screen:** the last 12 lines of its terminal (`SharedTerm::lines`, which leaves out a suggestion where the cursor
-  waits, card 147), plain monospace in the terminal's font family, cut at the column's width, never wrapped. Read
-  only for the selected agent (*the orchestrator's call*).
-- **Buttons**, in a foot that stays while the details scroll:
-  - **Go to terminal**: reveals its block, switching workspace when it is in another, focuses it, and closes the
-    popup: the card's "automatic focus" (*the orchestrator's call*). That is looking at it: it is no longer Done.
-  - **Open request**: only while a request of its waits in the inbox (*the designer's call:* an agent's own dialog
-    has no request, and is answered in its terminal: Go to terminal). It opens the Requests inbox at its oldest
+  waits, card 147), plain monospace in the terminal's font family, on a card the content's width, cut at its width,
+  never wrapped. Read only for the selected agent (*the orchestrator's call*).
+- **The foot**, which stays while the details scroll, its buttons at the right of the content's width:
+  - **Open request** (ghost): only while a request of its waits in the inbox (*the designer's call:* an agent's own
+    dialog has no request, and is answered in its terminal: Go to terminal). It opens the Requests inbox at its oldest
     request, switching to its workspace (`Workspace::show_request`), which closes the Agents popup.
+  - **Go to terminal** (solid, what Enter does): reveals its block, switching workspace when it is in another, focuses
+    it, and closes the popup: the card's "automatic focus" (*the orchestrator's call*). That is looking at it: it is
+    no longer Done.
 
 With no row selected (nothing listed), the right column says nothing.
 

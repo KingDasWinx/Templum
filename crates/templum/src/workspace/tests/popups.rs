@@ -169,6 +169,31 @@ fn full_screen_fills_the_room_and_gives_the_size_set_back(cx: &mut TestAppContex
     assert!(drawn(handle, cx, "popup-resize-top"));
 }
 
+/// At full screen the Agents details keep to `popup::CONTENT_MAX`, centered in their column.
+#[gpui_kit::test]
+fn the_agents_details_keep_to_the_content_width_at_full_screen(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    super::agents_view::agent(handle, &ws, cx, 0);
+    Which::Agents.open(handle, &ws, cx);
+    click_id(handle, cx, "popup-full");
+    let popup = bounds(handle, cx, "agents");
+    let card = bounds(handle, cx, "agents-summary");
+    // The column right of the list and its hairline, inside the frame's border.
+    let left = f32::from(popup.left()) + 1.0 + crate::agents_view::LIST_W + 1.0;
+    let right = f32::from(popup.right()) - 1.0;
+    let max = crate::popup::CONTENT_MAX;
+    assert!(right - left > max + 100.0, "room to spare: {popup:?}");
+    assert!(f32::from(card.size.width) <= max, "{card:?}");
+    let (l, r) = (
+        f32::from(card.left()) - left,
+        right - f32::from(card.right()),
+    );
+    assert!(
+        (l - r).abs() < 1.0,
+        "centered: {l} at the left, {r} at the right"
+    );
+}
+
 #[gpui_kit::test]
 fn git_has_the_same_full_screen(cx: &mut TestAppContext) {
     let repo = git_repo();

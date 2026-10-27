@@ -12,7 +12,9 @@ use super::inbox::{asks, click_id, drawn, name, open_terminal};
 use super::subagents::hook;
 use super::terminals::set_active;
 use super::*;
-use crate::agents_view::{dot_color, empty_words, header_text, tone};
+use crate::agents_view::{
+    dot_color, empty_words, handed_words, header_text, held_words, tone, usage_rows,
+};
 use crate::alert::Alert;
 use crate::automations::Heard;
 use crate::board::Assignee;
@@ -1048,6 +1050,33 @@ fn a_group_header_counts_who_needs_you() {
 fn the_empty_list_says_whether_an_agent_runs() {
     assert_eq!(empty_words(0), "No agent is running");
     assert_eq!(empty_words(3), "No agent matches");
+}
+
+#[test]
+fn the_details_say_since_when_and_who_handed_the_task() {
+    assert_eq!(held_words(Duration::from_secs(20)), "just now");
+    assert_eq!(held_words(Duration::from_secs(12 * 60)), "for 12m");
+    assert_eq!(
+        handed_words(Some("t7"), Some("Codex · Main"), Duration::ZERO),
+        "t7, from Codex · Main, just now"
+    );
+    assert_eq!(handed_words(None, None, Duration::from_secs(120)), "2m ago");
+}
+
+#[test]
+fn the_cost_is_the_usage_chips_words_beside_their_labels() {
+    let tip = "Opus\nContext: 42% used\nTokens: 1.2M\nCost: $3.10 at API prices\nEffort: high";
+    let rows = usage_rows(tip);
+    let rows: Vec<(&str, &str)> = rows.iter().map(|(l, w)| (&l[..], &w[..])).collect();
+    assert_eq!(
+        rows,
+        [
+            ("Context", "42% used"),
+            ("Tokens", "1.2M"),
+            ("Cost", "$3.10 at API prices"),
+            ("Effort", "high"),
+        ]
+    );
 }
 
 #[gpui_kit::test]
