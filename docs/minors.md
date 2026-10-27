@@ -184,6 +184,11 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## Tests
 
+- [ ] **`bash_gives_typed_agents_templums_words` fails on this machine, at `development`'s f9e87b6f too.**
+  (`crates/templum-terminal/src/integration.rs:721`, `typed_deleted_account`.) With bash 5.3.15 (Omarchy), the
+  `claudinho hi` typed after the account's folder was deleted still runs the fake `claude`: "a deleted account's agent
+  was run", every run, alone or in the workspace's. Whether CI's bash passes it wasn't checked. Fix: find what this
+  bash reads before the test's `.bashrc` (its system `bashrc`, a `PROMPT_COMMAND`) that keeps the account's function.
 - [ ] **A few tests still look at a glide mid-flight on the real clock.** `navigation.rs` (the tests around
   `restart_glide` at lines 231 and 312, and the two-notch zoom at line 770) and `editor.rs:437` set the glide's start
   and draw a frame in the same update, so the frame lands mid-glide only if it comes within about 110 ms of
