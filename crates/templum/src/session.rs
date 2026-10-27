@@ -352,9 +352,9 @@ pub(crate) fn load_index(dir: &Path) -> Loaded<Index> {
             if index.workspaces.is_empty() {
                 return Loaded::Saved(Index::first_run());
             }
+            // The one shown last may be stopped (every workspace was): Templum opens on the Home,
+            // which holds it stopped.
             index.active = index.active.min(index.workspaces.len() - 1);
-            // The one shown is never stopped.
-            index.workspaces[index.active].stopped = false;
             Loaded::Saved(index)
         }
         other => other,
@@ -1985,7 +1985,10 @@ mod tests {
         assert_eq!((main.icon.as_deref(), main.color.as_deref()), (None, None));
         assert_eq!(side.icon.as_deref(), Some("rocket"));
         assert_eq!(side.color.as_deref(), Some("accent"));
-        assert!(!side.stopped, "the active one is never stopped");
+        assert!(
+            side.stopped,
+            "the active one too: every workspace was stopped"
+        );
     }
 
     #[test]

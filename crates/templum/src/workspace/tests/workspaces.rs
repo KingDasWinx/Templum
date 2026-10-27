@@ -609,6 +609,29 @@ fn stopping_the_last_running_workspace_shows_the_home(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn every_workspace_stopped_stays_stopped_after_a_restart(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    second_with_a_terminal(handle, &ws, cx);
+    for id in ["w2", "default"] {
+        stop(handle, &ws, cx, id);
+    }
+    ws.update(cx, |ws, cx| ws.save_canvas_now(cx));
+    let (_, again) = open_welcomed(cx, Some(quiet()), None, Some(data.path().to_path_buf()));
+    again.read_with(cx, |ws, _| {
+        assert!(ws.home_up());
+        assert_eq!(
+            ws.space.id, "default",
+            "the one shown last, held under the Home"
+        );
+        assert!(
+            ws.spaces().all(|s| s.stopped && s.blocks.is_empty()),
+            "none started"
+        );
+    });
+}
+
+#[gpui_kit::test]
 fn the_only_workspace_can_be_stopped_landing_on_the_home(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     ws.read_with(cx, |ws, _| {
