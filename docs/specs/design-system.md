@@ -126,6 +126,9 @@ them and never redraws its own frame.
 - **Body:** a list column at the left with a hairline at its right, and the selected item at the right (or one
   panel). The content of a detail or a form grows to `popup::CONTENT_MAX` (680 px) and stays centered past it
   (`popup::content`), so full screen never stretches a field across the window; a list keeps its width.
+- **A list row** (card 219) lays its parts out side by side and truncates its words; nothing is ever drawn over them,
+  no buttons that show on hover. The selected item's actions live on its card in the detail (Automations' Run now,
+  Duplicate and Delete on the summary card).
 - **Foot** (`popup::foot`): what stays under a scrolling body, a hairline over it and 10 px above and under its
   content, which has the body's side padding and width. Its buttons sit at the right, the secondary (ghost) before
   the primary (solid); a problem shows above them in the palette's red.
@@ -143,7 +146,8 @@ them and never redraws its own frame.
   time, Where with Stop after and Cooldown); a narrow column wraps them under the field, never under the label. A
   short choice's dropdown is as wide as its words; a text field, a block's dropdown and a text area take the line.
   What sums the form up without being a field (a sentence, the next run, the last one; where a request comes from)
-  is a card above it: `ui.card`, 8 px corners, 12 px padding.
+  is a card above it: `ui.card`, 8 px corners, 12 px padding. The item's actions are 24 px icon buttons at the card's
+  top right, 2 px apart, each named by its tooltip; the card's words sit beside them, never under them.
 - **Colors:** the theme's tokens only (`ui.surface`, `hairline`, `hover`, `card`, `accent`, `title_dim`, `shadow`) and
   the palette's yellow and red for what waits or failed: a popup adds no color.
 
