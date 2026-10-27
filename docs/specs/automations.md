@@ -419,9 +419,10 @@ selected automation's editor at the right.
      "Missed 24 Oct 17:00", "Waiting for abc12" while held, nothing before its first run. Failed in the palette's red,
      Skipped and Missed and Waiting in its yellow.
   - Target missing: the row drawn as an off one, line 2 "Target missing: abc12 isn't open" in yellow.
-  - While the pointer is over a row, and on the selected row, three icon buttons at its right, each with its name as
-    its tooltip: **Run now** (`IconName::Play`), **Duplicate** (`CopyPlus`), **Delete** (`Trash`) (*the designer's
-    call*).
+  - Nothing is drawn over a row's words (card 219). The selected automation's actions are on its summary card in the
+    editor, 24 px icon buttons at its top right, each with its name as its tooltip: **Run now** (`IconName::Play`),
+    **Duplicate** (`CopyPlus`), **Delete** (`Trash`) (ids `automation-run-{id}`, `automation-duplicate-{id}`,
+    `automation-delete-{id}`). A new automation not yet saved has none.
 - **Run now** runs its Do now, also when it is off, through every check above (held, failed, skipped as any run);
   it doesn't move its next time and doesn't count toward Stop after (*the designer's call*). Batch 2: a Do on "the
   agent that fired it" has no one to act on: Run now is dimmed, its tooltip "It acts on the agent that fires it".
@@ -490,7 +491,7 @@ their words; the blocks' dropdowns and the text fields take the line.
 - **Where**, a dropdown: All workspaces, then the workspaces in the sidebar's order (only workspaces for a new
   terminal or Start an agent); new: the workspace shown.
 - **Stop after** (a number field, empty for no limit, "runs"); batch 2, for an event, **Cooldown** ("minutes").
-- **The preview** (the summary card, at the top): its sentence, and "Next: Tomorrow 09:00" ("Next: never, it is off"; "Target missing: abc12 isn't
+- **The preview** (the summary card, at the top, Run now, Duplicate and Delete at its top right): its sentence, and "Next: Tomorrow 09:00" ("Next: never, it is off"; "Target missing: abc12 isn't
   open"; batch 2: "Runs when abc12 finishes its turn").
 - **Last run** (in the summary card, under the next run): "Failed Yesterday 16:00: abc12 runs no agent now: a prompt
   is never typed into a shell." in full, once there is one.

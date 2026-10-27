@@ -2802,7 +2802,7 @@ fn run_now_does_nothing_for_the_agent_that_fired_it(cx: &mut TestAppContext) {
         ws.update(cx, |ws, cx| ws.run_automation_now(rule, window, cx))
     })
     .unwrap();
-    // Its button in the list is dimmed and does nothing either.
+    // Its button on the selected one's card is dimmed and does nothing either.
     open_popup(handle, &ws, cx);
     click_id(handle, cx, name(format!("automation-run-{rule}")));
     look(cx);
@@ -3180,6 +3180,42 @@ fn a_long_event_word_stays_in_its_row(cx: &mut TestAppContext) {
         .unwrap();
     assert!(row <= px(crate::agents_view::LIST_W), "{row:?}");
     assert!(next <= px(150.0), "{next:?}");
+}
+
+#[gpui_kit::test]
+fn the_actions_are_on_the_selected_ones_card_not_over_its_row(cx: &mut TestAppContext) {
+    use crate::workspace::automations::NEW;
+    let (handle, ws) = open(cx);
+    let first = add(&ws, cx, rule(every(10), say("Hi")));
+    let other = add(&ws, cx, rule(every(20), say("Ho")));
+    open_popup(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let card = window.find("automation-summary").bounds();
+        let row = window
+            .find(name(format!("automation-row-{first}")))
+            .bounds();
+        for what in ["run", "duplicate", "delete"] {
+            let button = window
+                .find(name(format!("automation-{what}-{first}")))
+                .bounds();
+            assert!(
+                button.is_contained_within(&card),
+                "{what}: {button:?} {card:?}"
+            );
+            assert!(!button.intersects(&row), "{what} is over its row");
+            let shown = window.try_find(name(format!("automation-{what}-{other}")));
+            assert!(shown.is_none(), "{what} of a row not selected");
+        }
+    })
+    .unwrap();
+    // They still act on the selected one.
+    click_id(handle, cx, name(format!("automation-duplicate-{first}")));
+    ws.read_with(cx, |ws, _| assert_eq!(ws.automation_ids().len(), 3));
+    // A draft never saved has nothing to run, copy or delete.
+    ws.update(cx, |ws, cx| ws.new_automation(cx));
+    assert!(drawn(handle, cx, name("automation-sentence".into())));
+    assert!(!drawn(handle, cx, name(format!("automation-run-{NEW}"))));
 }
 
 #[gpui_kit::test]

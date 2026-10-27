@@ -5,6 +5,7 @@
 use std::time::SystemTime;
 
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use gpui_kit::assets::IconName;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::tooltip::Tooltip;
@@ -18,6 +19,7 @@ use super::{SMALL, TEXT};
 use crate::automations::clock::{Cron, next_after, time_words};
 use crate::automations::{Automation, COOLDOWN, Do, FIRED, Heard, When, Who};
 use crate::balloon;
+use crate::git_block::widgets::icon_button;
 use crate::grid::hsla;
 use crate::popup;
 use crate::settings::row::menu_button;
@@ -1114,6 +1116,77 @@ pub(crate) fn preview_next(
     }
 }
 
+/// The saved rule's Run now, Duplicate and Delete, 24 px icon buttons on its summary card. Home's
+/// are dimmed with the rule's words when this share can't do them.
+fn actions(
+    ws: &Workspace,
+    id: u64,
+    a: &Automation,
+    home: &Option<String>,
+    cx: &mut Context<Workspace>,
+) -> Div {
+    let ui = ws.ui;
+    let command = matches!(a.act, Do::Command { .. });
+    let button = |what: &'static str, icon: IconName, tip: &'static str, deed: Deed| {
+        let refused = home.as_deref().and_then(|space| ws.why_not_in(space, deed));
+        let dimmed = refused.is_some();
+        let tip = refused.unwrap_or_else(|| tip.to_string());
+        icon_button(
+            ElementId::Name(format!("automation-{what}-{id}").into()),
+            icon,
+            ui,
+            1.0,
+        )
+        .when(dimmed, |el| el.opacity(0.4))
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+    };
+    let fired = ws
+        .rule(id)
+        .is_some_and(|s| matches!(&s.act, Do::Prompt { block, .. } if block == FIRED));
+    div()
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap(px(2.0))
+        .child(
+            match fired {
+                // The agent that fired it is no one's here: Run now has no one to act on.
+                true => button(
+                    "run",
+                    IconName::Play,
+                    "It acts on the agent that fires it",
+                    Deed::RunRule(command),
+                )
+                .opacity(0.4),
+                false => button("run", IconName::Play, "Run now", Deed::RunRule(command)).on_click(
+                    cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        ws.run_automation_now(id, window, cx)
+                    }),
+                ),
+            }
+            .test_support(),
+        )
+        .child(
+            button(
+                "duplicate",
+                IconName::CopyPlus,
+                "Duplicate",
+                Deed::SaveRule(command),
+            )
+            .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| {
+                ws.duplicate_automation(id, cx);
+            }))
+            .test_support(),
+        )
+        .child(
+            button("delete", IconName::Trash, "Delete", Deed::DeleteRule)
+                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.ask_delete_automation(id, window, cx)
+                }))
+                .test_support(),
+        )
+}
+
 /// The right column for the automation `id`.
 pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> AnyElement {
     let ui = ws.ui;
@@ -1704,44 +1777,54 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
         .clone()
         .or_else(|| form.unreadable.map(|(_, why)| why.to_string()));
 
-    // What it does and when it runs next, apart from the fields that say it.
+    // What it does and when it runs next, apart from the fields that say it; its actions at its
+    // top right, the words beside them.
     let summary = div()
         .id("automation-summary")
         .flex()
-        .flex_col()
-        .gap(px(4.0))
+        .items_start()
+        .gap(px(8.0))
         .p(px(12.0))
         .rounded(px(8.0))
         .bg(ui.card)
         .child(
             div()
-                .id("automation-sentence")
-                .w_full()
-                .overflow_hidden()
-                .font_weight(FontWeight::MEDIUM)
-                .child(sentence)
-                .test_support(),
+                .flex_1()
+                .min_w(px(0.0))
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .id("automation-sentence")
+                        .w_full()
+                        .overflow_hidden()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(sentence)
+                        .test_support(),
+                )
+                .children(next.map(|(words, missing)| {
+                    div()
+                        .id("automation-next")
+                        .w_full()
+                        .overflow_hidden()
+                        .text_size(px(SMALL))
+                        .text_color(if missing { yellow } else { ui.title_dim })
+                        .child(div().truncate().child(words))
+                        .test_support()
+                }))
+                .children(last.map(|words| {
+                    div()
+                        .id("automation-last")
+                        .w_full()
+                        .overflow_hidden()
+                        .text_size(px(SMALL))
+                        .text_color(ui.title_dim)
+                        .child(words)
+                        .test_support()
+                })),
         )
-        .children(next.map(|(words, missing)| {
-            div()
-                .id("automation-next")
-                .w_full()
-                .overflow_hidden()
-                .text_size(px(SMALL))
-                .text_color(if missing { yellow } else { ui.title_dim })
-                .child(div().truncate().child(words))
-                .test_support()
-        }))
-        .children(last.map(|words| {
-            div()
-                .id("automation-last")
-                .w_full()
-                .overflow_hidden()
-                .text_size(px(SMALL))
-                .text_color(ui.title_dim)
-                .child(words)
-                .test_support()
-        }))
+        .children(saved.map(|_| actions(ws, id, a, &home, cx)))
         .test_support();
     let numbers = popup::line()
         .child(where_menu)
@@ -1796,10 +1879,9 @@ pub(crate) fn editor(ws: &Workspace, id: u64, cx: &mut Context<Workspace>) -> An
 
     // Home's rule is saved at home: from another computer it turns off when the share ends, and
     // Save says why when this share can't.
-    let command = matches!(a.act, Do::Command { .. });
-    let save_refused = home
-        .as_deref()
-        .and_then(|space| ws.why_not_in(space, Deed::SaveRule(command)));
+    let save_refused = home.as_deref().and_then(|space| {
+        ws.why_not_in(space, Deed::SaveRule(matches!(a.act, Do::Command { .. })))
+    });
     let from_elsewhere = home.as_deref().map(|space| {
         format!(
             "Saved from another computer, it turns off when this share ends. Save it on {} to keep it.",

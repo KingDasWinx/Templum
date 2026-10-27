@@ -13,11 +13,11 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, ClickEvent, Context, Div, ElementId, FontWeight, KeyDownEvent, MouseButton,
+    AnyElement, App, ClickEvent, Context, Div, ElementId, FontWeight, KeyDownEvent,
     ScrollWheelEvent, Stateful, TestSupportExt, Window, div, px,
 };
 
-use crate::automations::{Do, FIRED, Went};
+use crate::automations::{Do, Went};
 use crate::git_block::widgets::icon_button;
 use crate::grid::hsla;
 use crate::inbox::{count_badge, section};
@@ -344,8 +344,8 @@ fn schedule_row(
 }
 
 /// One automation of the list: its switch, name and next run; under them its When and its last
-/// run. The three icon buttons show over its right while the pointer is on it, and on the one
-/// selected.
+/// run. Nothing is drawn over them: its Run now, Duplicate and Delete are on its card in the
+/// editor (editor::actions).
 fn automation_row(
     ws: &Workspace,
     id: u64,
@@ -411,78 +411,9 @@ fn automation_row(
             })
             .child(switch)
     });
-    let fired = saved.is_some_and(|s| matches!(&s.act, Do::Prompt { block, .. } if block == FIRED));
-    let buttons = saved.map(|_| {
-        let button = |what: &'static str, icon: IconName, tip: &'static str, deed: Deed| {
-            let refused = refused(deed);
-            let dimmed = refused.is_some();
-            let tip = refused.unwrap_or_else(|| tip.to_string());
-            icon_button(
-                ElementId::Name(format!("automation-{what}-{id}").into()),
-                icon,
-                ui,
-                1.0,
-            )
-            .when(dimmed, |el| el.opacity(0.4))
-            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-            // Pressing one never counts as a click on the row.
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        };
-        div()
-            .absolute()
-            .top(px(0.0))
-            .right(px(8.0))
-            .h(px(ROW / 2.0))
-            .flex()
-            .items_center()
-            .gap(px(2.0))
-            .px(px(4.0))
-            .bg(if lit { ui.hover } else { ui.surface })
-            .when(!lit, |el| {
-                el.invisible()
-                    .group_hover("automation-row", |s| s.visible())
-            })
-            .child(
-                match fired {
-                    // The agent that fired it is no one's here: Run now has no one to act on.
-                    true => button(
-                        "run",
-                        IconName::Play,
-                        "It acts on the agent that fires it",
-                        Deed::RunRule(command),
-                    )
-                    .opacity(0.4),
-                    false => button("run", IconName::Play, "Run now", Deed::RunRule(command))
-                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.run_automation_now(id, window, cx)
-                        })),
-                }
-                .test_support(),
-            )
-            .child(
-                button(
-                    "duplicate",
-                    IconName::CopyPlus,
-                    "Duplicate",
-                    Deed::SaveRule(command),
-                )
-                .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| {
-                    ws.duplicate_automation(id, cx);
-                })),
-            )
-            .child(
-                button("delete", IconName::Trash, "Delete", Deed::DeleteRule).on_click(
-                    cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.ask_delete_automation(id, window, cx)
-                    }),
-                ),
-            )
-    });
     let dim = if off { ui.hint } else { ui.title_dim };
     div()
         .id(ElementId::Name(format!("automation-row-{id}").into()))
-        .group("automation-row")
-        .relative()
         .w_full()
         .h(px(ROW))
         .flex_shrink_0()
@@ -568,7 +499,6 @@ fn automation_row(
                         })
                 })),
         )
-        .children(buttons)
 }
 
 /// The sidebar's button: the popup toggled, and the count of the automations whose last run went
