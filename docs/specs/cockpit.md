@@ -360,8 +360,12 @@ The sidebar's **Home** button (`house`) at its top, above the tiles; the workspa
   Ctrl+9 still jump; Esc closes. A card's tooltip names its Ctrl+digit.
 - **Drag a card onto another:** the dragged one takes that card's place (the kanban columns' drag and drop). The
   sidebar follows at once, and `index.json` is written. Sidebar tiles drag and drop the same way.
-- **New workspace** creates "Workspace *n*" as the sidebar's **+** does, switches to it, and opens its edit dialog
-  with the name selected. The **+** does the same from now on.
+- **New workspace** opens the **New workspace** dialog, as the sidebar's **+** and Ctrl+Shift+N do: the edit dialog
+  below titled "New workspace", its name "Workspace *n*" selected, no color, icon, image or folder, and no Sharing (a
+  workspace not yet made has none). **Create** (Enter) makes the workspace with what was chosen and shows it;
+  Cancel and Esc make nothing, and nothing is written. An empty name is refused, as is a folder that isn't one
+  anymore, the dialog staying open saying why. Open folder… and a recent folder still make their workspace at once:
+  the folder is the choice. The API's `create_workspace` makes one directly, too: an agent has no dialog.
 
 ### The edit dialog
 

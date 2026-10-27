@@ -1,5 +1,6 @@
 //! A workspace's look (its icon, color and image) and the Edit… dialog that chooses it, with
-//! its name and folder. See docs/specs/cockpit.md#6-the-workspaces-screen.
+//! its name and folder; the New workspace dialog is the same one, making the workspace. See
+//! docs/specs/cockpit.md#6-the-workspaces-screen.
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -22,7 +23,7 @@ use crate::session;
 use crate::share_dialog;
 use crate::sidebar;
 use crate::theme::{Theme, Ui};
-use crate::workspace::{Workspace, show_notification};
+use crate::workspace::{Space, Workspace, show_notification};
 
 /// The colors a workspace can take, by name: the cards' labels, and the accent.
 pub(crate) const COLORS: [&str; 7] = [
@@ -118,9 +119,12 @@ fn find_icons(query: &str) -> Vec<IconName> {
         .collect()
 }
 
-/// The Edit… dialog's state: what Save applies. Cancel drops it.
+/// The Edit… dialog's state: what Save (Create, for a new workspace) applies. Cancel drops it.
 pub(crate) struct SpaceDialog {
+    /// The workspace edited; empty for the one Create makes.
     id: String,
+    /// The New workspace dialog: Create makes the workspace, which has no sharing yet.
+    creating: bool,
     /// Where Sharing reads who mirrors, and what it revokes.
     workspace: Entity<Workspace>,
     name: Entity<InputState>,
@@ -649,8 +653,9 @@ impl Render for SpaceDialog {
                     .child(image)
                     .child(self.label("Folder"))
                     .child(folder)
-                    .child(self.label("Sharing"))
-                    .child(self.sharing(cx))
+            })
+            .when(!remote && !self.creating, |el| {
+                el.child(self.label("Sharing")).child(self.sharing(cx))
             })
             .when(remote, |el| {
                 el.child(self.label("Connection"))
@@ -671,10 +676,36 @@ impl Render for SpaceDialog {
 /// Opens the Edit… dialog of workspace `id`: its name selected, every change shown in the
 /// preview, applied by Save (or Enter), dropped by Cancel.
 pub(crate) fn open(ws: &Workspace, id: &str, window: &mut Window, cx: &mut Context<Workspace>) {
-    let Some(space) = ws.spaces().find(|s| s.id == id) else {
-        return;
+    if let Some(space) = ws.spaces().find(|s| s.id == id) {
+        show(ws, Some(space), window, cx);
+    }
+}
+
+/// Opens the New workspace dialog: a new workspace's name ("Workspace 3") selected, no look and
+/// no folder. Create (or Enter) makes the workspace and shows it; Cancel and Esc make nothing.
+pub(crate) fn open_new(ws: &Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    show(ws, None, window, cx);
+}
+
+/// The dialog, for `space` as it is (none: the one Create makes).
+fn show(ws: &Workspace, space: Option<&Space>, window: &mut Window, cx: &mut Context<Workspace>) {
+    let creating = space.is_none();
+    let (id, initial, look, folder, remote) = match space {
+        Some(s) => (
+            s.id.clone(),
+            s.name.clone(),
+            s.look.clone(),
+            s.folder.clone(),
+            s.is_remote(),
+        ),
+        None => (
+            String::new(),
+            ws.next_space_name(),
+            Look::default(),
+            None,
+            false,
+        ),
     };
-    let initial = space.name.clone();
     let name = cx.new(|cx| InputState::new(window, cx).default_value(initial));
     let search = cx.new(|cx| InputState::new(window, cx).placeholder("Find an icon"));
     let workspace = cx.entity();
@@ -682,15 +713,16 @@ pub(crate) fn open(ws: &Workspace, id: &str, window: &mut Window, cx: &mut Conte
         // Who mirrors, and the API's state, change under the dialog: it draws what is now.
         cx.observe(&workspace, |_, _, cx| cx.notify()).detach();
         SpaceDialog {
-            id: id.to_string(),
+            id,
+            creating,
             workspace: workspace.clone(),
             name: name.clone(),
             search: search.clone(),
-            look: space.look.clone(),
-            folder: space.folder.clone(),
+            look,
+            folder,
             note: None,
             found: (String::new(), find_icons("")),
-            remote: space.is_remote(),
+            remote,
             theme: ws.theme.clone(),
             ui: ws.ui,
         }
@@ -708,11 +740,16 @@ pub(crate) fn open(ws: &Workspace, id: &str, window: &mut Window, cx: &mut Conte
     let shown = view.clone();
     window.open_alert_dialog(cx, move |alert, _, _| {
         let (view, workspace) = (view.clone(), workspace.clone());
+        let (title, ok) = if creating {
+            ("New workspace", "Create")
+        } else {
+            ("Edit workspace", "Save")
+        };
         alert
             .confirm()
-            .title("Edit workspace")
+            .title(title)
             .w(px(480.0))
-            .button_props(DialogButtonProps::default().ok_text("Save"))
+            .button_props(DialogButtonProps::default().ok_text(ok))
             .child(shown.clone())
             .on_ok(move |_, window, cx| save(&view, &workspace, window, cx))
     });
@@ -742,8 +779,13 @@ fn save(
         workspace.update(cx, |ws, cx| ws.edit_remote_look(&id, look, window, cx));
         return true;
     }
+    let creating = d.creating;
     match workspace.update(cx, |ws, cx| {
-        ws.edit_space(&id, &name, look, folder, window, cx)
+        if creating {
+            ws.create_space(&name, look, folder, window, cx)
+        } else {
+            ws.edit_space(&id, &name, look, folder, window, cx)
+        }
     }) {
         Ok(()) => true,
         Err(why) => {

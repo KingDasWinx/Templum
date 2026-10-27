@@ -379,6 +379,7 @@ impl Workspace {
     }
 
     /// Creates an empty workspace after the last one and shows it.
+    #[cfg(test)]
     pub(crate) fn new_space(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.make_space();
         self.switch_to(self.others.len(), window, cx);
@@ -424,17 +425,22 @@ impl Workspace {
             self.spaces().any(|s| s.id == id)
                 || dir.as_deref().is_some_and(|d| session::id_in_folder(d, id))
         });
-        let total = self.others.len() + 1;
-        let name = (total + 1..)
-            .map(|n| format!("Workspace {n}"))
-            .find(|name| !self.spaces().any(|s| s.name == *name))
-            .expect("an unused name");
+        let name = self.next_space_name();
         self.others.push(Space {
             id: id.clone(),
             name,
             ..Space::default()
         });
         id
+    }
+
+    /// The name a new workspace gets: "Workspace 3", the first number after the count that no
+    /// workspace has.
+    pub(crate) fn next_space_name(&self) -> String {
+        (self.others.len() + 2..)
+            .map(|n| format!("Workspace {n}"))
+            .find(|name| !self.spaces().any(|s| s.name == *name))
+            .expect("an unused name")
     }
 
     /// Moves blocks `ids` to the workspace `to` (None: a new one), running: a terminal's
@@ -543,11 +549,37 @@ impl Workspace {
         }
     }
 
-    /// A new workspace, shown, with its Edit… dialog open to name it.
+    /// New workspace (the Home's, the sidebar's +, the shortcut): the New workspace dialog. Only
+    /// its Create makes one.
     pub(crate) fn add_space(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.new_space(window, cx);
-        let id = self.space.id.clone();
-        space_dialog::open(self, &id, window, cx);
+        space_dialog::open_new(self, window, cx);
+    }
+
+    /// The New workspace dialog's Create: a workspace after the last one, with that name (an
+    /// empty one is refused), look and folder (one that isn't a folder is refused), shown.
+    /// Refused, nothing is made.
+    pub(crate) fn create_space(
+        &mut self,
+        name: &str,
+        look: Look,
+        folder: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if name.trim().is_empty() {
+            return Err("A workspace needs a name".into());
+        }
+        if let Some(folder) = folder.as_ref().filter(|f| !f.is_dir()) {
+            return Err(format!("{} isn't a folder", folder.display()));
+        }
+        let id = self.make_space();
+        if let Err(why) = self.edit_space(&id, name, look, folder, window, cx) {
+            // Its image couldn't be kept: it goes, never written.
+            self.others.pop();
+            return Err(why);
+        }
+        self.switch_to(self.others.len(), window, cx);
+        Ok(())
     }
 
     /// Gives the workspace with `id` a name (an empty one is refused), a look and a folder. A

@@ -57,7 +57,8 @@ Top to bottom, in a centered column ([Screens](design-system.md#screens)):
 - **The header:** a greeting by the local hour ("Good morning" from 5:00, "Good afternoon" from 12:00, "Good evening"
   from 18:00) over what Templum holds: "4 workspaces · 3 agents at work" (the agents working or waiting for their
   subagents, in every workspace that runs). At its right: **New workspace** (the tinted primary: as the sidebar's +, it
-  creates "Workspace *n*", shows it and opens its edit dialog), **Open folder…** (the system's folder picker: the
+  opens the New workspace dialog, whose Create makes the workspace and shows it, see
+  [cockpit.md](cockpit.md#6-the-workspaces-screen)), **Open folder…** (the system's folder picker: the
   workspace whose folder it is is shown; else a new workspace named after the folder, with that folder, is made and
   shown), **Connect to a Templum…** (plug) and **Settings** (gear).
 - **The search:** "Find a workspace by name or folder"; it filters the workspace cards as you type (the name, or the
