@@ -12,8 +12,9 @@
 //! `templum --bench-far`: an agent cockpit seen from afar, on the folder Templum runs from: 21
 //! blocks, 6 a row (8 terminals, 5 redrawing the mixed scenario's colored screen and 3 showing
 //! its largest file; 6 editors on its 6 largest files; 4 notes holding its README; 3 kanban
-//! blocks), each wired to the next, none focused. The camera rests at 33% for 5 s, then glides to 25% and rests
-//! there, while it circles 1,500 world units around the canvas's center.
+//! blocks), each wired to the next, none focused. The camera rests at 33% for 3 s, glides to 25% and rests
+//! there for 2 s, then glides out a step every 0.25 s down to 1% and rests there, while it circles
+//! 1,500 world units around the canvas's center.
 //! `templum --bench-mirror`: the mixed scenario's cockpit mirrored by the same Templum, over
 //! loopback (its API on, a Full share of its first workspace, connected as `r1`, which is shown
 //! and streams every terminal on screen while home's terminals redraw), driven as `--bench-mixed`
@@ -288,9 +289,17 @@ fn mixed_cockpit(ws: &mut Workspace, window: &mut Window, cx: &mut Context<Works
     agent_chat(ws);
 }
 
-/// What the zoom-and-pan scenarios do each frame: zoom sweeps every step back and forth (4 per
-/// second) while the camera pans in a circle around `center`; with `chat`, the Templum Agent's
-/// reply grows by a word.
+/// The index of `zoom` in `ZOOM_STEPS`, which has it.
+fn step(zoom: f32) -> usize {
+    ZOOM_STEPS
+        .iter()
+        .position(|&z| z == zoom)
+        .expect("a zoom step")
+}
+
+/// What the zoom-and-pan scenarios do each frame: zoom sweeps every step from 25% up and back (4
+/// per second) while the camera pans in a circle around `center`; with `chat`, the Templum
+/// Agent's reply grows by a word.
 fn sweep_and_circle(
     center: Point,
     chat: bool,
@@ -300,9 +309,11 @@ fn sweep_and_circle(
             let word = templum_agent::ChatEvent::TextDelta("streaming ".into());
             ws.templum_agent.conversation.apply(word);
         }
-        let n = ZOOM_STEPS.len();
+        // From 25%, as before there were steps under it: the numbers stay comparable.
+        let low = step(0.25);
+        let n = ZOOM_STEPS.len() - low;
         let k = (t / 0.25) as usize % (2 * (n - 1));
-        let target = if k < n { k } else { 2 * (n - 1) - k };
+        let target = low + if k < n { k } else { 2 * (n - 1) - k };
         // Through the workspace, as the keys and the wheel do: zoom steps glide.
         let step = target as i32 - ws.space.canvas.camera.zoom_index() as i32;
         if step != 0 {
@@ -429,19 +440,17 @@ pub(crate) fn run_zoom(window: AnyWindowHandle, ws: Entity<Workspace>, kind: Str
                     .map(|b| Point::new(b.x + b.w / 2.0, b.y + b.h / 2.0))
                     .unwrap_or_default();
                 let vp = ws.viewport(window);
-                let low = ZOOM_STEPS[0];
+                let (low, high) = (step(0.25), step(2.0));
+                let zoom = ZOOM_STEPS[low];
                 ws.space.canvas.camera = Camera::at(
-                    Point::new(center.x - vp.w / 2.0 / low, center.y - vp.h / 2.0 / low),
-                    low,
+                    Point::new(center.x - vp.w / 2.0 / zoom, center.y - vp.h / 2.0 / zoom),
+                    zoom,
                 );
                 ws.space.flight = None;
-                let high = ZOOM_STEPS
-                    .iter()
-                    .position(|&z| z == 2.0)
-                    .expect("200% is a step");
                 measure(ws, idle_rss, move |ws, window, cx, t| {
-                    let k = (t / 0.25) as usize % (2 * high);
-                    let target = if k <= high { k } else { 2 * high - k };
+                    let span = high - low;
+                    let k = (t / 0.25) as usize % (2 * span);
+                    let target = low + if k <= span { k } else { 2 * span - k };
                     let step = target as i32 - ws.space.canvas.camera.zoom_index() as i32;
                     if step != 0 {
                         let pivot = ws.center(window);
@@ -541,17 +550,26 @@ pub(crate) fn run_far(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut A
                     .map(|b| Point::new(b.x + b.w / 2.0, b.y + b.h / 2.0))
                     .unwrap_or_default();
                 let vp = ws.viewport(window);
-                let far = ZOOM_STEPS[1];
+                let far = 0.33;
                 ws.space.canvas.camera = Camera::at(
                     Point::new(center.x - vp.w / 2.0 / far, center.y - vp.h / 2.0 / far),
                     far,
                 );
                 ws.space.flight = None;
                 measure(ws, idle_rss, move |ws, window, cx, t| {
-                    // 33% for 5 s, then one glide out to 25%, which it keeps.
-                    if t >= 5.0 && ws.space.canvas.camera.zoom_index() > 0 {
+                    // 33% for 3 s, then one glide out to 25%, kept for 2 s; then out a step every
+                    // 0.25 s, as the wheel does, down to 1% (at 7 s), which it keeps.
+                    let target = if t < 3.0 {
+                        step(0.33)
+                    } else if t < 5.0 {
+                        step(0.25)
+                    } else {
+                        step(0.25).saturating_sub(1 + ((t - 5.0) / 0.25) as usize)
+                    };
+                    let delta = target as i32 - ws.space.canvas.camera.zoom_index() as i32;
+                    if delta != 0 {
                         let pivot = ws.center(window);
-                        ws.zoom_to(-1, pivot, cx);
+                        ws.zoom_to(delta, pivot, cx);
                     }
                     // Around the canvas's center, 1,500 world units out, a turn every 4 s:
                     // blocks keep entering and leaving the view.
