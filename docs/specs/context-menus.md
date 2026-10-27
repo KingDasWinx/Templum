@@ -50,7 +50,7 @@ would have opened together with the block's. The canvas and the blocks had no me
 | The toolbar's Terminal button (a click) | Default (*its name*), then the shells found; the chosen one opens where a new terminal goes |
 | A column's title | Rename…, Add a card, Delete |
 | A card | Open, Send to ▸, Delete card (asks first) |
-| A workspace tile in the sidebar, or its card on the workspaces screen | Open (disabled for the one shown), Edit…, Stop (disabled while it is the only workspace, or stopped), Delete… (disabled for the last workspace) |
+| A workspace tile in the sidebar, or its card on the Home (also its ⋯) | Open (disabled for the one shown), Edit…, Stop (disabled while it is the only workspace, or stopped), Delete… (disabled for the last workspace) |
 | A drawing (with the Select tool) | Delete |
 
 On a **mirrored workspace** the same menus open, and what home can't do there is dimmed with the rule's words as its

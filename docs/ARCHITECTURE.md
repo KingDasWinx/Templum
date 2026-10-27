@@ -235,10 +235,11 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   canvas's bottom center, never scaled by the zoom
   ([specs/templum-agent.md](specs/templum-agent.md#what-a-person-sees), its look:
   [specs/templum-agent-look.md](specs/templum-agent-look.md)).
-- `sidebar.rs`: the workspaces' tiles, a workspace's face (its image, icon or initials, in its color) and the Git
-  and inbox buttons at its foot;
-  `spaces_screen.rs`: the workspaces screen (cards, search, keys, dragging to reorder); `space_dialog.rs`: a
-  workspace's look and its Edit… dialog ([specs/cockpit.md](specs/cockpit.md#6-the-workspaces-screen)).
+- `sidebar.rs`: the Home button, the workspaces' tiles, a workspace's face (its image, icon or initials, in its
+  color) and the Git and inbox buttons at its foot;
+  `home.rs`: the Home, where Templum starts (what waits for the person, the workspaces' cards, search, keys,
+  dragging to reorder, recent folders; [specs/home.md](specs/home.md)); `space_dialog.rs`: a workspace's look and its
+  Edit… dialog ([specs/cockpit.md](specs/cockpit.md#6-the-workspaces-screen)).
 - `welcome.rs`: the welcome a first run opens over a frosted canvas (each block a soft shadow of its shape: GPUI has
   no backdrop blur), five pages whose settings are the panel's rows (`settings/welcome.rs`); the first terminal
   opens when it closes ([specs/welcome.md](specs/welcome.md)).

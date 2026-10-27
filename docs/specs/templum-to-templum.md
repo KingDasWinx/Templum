@@ -139,7 +139,7 @@ revoke must not wait for Save).
   shown again." **Done** closes it; the text is gone from memory.
 
 **The tile** of a workspace that is mirrored now (a share's event stream is open) gets a small cast mark at its
-bottom-right; tooltip "Mirrored now on Another computer (203.0.113.7)". The workspaces screen's card shows the same
+bottom-right; tooltip "Mirrored now on Another computer (203.0.113.7)". The Home's card shows the same
 (*the designer's call*: the person always sees who is watching).
 
 **Elsewhere on home:**
@@ -158,7 +158,7 @@ bottom-right; tooltip "Mirrored now on Another computer (203.0.113.7)". The work
 ### On the mirror: connecting
 
 The sidebar gets a **Connect to a Templum…** button under **+** (a plug icon, tooltip of the same words; *the
-designer's call*: visible, where the person looks for workspaces). The workspaces screen's header gets the same button
+designer's call*: visible, where the person looks for workspaces). The Home's header gets the same button
 beside New workspace, and the keymap a `connect_templum` command with no default key.
 
 **The Connect dialog:**
@@ -184,7 +184,7 @@ beside New workspace, and the keymap a `connect_templum` command with no default
 
 - **Its tile:** home's color and icon (or initials), and a small remote mark at its bottom-right. Tooltip:
   "API, on winx-desktop · 84 ms". It joins the sidebar's order (dragged like any tile), Ctrl+Tab, Ctrl+1–9 and the
-  workspaces screen (its card: "Mirror of winx-desktop · 3 terminals · 1 Claude Code working").
+  Home (its card: "Mirror of winx-desktop · live · 3 terminals" and "1 Claude Code working").
 - **A banner** over the canvas's top edge, window chrome at a fixed scale like the Templum Agent's pill: "Mirror of
   **API** on **winx-desktop** · Full · 84 ms", an ⓘ that lists what isn't mirrored yet, and **Disconnect**. The round
   trip turns yellow past 250 ms, with the tooltip "Each key waits about 300 ms for winx-desktop's answer." Three days

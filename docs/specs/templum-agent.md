@@ -115,7 +115,7 @@ The chat is a floating card that rises from the pill: the pill becomes its foote
   block's shadow (y 10, blur 30). It rises 12 px and fades in over 0.22 s; with less motion it appears.
 - **It doesn't block the app.** The canvas works around it; a click outside it doesn't close it. Only Esc in its field,
   its ▾ button or the shortcut close it, and the conversation goes on while it is closed. It sits under the Git popup,
-  the settings panel, the workspaces screen and the welcome, over the blocks; it is window chrome, so the canvas's zoom
+  the settings panel, the Home and the welcome, over the blocks; it is window chrome, so the canvas's zoom
   never scales it.
 - **Full screen:** the header's `maximize-2` button ("Full screen"; `minimize-2`, "Exit full screen", while full) makes
   the card fill the canvas, 16 px in from every side, in the same layer (under the Git popup); its footer stays at the
@@ -196,7 +196,7 @@ A dangerous call ([The gate](#the-gate)) waits. Templum shows the approval in th
   as a new one does. A wire types nothing: input reaching its terminals doesn't count for it. A terminal's title
   changing doesn't count: an agent animates its own while it works.
 - **Telling the person:** the pill turns yellow (above). When the window is in the background, or the pill can't be
-  seen (the workspaces screen, the welcome, the pill turned off), a system notification "Templum Agent asks: *Close
+  seen (the Home, the welcome, the pill turned off), a system notification "Templum Agent asks: *Close
   "Codex · api"?*"; clicking it brings the window and opens the chat at the approval. The short sound of
   [ask-user.md](ask-user.md#telling-the-person) plays, under `[connections] sound`.
 - **A message sent while one waits** denies it with the message as the person's words, and the message is sent too

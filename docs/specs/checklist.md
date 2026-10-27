@@ -196,7 +196,7 @@ checklist is the block's; an item is named by its id, as `read_checklist` shows 
   temporary file and rename. A `checklists.json` Templum can't parse is kept as `checklists.json.bak` and the
   checklists start empty; one it can't open isn't written that session. The canvases are written either way: a block
   naming a checklist that isn't there shows none (nothing is lost, the dialog keeps every checklist).
-- The workspaces screen's card counts them: "2 checklists".
+- The Home's card counts them: "2 checklists".
 
 ## Architecture
 

@@ -51,7 +51,7 @@ knowing. **Welcome** in the settings panel's footer shows it again.
 | Ctrl+Tab / Ctrl+Shift+Tab | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous workspace |
 | Ctrl+1 … Ctrl+9 | Cmd+1 … Cmd+9 | Workspace 1 to 9 |
 | Ctrl+Shift+N | Cmd+Shift+N | New workspace |
-| Ctrl+Shift+O | Cmd+Shift+O | The workspaces screen |
+| Ctrl+Shift+O | Cmd+Shift+O | Home |
 | Ctrl+Shift+Q, twice | Cmd+Q, twice | Quit (the first press only asks for the second) |
 
 In a terminal taken over by a program (full screen, an AI agent, or one that asked for the mouse or the kitty
@@ -65,9 +65,12 @@ one to switch, drag one to reorder, **+** to add one. The button at the left of 
 sidebar. Terminals in the workspaces you aren't looking at keep running, so an agent keeps working while you look
 elsewhere; a green dot on a tile means Claude Code or Codex is running in it.
 
-- **The workspaces screen** (the grid button atop the sidebar, the workspace's name in the title bar, or
-  Ctrl+Shift+O) shows a card per workspace with what it holds ("3 terminals · 1 Claude Code running"). Type to find
-  one, Up/Down and Enter to open it, drag cards to reorder.
+- **Home** is where Templum starts, with the workspace you left loaded behind it (Esc goes back to it). It shows
+  what waits for you across every workspace (agents that need you or finished, requests, automations that went
+  wrong: press one to open it where it is), a card per workspace with what it holds ("3 terminals · 1 note", "2
+  Claude Code running", "Opened 3 h ago"), and recent folders to start a workspace from. Type to find a workspace by
+  name or folder, Up/Down and Enter to open it, drag cards to reorder. The house atop the sidebar, the workspace's
+  name in the title bar and Ctrl+Shift+O open it again.
 - **Edit…** (right-click a tile or a card) names a workspace and gives it a color, a Lucide icon or an image, and a
   folder: new terminals start there. Its **Share…** lets another computer's Templum mirror the workspace live and work in it.
 - **Connect to a Templum…** (the plug under **+**) pastes a share's code and opens another computer's workspace here:
