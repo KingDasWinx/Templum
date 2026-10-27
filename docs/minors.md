@@ -903,8 +903,9 @@ Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those
   A person sees Templum use a whole core. Fix: sleep 100 ms after a failed `accept`.
 - [ ] **A socket in the temporary folder outlives a crash.** When the data folder's path is too long for a socket,
   the bus's socket goes to a private `templum-<random>/bus.sock` in the temporary folder
-  (`crates/templum-mcp/src/bus.rs`, `listen`), and `remove_stale` only clears `<data>/bus`: a crash leaves that
-  folder and its socket file there. Fix: at start, run `remove_stale` on the user's own `templum-*` folders in the
+  (`crates/templum-mcp/src/bus.rs`, `listen`), and `remove_stale` only clears `<data>/bus`: a crash, or a Templum
+  stopped with SIGTERM, leaves that folder and its socket file there (seen while taking the website's screenshots:
+  several `/tmp/templum-<hex>/bus.sock` left behind). Fix: at start, run `remove_stale` on the user's own `templum-*` folders in the
   temporary folder, and remove each one left empty.
 - [ ] **Reading a terminal's last command holds the terminal for its whole output.** `SharedTerm::last_command`
   (`crates/templum-terminal/src/terminal.rs:301`, at c0597d1) turns the whole command's output into text under the
@@ -2219,6 +2220,10 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   height, so a header is a row's 48 px with its name at the bottom (`crates/templum/src/agents_view.rs`, `list`):
   twice the 14 px Automations leaves over a group's name. Fix: gpui's variable-height `list` (`ListState`), or a
   header drawn in the first row of its group.
+- [ ] **Where shows the folder's whole path.** `inbox::where_words` (`crates/templum/src/inbox.rs`), used by the
+  Agents details and the Requests card, prints the raw folder ("/home/winx/Documents/github/Templum · Main") where
+  the Home's cards shorten it with `agents::tilde` ("~/Documents/github/Templum"). Fix: pass the folder through
+  `agents::tilde` in `where_words`.
 
 ## Popups
 
