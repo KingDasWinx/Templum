@@ -2553,10 +2553,12 @@ fn the_wheel_over_a_remote_shell_reads_home_s_history_and_scrolls_in_it(cx: &mut
         .unwrap();
     };
     up(cx);
-    pump_home(&home, cx, "home's history in the viewer", |cx| {
+    // The first step finds no history yet: it goes back once home's is there.
+    pump_home(&home, cx, "the view back in home's history", |cx| {
         draw(handle, cx);
-        viewer_lines(&ws, cx, viewer).iter().any(|l| l == "row 1.")
+        scrolled_back(&ws, cx, viewer)
     });
+    assert!(viewer_lines(&ws, cx, viewer).iter().any(|l| l == "row 1."));
     up(cx);
     assert!(scrolled_back(&ws, cx, viewer), "the history scrolls");
     assert!(said(&ws, cx).is_empty(), "{:?}", said(&ws, cx));
@@ -2635,9 +2637,9 @@ fn shift_page_up_pages_back_through_home_s_history_and_never_reaches_home(cx: &m
             .unwrap();
     };
     press(cx, "shift-pageup");
-    pump_home(&home, cx, "home's history in the viewer", |cx| {
+    pump_home(&home, cx, "a page back in home's history", |cx| {
         draw(handle, cx);
-        viewer_lines(&ws, cx, viewer).iter().any(|l| l == "row 1.")
+        scrolled_back(&ws, cx, viewer)
     });
     press(cx, "shift-pageup");
     assert!(scrolled_back(&ws, cx, viewer));

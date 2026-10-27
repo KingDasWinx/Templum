@@ -2390,6 +2390,14 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   `Feeder::drop_history`.) The alternate screen has no history, and the main screen's is not reached from there, so a
   stream that ends while the program is full screen leaves the history on the main screen until the viewer is fed
   again with a fill. Fix: keep the inactive grid reachable (`Term::swap_alt` resets the alternate screen, so not that).
+- [ ] **A touchpad scrolls a mirrored terminal drawn smaller than its block at the block's speed.** The wheel turns
+  pixels into lines at the camera's zoom (`scroll_terminal`, `crates/templum/src/workspace/input.rs`), but a viewer
+  whose home grid is bigger than its block is drawn at the fit zoom (`remote::fit_zoom`), so a swipe moves fewer lines
+  than it moved the text under the fingers. Fix: use the fit zoom for a remote pane's line height there.
+- [ ] **Lines wheeled back before a history read that failed wait for the next one.** `RemoteSpace::back`
+  (`crates/templum/src/workspace/remote.rs`) is cleared when home's history comes, when the person types and when the
+  view moves through a history; a read home refused leaves it, and the next history read for that terminal scrolls it
+  back by those lines too. Fix: forget it on the client's error for the read (`To::History`).
 - [ ] **The mouse and the wheel over a remote terminal, Shift+PageUp and Find through home's history were checked
   headlessly only.** (`workspace/input.rs`, `workspace/remote.rs`.) The pointer over a remote terminal at other zooms,
   and a wheel step over a program that took the mouse, were not looked at on a display. Fix: look.

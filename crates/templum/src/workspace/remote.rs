@@ -221,6 +221,9 @@ pub(crate) struct RemoteSpace {
     names: HashMap<BlockId, String>,
     /// The camera is the person's: home's view or the blocks' fit placed it once.
     pub placed: bool,
+    /// The lines the person went back in a viewer before home's history reached it: the view
+    /// goes back by them once it has (`history_came`).
+    pub back: Option<(BlockId, i32)>,
     /// The space's icon and color are home's, so the index doesn't keep them as the person's.
     pub home_look: bool,
     /// The terminals the client was last told to stream (home's id, the block here), sorted, and
@@ -573,6 +576,7 @@ impl RemoteSpace {
             shells_asking: false,
             recent: Vec::new(),
             old_keys: Vec::new(),
+            back: None,
             inherits: None,
             entry,
             status: Status::Connecting,
@@ -2709,13 +2713,13 @@ impl Workspace {
     /// Scrolling back in remote terminal `id`: the client reads home's history into its viewer
     /// (`Command::History`, which decides whether it needs reading), unless a full-screen program
     /// or one that took the mouse has the screen, or the rule says no. The UI thread never holds
-    /// the text: it hears `Update::History` when it is there.
-    pub(crate) fn remote_history(&self, id: BlockId) {
+    /// the text: it hears `Update::History` when it is there. Whether it was asked for.
+    pub(crate) fn remote_history(&self, id: BlockId) -> bool {
         let Some(pane) = self.space.terminal(id) else {
-            return;
+            return false;
         };
         let Some(block) = pane.remote.as_ref().map(|r| r.block.clone()) else {
-            return;
+            return false;
         };
         let modes = pane.term.shared().modes();
         let allowed = self
@@ -2723,9 +2727,11 @@ impl Workspace {
             .remote
             .as_deref()
             .is_some_and(|remote| remote.why_not(Deed::ScrollBack).is_none());
-        if !modes.full_screen && !modes.mouse && allowed {
+        let ask = !modes.full_screen && !modes.mouse && allowed;
+        if ask {
             self.mirror_send(&self.space.id, Command::History { block });
         }
+        ask
     }
 
     /// The wheel moved remote terminal `id` by `lines` (up is positive) and its program took no
@@ -2749,11 +2755,31 @@ impl Workspace {
             }
             return;
         }
-        if lines > 0 && !pane.term.scrolled_back() {
-            self.remote_history(id);
-        }
+        self.scroll_viewer(id, lines);
+    }
+
+    /// Viewer `id` scrolls by `lines` (up is positive) through the history it has; going back
+    /// from its live screen reads home's, and the lines that found none yet wait for it.
+    fn scroll_viewer(&mut self, id: BlockId, lines: i32) {
+        let Some(pane) = self.space.terminal(id) else {
+            return;
+        };
+        let asked = lines > 0 && !pane.term.scrolled_back() && self.remote_history(id);
         pane.scrolled.set(true);
         pane.term.scroll(lines);
+        let waiting = !pane.term.scrolled_back();
+        if let Some(remote) = self.space.remote.as_deref_mut() {
+            let back = match remote.back {
+                Some((viewer, back)) if viewer == id => back,
+                _ => 0,
+            };
+            let back = if waiting && (asked || lines < 0) {
+                back + lines
+            } else {
+                0
+            };
+            remote.back = (back > 0).then_some((id, back));
+        }
     }
 
     /// Shift+PageUp or Shift+PageDown in the focused remote terminal pages through the history
@@ -2771,11 +2797,7 @@ impl Workspace {
             return false;
         }
         let rows = i32::from(pane.term.shared().grid_size().1);
-        if up && !pane.term.scrolled_back() {
-            self.remote_history(id);
-        }
-        pane.scrolled.set(true);
-        pane.term.scroll(if up { rows } else { -rows });
+        self.scroll_viewer(id, if up { rows } else { -rows });
         true
     }
 
@@ -2790,6 +2812,14 @@ impl Workspace {
             .as_deref()
             .and_then(|remote| remote.homes.get(block).copied());
         if let Some(viewer) = viewer {
+            let back = self.space.remote.as_deref_mut().and_then(|remote| {
+                let back = remote.back.filter(|(v, _)| *v == viewer)?;
+                remote.back = None;
+                Some(back.1)
+            });
+            if let Some((pane, lines)) = self.space.terminal(viewer).zip(back) {
+                pane.term.scroll(lines);
+            }
             self.search_again(viewer, cx);
         }
         cx.notify();
@@ -2957,13 +2987,17 @@ impl Workspace {
             return;
         }
         if let Some((space, block)) = self.typing_at(window, cx) {
-            self.to_bottom();
+            self.back_to_live_screen();
             self.mirror_send(&space, Command::Keys { block, keys });
         }
     }
 
-    /// The focused terminal shows its live screen again, as typing in a local one does.
-    fn to_bottom(&self) {
+    /// The focused terminal shows its live screen again, as typing in a local one does: lines
+    /// waiting for home's history are forgotten.
+    fn back_to_live_screen(&mut self) {
+        if let Some(remote) = self.space.remote.as_deref_mut() {
+            remote.back = None;
+        }
         if let Some(pane) = self.space.focused_terminal()
             && pane.term.scrolled_back()
         {
@@ -2989,7 +3023,7 @@ impl Workspace {
             );
             return;
         }
-        self.to_bottom();
+        self.back_to_live_screen();
         self.mirror_send(&space, Command::Paste { block, text });
     }
 

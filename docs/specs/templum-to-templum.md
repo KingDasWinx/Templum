@@ -837,7 +837,9 @@ call; the mirror dims what its share can't do with the words of [One rule](#one-
   reads home's history: `read_terminal` with 2000 lines (`MAX_LINES`). The client feeds those lines into the viewer's
   scrollback, above the live screen, on its own thread (the UI thread never holds the text), then reopens the stream
   for a whole frame. The wheel, selecting, copying and Find then work in it as locally. The once-said "Only the live
-  screen is mirrored for now." goes.
+  screen is mirrored for now." goes. The lines the person went back before the history came (the first wheel step,
+  the first Shift+PageUp) wait for it (`RemoteSpace::back`) and the view goes back by them once it is there, unless
+  they typed meanwhile.
 - History lines have no colors: `read_terminal` serves text (*the designer's call*: history as frames would be a
   second stream API; text is what home already serves). The live screen keeps its colors.
 - **Fresh at each look:** the history is read again each time the person starts scrolling back from the bottom, when
@@ -1886,8 +1888,8 @@ brings it to the bottom; a history line keeps its tabs; a failed read says nothi
   home for a remote pane through `remote_mouse` (modes, `Deed::Mouse`: Full, `needs ["mouse"]`); `press_program`
   tells once per terminal (`tell_mouse`) when the share can't, and the press selects.
 - **Scrolling:** `Deed::ScrollBack` (read). `remote_history` asks the client; `remote_scroll` (the wheel) and
-  `remote_page` (Shift+PageUp/Down) scroll what the viewer has and ask for home's when the person starts to go back;
-  `open_find` asks too. `typing_into(id)` is `typing_at` for any remote terminal. `remote_wheel` and
+  `remote_page` (Shift+PageUp/Down) scroll what the viewer has (`scroll_viewer`) and ask for home's when the person
+  starts to go back; `open_find` asks too. `typing_into(id)` is `typing_at` for any remote terminal. `remote_wheel` and
   "Only the live screen is mirrored for now." are gone.
 
 Departures from the plan: the fake home answers `read_terminal` from a lent terminal only for a block that is lent
