@@ -73,6 +73,13 @@ fn zoom_mid_glide(
     }
 }
 
+/// The zoom steps text `font` units high is drawn at, as letters or bars: above the Card level.
+fn drawn_steps(font: f32) -> impl Iterator<Item = f32> {
+    templum_canvas::ZOOM_STEPS
+        .into_iter()
+        .filter(move |&z| templum_canvas::level(font, z) < templum_canvas::Level::Card)
+}
+
 /// The element was drawn in the last frame.
 fn shown(handle: AnyWindowHandle, cx: &mut TestAppContext, id: impl Into<ElementId>) -> bool {
     let id = id.into();
@@ -264,6 +271,151 @@ fn the_headers_buttons_hide_behind_a_far_label(cx: &mut TestAppContext) {
     assert!(shown(handle, cx, ("notes", note)));
     rest_at(handle, &ws, cx, Point::new(4990.0, -10.0), 0.25);
     assert!(!shown(handle, cx, ("notes", note)), "the label sits there");
+}
+
+/// Under 25% a block is its card: its label while the card holds it (a terminal at 8%), its shape
+/// further (4%, 1%): no label, its status dot in the middle of the card, and on hover no buttons,
+/// resize strips nor grip.
+#[gpui_kit::test]
+fn a_block_too_small_for_its_label_is_its_shape(cx: &mut TestAppContext) {
+    use crate::alert::Alert;
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    unfocus(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().alert = Some(Alert::Attention(None));
+        ws.space.hovered = Some(id);
+    });
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    let corner = Point::new(rect.x - 100.0, rect.y - 100.0);
+    let bounds = |cx: &mut TestAppContext, el: (&'static str, usize)| {
+        cx.update_window(handle, |_, window, _| window.find(el).bounds())
+            .unwrap()
+    };
+    rest_at(handle, &ws, cx, corner, 0.08);
+    assert!(
+        shown(handle, cx, ("title-text", n)),
+        "its label at 8%: {rect:?}"
+    );
+    assert!(!shown(handle, cx, ("silhouette", n)), "a card: no bars");
+    assert!(shown(handle, cx, ("close", n)), "hovered: its buttons");
+    let left = ElementId::Name(format!("resize-left-{}", id.0).into());
+    assert!(shown(handle, cx, left.clone()), "and its strips");
+    for zoom in [0.04, 0.01] {
+        rest_at(handle, &ws, cx, corner, zoom);
+        assert!(!shown(handle, cx, ("title-text", n)), "no label at {zoom}");
+        let (block, title) = (bounds(cx, ("block", n)), bounds(cx, ("title", n)));
+        let dot = bounds(cx, ("status", n));
+        let near = |a: gpui_kit::Pixels, b: f32| (f32::from(a) - b).abs() < 0.01;
+        assert!(
+            near(title.size.width, f32::from(block.size.width) - 2.0),
+            "the title covers the card at {zoom}: {title:?} in {block:?}"
+        );
+        let side = f32::from(block.size.width.min(block.size.height)) - 2.0;
+        assert!(
+            near(dot.size.width, side.min(8.0)),
+            "the dot at {zoom}: {dot:?} in {block:?}"
+        );
+        // GPUI puts an origin on a whole pixel: within half a pixel.
+        let (c, d) = (block.center(), dot.center());
+        let off = |a: gpui_kit::Pixels| f32::from(a).abs() <= 0.5;
+        assert!(
+            off(c.x - d.x) && off(c.y - d.y),
+            "in the middle at {zoom}: {dot:?} in {block:?}"
+        );
+        for el in [("close", n), ("handle", n)] {
+            assert!(!shown(handle, cx, el), "no {el:?} at {zoom}");
+        }
+        assert!(!shown(handle, cx, left.clone()), "no strips at {zoom}");
+    }
+}
+
+/// A shape is its title: a press anywhere on it moves the block and focuses it (it stays its
+/// shape), and a double-click frames it.
+#[gpui_kit::test]
+fn a_shape_moves_by_a_press_on_it_and_frames_on_a_double_click(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    unfocus(handle, &ws, cx);
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    rest_at(
+        handle,
+        &ws,
+        cx,
+        Point::new(rect.x - 2000.0, rect.y - 2000.0),
+        0.01,
+    );
+    let c = cx
+        .update_window(handle, |_, window, _| {
+            window.find(("title", n)).bounds().center()
+        })
+        .unwrap();
+    let at = (f32::from(c.x), f32::from(c.y));
+    cx.update_window(handle, |_, window, cx| {
+        press_with(
+            window,
+            cx,
+            MouseButton::Left,
+            Modifiers::default(),
+            at,
+            (at.0 + 20.0, at.1),
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let moved = ws.space.canvas.get(id).unwrap().rect;
+        assert!(
+            moved.x > rect.x + 1000.0,
+            "20 px at 1%: {rect:?} -> {moved:?}"
+        );
+        assert_eq!(ws.space.focused, Some(id), "and focused");
+    });
+    assert!(
+        !shown(handle, cx, ("title-text", n)),
+        "focused, still its shape"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.double_click(("title", n), cx)
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let z = ws.space.canvas.camera.zoom();
+        assert!(z > 0.25, "framed: the camera flies to {z}");
+    });
+}
+
+/// Under 25% the focused terminal is its card too (its letters would be specks under 2.5 px),
+/// and the keys still reach it.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_focused_terminal_under_25_is_its_card_and_takes_the_keys(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    ws.update(cx, |ws, _| ws.ime_cursor = None);
+    rest_at(
+        handle,
+        &ws,
+        cx,
+        Point::new(rect.x - 10.0, rect.y - 10.0),
+        0.16,
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.focused, Some(id), "focused");
+        assert!(ws.ime_cursor.is_none(), "no grid painted, no cursor");
+    });
+    assert!(shown(handle, cx, ("title-text", n)), "its label");
+    assert!(!shown(handle, cx, ("silhouette", n)), "no bars");
+    cx.update_window(handle, |_, window, cx| window.input("z", cx))
+        .unwrap();
+    super::terminals::until("the key to reach it", handle, &ws, cx, |ws| {
+        let term = ws.space.terminal(id).unwrap().term.shared();
+        term.lines(5).concat().contains('z')
+    });
 }
 
 /// A focused terminal at 25% is Full: its letters, its cursor (the IME popup follows it) and the
@@ -604,6 +756,13 @@ fn far_rendered_markdown_is_left_out_and_kanban_drawn_in_full(cx: &mut TestAppCo
         shown(handle, cx, ("kanban-empty", kanban)),
         "the kanban block is drawn in full"
     );
+    // Under 25% both are their cards: nothing inside.
+    rest_at(handle, &ws, cx, Point::new(0.0, 0.0), 0.16);
+    assert!(!shown(handle, cx, ("kanban-empty", kanban)), "no board");
+    assert!(
+        !shown(handle, cx, ElementId::Name(format!("tab-{e}-0").into())),
+        "no tab row"
+    );
 }
 
 /// A note at `at` holding `text`, at rest (not popping in), focused; and its editor.
@@ -772,7 +931,8 @@ fn a_notes_bars_line_up_with_its_letters_at_every_zoom(cx: &mut TestAppContext) 
             .all(|w| !(hidden..after).contains(&w.range.start)),
         "no bars for the folded lines"
     );
-    for zoom in templum_canvas::ZOOM_STEPS {
+    // Every step it has letters or bars at: under 25% it is a card.
+    for zoom in drawn_steps(crate::note::FONT) {
         rest_at(handle, &ws, cx, corner, zoom);
         cx.update_window(handle, |_, window, cx| {
             let origin = window.find(("note-editor", n)).bounds().origin;
@@ -1101,7 +1261,7 @@ fn an_editor_tabs_bars_line_up_with_its_letters_at_every_zoom(cx: &mut TestAppCo
         "taken scrolled: {:?}",
         map.scroll
     );
-    for zoom in templum_canvas::ZOOM_STEPS {
+    for zoom in drawn_steps(crate::editor::FONT) {
         rest_at(handle, &ws, cx, corner, zoom);
         cx.update_window(handle, |_, window, cx| {
             let origin = window.find(("code", n)).bounds().origin;

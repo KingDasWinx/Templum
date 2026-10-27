@@ -92,6 +92,15 @@ or the Git block's lists scroll only once the block is picked.
 A drag with the middle mouse button pans the canvas anywhere, over blocks too, with no key held. Terminals don't
 use the middle button (no paste of the primary selection yet).
 
+## How far the zoom goes
+
+From 1% to 300%, on fixed steps: 1%, 1.5%, 2%, 3%, 4%, 6%, 8%, 12%, 16%, 25%, 33%, 50%, 67%, 75%, 90%, 100%, 110%, 125%,
+150%, 175%, 200%, 250% and 300%. The wheel, a pinch, Ctrl+= and Ctrl+-, Fit all blocks, a framing and a restored
+canvas all land on them; the title bar reads tenths under 10% ("1.5%"). Under 25% a block is its card with its title's
+label, and too small for the label it is its shape with a terminal's status dot, which a press moves and a
+double-click frames ([level-of-detail.md](level-of-detail.md)). The dots, wires, drawings, selection, the selection
+rectangle and the scroll at the window's edges work the same at every step.
+
 ## Framing a block
 
 A double-click on a block's title glides the view to show the block centered, at the largest zoom step that fits

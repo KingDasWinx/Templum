@@ -50,7 +50,7 @@ All coordinates in `templum-canvas` are **world units**: logical pixels at zoom 
 | Item | Responsibility |
 |---|---|
 | `Point`, `Rect` | `f32` geometry: `contains`, `intersects`, `union`, `right`, `bottom`. |
-| `Camera` | `origin` is the world point at the viewport's top-left. `zoom` is one of `ZOOM_STEPS` (0.25 … 3.0, 14 steps, 1.0 included). See the camera methods below. |
+| `Camera` | `origin` is the world point at the viewport's top-left. `zoom` is one of `ZOOM_STEPS` (0.01 … 3.0, 23 steps, 1.0 included; 0.25 … 3.0 until card 227). See the camera methods below. |
 | `BlockId` | Opaque `u64`, never reused within a session. |
 | `Canvas` | Holds `camera` and the blocks (back-to-front, each `{ id, rect }`). See the canvas methods below. |
 | `Gesture` | `Pan { last }`, `Move { id, grab }` and `Resize { id, grab }`. `update(&mut Canvas, pointer_screen) -> Option<(BlockId, Rect)>` returns the new rect of a resized block, and resize clamps to the minimum size. |

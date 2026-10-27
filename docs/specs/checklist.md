@@ -91,9 +91,9 @@ removed; nothing is lost.
 **Copy and paste** a checklist block (canvas selection): the pasted block shows a copy of its checklist, with the
 same name.
 
-**Far away** (docs/specs/level-of-detail.md): a checklist block is drawn in full at every level, as a kanban block
-(13 world units never reach the Card level with today's zoom steps); below Full its title is the fixed-size label,
-as every block's.
+**Far away** (docs/specs/level-of-detail.md): a checklist block is drawn in full down to the Card level, as a kanban
+block, which its 13 world units reach under 25%: then it is its card, or its shape; below Full its title is the
+fixed-size label, as every block's.
 
 ### The Checklists dialog
 

@@ -43,6 +43,23 @@ fn a_saved_canvas_comes_back(cx: &mut TestAppContext) {
     assert_eq!(folder_of(&ws, ids[1], cx), b.path().canonicalize().unwrap());
 }
 
+/// A canvas left at 6% comes back at 6%: the steps go down to 1%.
+#[gpui_kit::test]
+fn a_canvas_saved_far_out_comes_back_as_far(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().display().to_string().replace('\\', "\\\\");
+    write_canvas(
+        data.path(),
+        &format!(
+            r#"{{"version":1,"camera":{{"x":-100,"y":50,"zoom":0.06}},"items":[
+                  {{"kind":"terminal","rect":{{"x":0,"y":0,"w":700,"h":450}},"folder":"{folder}"}}]}}"#
+        ),
+    );
+    let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 0.06));
+}
+
 #[gpui_kit::test]
 fn a_saved_canvas_with_no_blocks_opens_empty(cx: &mut TestAppContext) {
     let data = tempfile::tempdir().unwrap();

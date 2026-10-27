@@ -44,7 +44,7 @@ pub(crate) fn label_scale(rest: f32, zoom: f32) -> Option<f32> {
     match level(LABEL_FONT, rest) {
         Level::Full => Some(zoom),
         Level::Silhouette => Some(1.0),
-        Level::Card => None,
+        Level::Card | Level::Shape => None,
     }
 }
 

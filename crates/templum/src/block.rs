@@ -31,6 +31,8 @@ use crate::workspace::{AgentState, Body, Copied, FindBar, Pane, Workspace};
 
 /// World units, like everything in a block.
 const TITLE_FONT: f32 = 12.0;
+/// A kanban or checklist block's text: its cards', columns' and items'.
+const BOARD_FONT: f32 = 13.0;
 const RADIUS: f32 = 10.0;
 /// The focused block's ring, outside its border.
 const RING: f32 = 2.0;
@@ -128,21 +130,30 @@ pub(crate) fn render(
     // Selected blocks wear the focused one's ring and border, and so does the tile a held one
     // would trade places with.
     let marked = focused || (live && (ws.space.selected.contains(&id) || ws.dropping_on(id)));
-    // How much of the body is drawn: by its text's size on screen at the zoom the camera rests at
-    // (docs/specs/level-of-detail.md, section 1); the block worked in (focused, or holding the
-    // keyboard: GPUI drops the focus of what isn't drawn) is always Full, asked only below Full.
+    // How much of the body is drawn: by its text's size on screen at the zoom the camera rests at,
+    // and by the block's own size there (docs/specs/level-of-detail.md, section 1).
+    let size = block.rect.size();
     let level = match body {
-        // Drawn in full down to the Card level, which its 13 px never reach (3.25 px at 25%).
-        Body::Kanban(_) | Body::Checklist(_) | Body::Mirrored(_) => Level::Full,
-        Body::Terminal(_) => templum_canvas::level(ws.cell.font_size, ws.space.rest),
-        _ => templum_canvas::level(font, ws.space.rest),
+        // Drawn in full down to the Card level: a board's cards have no bars.
+        Body::Kanban(_) | Body::Checklist(_) | Body::Mirrored(_) => {
+            match templum_canvas::block_level(BOARD_FONT, size, ws.space.rest) {
+                Level::Silhouette => Level::Full,
+                level => level,
+            }
+        }
+        Body::Terminal(_) => templum_canvas::block_level(ws.cell.font_size, size, ws.space.rest),
+        _ => templum_canvas::block_level(font, size, ws.space.rest),
     };
-    // The block worked in: focused, or holding the keyboard.
-    let level = if level != Level::Full && (focused || (live && body.has_focus(window, cx))) {
+    // The block worked in (focused, or holding the keyboard: GPUI drops the focus of what isn't
+    // drawn) has its letters where they would be bars; a card's would be specks under 2.5 px.
+    let level = if level == Level::Silhouette && (focused || (live && body.has_focus(window, cx))) {
         Level::Full
     } else {
         level
     };
+    // Too small on screen for its label, the block is its shape: the title covers it, with a
+    // terminal's status dot, and nothing else is drawn on it.
+    let shape = level == Level::Shape;
     let hovered = live && ws.space.hovered == Some(id);
     let ui = ws.ui;
     // 0 at rest, 1 hovered; eased both ways.
@@ -174,7 +185,7 @@ pub(crate) fn render(
     };
     // Below Full the title is a label: never scaled, at the card's top-left corner, over the
     // header and the top of the body (docs/specs/level-of-detail.md, section 2).
-    let labeled = templum_canvas::level(TITLE_FONT, ws.space.rest) != Level::Full;
+    let labeled = shape || templum_canvas::level(TITLE_FONT, ws.space.rest) != Level::Full;
     // The Templum Agent's blocks wear its mark before their title, at the Full level.
     let uid = ws.space.uids.get(&id).map_or("", String::as_str);
     let mark = match body {
@@ -212,13 +223,14 @@ pub(crate) fn render(
     if glow.is_some() || copied.is_some() {
         window.request_animation_frame();
     }
+    let words = title(ws, body, cx);
     let title_text = div()
         .id(("title-text", n))
         .truncate()
         .when(labeled, |el| el.min_w(px(0.0)))
         .text_size(px(TITLE_FONT * if labeled { 1.0 } else { z }))
         .text_color(if focused { ui.title } else { ui.title_dim })
-        .child(title(ws, body, cx))
+        .child(words.clone())
         .test_support();
     // An agent's block name, which agents call it by (`z0yfd`), after its title.
     let name = match body {
@@ -239,7 +251,14 @@ pub(crate) fn render(
             div()
                 .id(("status", n))
                 .flex_shrink_0()
-                .size(px(if labeled { DOT } else { 7.0 * z }))
+                .size(px(if shape {
+                    // As big as the label's, or as the card is within its border.
+                    DOT.min(r.w.min(r.h) - 2.0 * BORDER).max(0.0)
+                } else if labeled {
+                    DOT
+                } else {
+                    7.0 * z
+                }))
                 .rounded_full()
                 .bg(color)
                 .when(!labeled, |el| {
@@ -321,7 +340,18 @@ pub(crate) fn render(
         }
         _ => None,
     };
-    let title = if labeled {
+    let title = if shape {
+        // The whole card, its dot in the middle; hovering it names the block.
+        div()
+            .id(("title", n))
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .children(label_dot)
+            .tooltip(move |window, cx| Tooltip::new(words.clone()).build(window, cx))
+    } else if labeled {
         div()
             .id(("title", n))
             .absolute()
@@ -581,8 +611,8 @@ pub(crate) fn render(
     // The resize strips, on the block under the pointer only (the pointer reaches an edge from
     // inside the block): the top ones under the header's buttons, the others over the body.
     let edge = (EDGE * z).clamp(2.0, EDGE);
-    // A tile's size is the grid's: it has no resize strips nor grip.
-    let (top_zones, other_zones) = if hovered && !tiled {
+    // A tile's size is the grid's: it has no resize strips nor grip; a shape is moved only.
+    let (top_zones, other_zones) = if hovered && !tiled && !shape {
         let mut zone = |edges| resize_zone(id, edges, edge, cx);
         (
             vec![
@@ -601,23 +631,28 @@ pub(crate) fn render(
     } else {
         (Vec::new(), Vec::new())
     };
-    let header = div()
-        .relative()
-        .w_full()
-        .h(px(chrome::TITLE_H * z))
-        .child(title)
-        .children(top_zones)
-        .children(header_dot)
-        .children(chip)
-        .children(boards)
-        .children(preview)
-        .children(all_checklists)
-        .children(tree_toggle)
-        .when(hovered, |el| {
-            el.child(fade_in(more, ("more-fade", n)))
-                .child(fade_in(fullscreen, ("fullscreen-fade", n)))
-                .child(fade_in(close, ("close-fade", n)))
-        });
+    let header = if shape {
+        title.into_any_element()
+    } else {
+        div()
+            .relative()
+            .w_full()
+            .h(px(chrome::TITLE_H * z))
+            .child(title)
+            .children(top_zones)
+            .children(header_dot)
+            .children(chip)
+            .children(boards)
+            .children(preview)
+            .children(all_checklists)
+            .children(tree_toggle)
+            .when(hovered, |el| {
+                el.child(fade_in(more, ("more-fade", n)))
+                    .child(fade_in(fullscreen, ("fullscreen-fade", n)))
+                    .child(fade_in(close, ("close-fade", n)))
+            })
+            .into_any_element()
+    };
 
     // Drawn at the Full level only.
     let covered = match body {
@@ -669,11 +704,12 @@ pub(crate) fn render(
             },
         );
     let content = match body {
+        // Nothing inside: a terminal's grid isn't painted, so the terminal isn't re-armed and its
+        // output asks for no frames, as off screen; no body's text is laid out.
+        _ if level >= Level::Card => frame,
         Body::Terminal(pane) => {
             frame
-                // At the Card level nothing is inside: the grid isn't painted, so the terminal isn't
-                // re-armed and its output asks for no frames, as off screen.
-                .when(live && level != Level::Card, |el| {
+                .when(live, |el| {
                     el.cursor_text().on_any_mouse_down(cx.listener(
                         move |ws, e: &MouseDownEvent, window, cx| {
                             let left = e.button == MouseButton::Left;
@@ -700,7 +736,7 @@ pub(crate) fn render(
                         ws.scroll_terminal(id, e, window, cx)
                     }))
                 })
-                .when(level != Level::Card, |el| {
+                .map(|el| {
                     // Home's whole grid fits the block: at the zoom step that holds it.
                     let grid_zoom = if pane.remote.is_some() {
                         crate::workspace::remote::fit_zoom(
@@ -746,12 +782,9 @@ pub(crate) fn render(
                         && pane.remote.as_ref().is_some_and(|r| r.read_only),
                     |el| el.child(read_only_footer(ws, z)),
                 )
-                .when_some(
-                    pane.starting
-                        .as_ref()
-                        .filter(|_| live && level != Level::Card),
-                    |el, s| el.child(starting_cover(ws, n, s.title.clone(), z)),
-                )
+                .when_some(pane.starting.as_ref().filter(|_| live), |el, s| {
+                    el.child(starting_cover(ws, n, s.title.clone(), z))
+                })
                 .when_some(copied, |el, (c, opacity)| {
                     el.child(copied_pill(ws, n, c, opacity, r, z))
                 })
@@ -891,7 +924,7 @@ pub(crate) fn render(
             }
         })
         .children(other_zones)
-        .when(hovered && !tiled, |el| {
+        .when(hovered && !tiled && !shape, |el| {
             el.child(fade_in(handle, ("handle-fade", n)))
         })
         // That its agent waits for an answer, up close only; the inbox has the request. And that

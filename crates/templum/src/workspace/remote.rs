@@ -4280,11 +4280,9 @@ mod tests {
         assert_eq!(fit(1.0, 320.0, 192.0), 0.5);
         // k = 330 / 640 = 0.515…, and 2 × k = 1.03: the step below it.
         assert_eq!(fit(2.0, 330.0, 400.0), 1.0);
-        assert_eq!(
-            fit(1.0, 10.0, 10.0),
-            0.25,
-            "the smallest step when none fits"
-        );
+        // k = 64 / 640 = 0.1: a step under 25%.
+        assert_eq!(fit(1.0, 64.0, 38.4), 0.08);
+        assert_eq!(fit(1.0, 1.0, 1.0), 0.01, "the smallest step when none fits");
         // A bigger block than the grid needs does not stretch past the largest step.
         assert_eq!(fit(3.0, 6400.0, 3840.0), 3.0);
     }

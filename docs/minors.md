@@ -290,6 +290,15 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   text (gpui-base's editor takes the wheel and stops it) instead of moving the canvas, and the text shows scrolled
   when the block is next drawn in full. Fix: a capture-phase wheel listener on the unseen editor's wrapper that moves
   the canvas and stops the event before the editor sees it.
+- [ ] **Ctrl+F under 25% opens a find field nobody sees.** A focused terminal under 25% is its card
+  (`crates/templum/src/block.rs`, `render`: focus lifts only the Silhouette level), and its find field is drawn at the
+  Full level only, so the field takes the keyboard and what you type goes nowhere visible until you zoom back in.
+  Fix: let `Workspace::open_find` (`crates/templum/src/workspace/find.rs`) frame the terminal (`frame_block`) when its
+  block is below the Silhouette level.
+- [ ] **A block opened under 25% is opened as a card or a speck.** Ctrl+Shift+T at 4% puts a new terminal in the view
+  and focuses it, but the camera stays at 4% (`Workspace::show`, `crates/templum/src/workspace/view.rs`, only zooms
+  out), so it is a few pixels and its prompt can't be seen. Fix: `show` flies to at least 25% when the new block
+  would be drawn below the Silhouette level.
 
 ## Selecting blocks
 

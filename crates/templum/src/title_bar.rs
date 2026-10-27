@@ -16,7 +16,7 @@ use crate::workspace::Workspace;
 
 pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
     let ui = ws.ui;
-    let zoom = format!("{}%", (ws.space.canvas.camera.zoom() * 100.0).round());
+    let zoom = zoom_label(ws.space.canvas.camera.zoom());
     let closing = cx.entity();
     TitleBar::new()
         // Linux draws its own ✕: unsaved files are asked about, as the system's close does.
@@ -192,4 +192,29 @@ pub(crate) fn button(id: &'static str, ui: Ui) -> Stateful<Div> {
         .active(move |s| s.bg(ui.pressed))
         // The title bar moves the window on a press: keep presses on its buttons.
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+}
+
+/// The zoom as the title bar reads it: whole percents, and tenths under 10% ("1.5%").
+fn zoom_label(zoom: f32) -> String {
+    let percent = zoom * 100.0;
+    if percent < 10.0 {
+        format!("{}%", (percent * 10.0).round() / 10.0)
+    } else {
+        format!("{}%", percent.round())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_zoom_reads_in_whole_percents_and_tenths_under_10() {
+        assert_eq!(zoom_label(1.0), "100%");
+        assert_eq!(zoom_label(0.33), "33%");
+        assert_eq!(zoom_label(0.25), "25%");
+        assert_eq!(zoom_label(0.03), "3%");
+        assert_eq!(zoom_label(0.015), "1.5%");
+        assert_eq!(zoom_label(0.01), "1%");
+    }
 }

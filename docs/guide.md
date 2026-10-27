@@ -18,7 +18,7 @@ knowing. **Welcome** in the settings panel's footer shows it again.
 | Drag with the middle button, anywhere | Pan |
 | Scroll over a terminal | Scroll its history |
 | Click, drag or scroll in a program that uses the mouse (htop, vim, Claude Code full screen) | The program gets it; hold Shift to select text instead |
-| Ctrl+scroll, or pinch | Zoom |
+| Ctrl+scroll, or pinch | Zoom, from 1% to 300%: far out, blocks show their titles, then only their shapes and a terminal's status dot |
 | Drag in a terminal (double-click: word, triple-click: line) | Select text, copied to the clipboard as you let go (Settings ▸ Terminal turns that off) |
 | Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal, Kanban board, Note, Checklist or Editor, where you clicked |
 | Right-click a block, card, column, board or workspace tile | Its menu (copy, paste, move to another workspace, edit, stop, delete, close…) |
