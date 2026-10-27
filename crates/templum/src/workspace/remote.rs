@@ -213,10 +213,6 @@ pub(crate) struct RemoteSpace {
     /// differs from it is new, with no comparing of clocks (`remote_rules::home_unseen`).
     pub rules_seen: HashMap<u64, Option<i64>>,
     pub schedules: Vec<super::remote_rules::HomeSchedule>,
-    /// The last lines of the screen of the agent the Agents popup shows (home's block, its lines),
-    /// read through `read_terminal` while no viewer streams it; one read at a time.
-    pub screen: Option<(String, Vec<String>)>,
-    pub screen_asking: bool,
     /// Home's requests past [`MOST_REQUESTS`], not listed: the inbox says how many.
     pub requests_more: usize,
     /// Home's block ids, which never become the ids agents name blocks by (`Space::uids`).
@@ -539,8 +535,6 @@ impl RemoteSpace {
             rules: Vec::new(),
             rules_seen: HashMap::new(),
             schedules: Vec::new(),
-            screen: None,
-            screen_asking: false,
             requests_more: 0,
             rects: HashMap::new(),
             held: Holds::default(),

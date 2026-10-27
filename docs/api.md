@@ -597,7 +597,7 @@ rest, so a flood of strangers can't fill a log or push the calls out of `audit.l
 same way, in `audit.log`: `terminal_input` and `GET /v1/me` calls are one line per token, call, status and minute,
 with `more` counting the rest, so a morning of typing can't rotate the other calls out; every other call keeps its own
 line. `git` is written `git:<op>`, and `git:look` and `git:diff` (an open popup reads them every 2 s) are grouped as
-`terminal_input` is, and so is `read_terminal` (the Agents popup of a mirror reads a screen every 2 s). A mirror
+`terminal_input` is, and so is `read_terminal` (a mirror reads a terminal's history through it). A mirror
 that replaces another's session (see `Templum-Mirror`) writes one `mirror_replaced` line. Never a
 token, a ticket, a body or typed text. At 1 MiB each becomes `audit.log.1` and `noise.log.1`. `<data>/api/api.json`
 holds the settings and the tokens' hashes (`0600`, in a `0700` folder on Unix); a copy of the data folder carries no
@@ -699,7 +699,7 @@ the mirror, each done at home (an item's text goes when you press Enter or leave
 shows at once and home's state wins after two seconds. Renaming a checklist and moving its items stay on home. Home's
 ink and shapes are drawn, not picked: draw on home.
 
-The Agents popup lists home's agents under "API · winx-desktop" with their task, model, role, usage and screen. The
+The Agents popup lists home's agents under "API · winx-desktop" with their task, model, role and usage. The
 Automations popup shows home's rules of the shared workspace in a group of their own, and switches, runs, edits,
 duplicates and deletes them there (a rule that runs a command, and a delete, need a Full share); this computer's
 rules never run against a mirrored workspace: home's automations run only on home, and the mirror never copies,

@@ -3,10 +3,7 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
-
-use serde_json::json;
-use templum_api::client::Call;
+use std::time::Instant;
 
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{
@@ -15,29 +12,10 @@ use gpui_kit::{
 use templum_canvas::BlockId;
 
 use super::inbox::cards_of;
-use super::remote::{Deed, LINE_CHARS, Then};
 use super::{AgentState, Pane, Workspace};
 use crate::alert::Alert;
 use crate::automations::Heard;
 use crate::keys::Command;
-
-/// How often the screen of a remote agent the popup shows is read again.
-pub(crate) const AGENT_SCREEN_AGAIN: Duration = Duration::from_secs(2);
-/// The lines of a remote agent's screen the popup keeps.
-pub(crate) const SCREEN_LINES: usize = 12;
-
-/// The last [`SCREEN_LINES`] lines of home's `text`, each one clean line.
-pub(crate) fn screen_of(text: &str) -> Vec<String> {
-    // From the end: home's whole screen is not split into lines to keep a dozen.
-    let mut last: Vec<String> = text
-        .lines()
-        .rev()
-        .take(SCREEN_LINES)
-        .map(|line| super::bus::clean_to(line, LINE_CHARS))
-        .collect();
-    last.reverse();
-    last
-}
 
 /// What an agent does, as its row says it. Never inferred anew: `Workspace::doing` follows the
 /// dot of its block.
@@ -275,98 +253,6 @@ impl Workspace {
         }
     }
 
-    /// Reads the last lines of the screen of the remote agent `terminal` (the row the popup
-    /// shows): `read_terminal` at home, once at a time, unless a viewer streams it or the share
-    /// can't read. The answer is the remote's `screen`; the UI never waits for it.
-    pub(crate) fn read_home_screen(&mut self, terminal: &str, cx: &mut Context<Self>) {
-        let Some((space, id)) = self.watched_caller(terminal) else {
-            return;
-        };
-        let Some(space_ref) = self.space_named(&space) else {
-            return;
-        };
-        let Some(remote) = space_ref.remote.as_deref() else {
-            return;
-        };
-        let Some(block) = space_ref
-            .terminal(id)
-            .and_then(|pane| pane.remote.as_ref())
-            .map(|home| home.block.clone())
-        else {
-            return;
-        };
-        if remote.screen_asking
-            || remote.streaming.iter().any(|(home, _)| *home == block)
-            || remote.why_not(Deed::ScrollBack).is_some()
-        {
-            return;
-        }
-        if let Some(remote) = self.remote_mut(&space) {
-            remote.screen_asking = true;
-        }
-        let (remote_id, home) = (space.clone(), block.clone());
-        let then: Then = Box::new(move |ws, answered, _, cx| {
-            if let Some(remote) = ws.remote_mut(&remote_id) {
-                remote.screen_asking = false;
-                if let Ok(answer) = answered {
-                    let text = answer["text"].as_str().unwrap_or_default();
-                    remote.screen = Some((home, screen_of(text)));
-                }
-            }
-            cx.notify();
-        });
-        let call = Call {
-            tool: "read_terminal".into(),
-            args: json!({ "block": block, "lines": SCREEN_LINES }),
-            slow: false,
-        };
-        self.remote_call(&space, call, then, cx);
-    }
-
-    /// The row the popup shows is a remote agent's: its screen is read now and every
-    /// [`AGENT_SCREEN_AGAIN`] while the popup shows it.
-    pub(super) fn follow_home_screen(&mut self, cx: &mut Context<Self>) {
-        let Some(row) = self.shown_remote_agent() else {
-            return;
-        };
-        self.read_home_screen(&row.terminal, cx);
-        if self.screen_looking {
-            return;
-        }
-        self.screen_looking = true;
-        let window = self.window_handle;
-        cx.spawn(async move |ws, cx| {
-            loop {
-                cx.background_executor().timer(AGENT_SCREEN_AGAIN).await;
-                let more = cx
-                    .update_window(window, |_, _, cx| {
-                        ws.update(cx, |ws, cx| ws.look_home_screen(cx))
-                    })
-                    .ok()
-                    .and_then(Result::ok);
-                if more != Some(true) {
-                    break;
-                }
-            }
-        })
-        .detach();
-    }
-
-    /// One look: the screen of the remote agent the popup shows is read again. False once the
-    /// popup is closed or shows another agent.
-    fn look_home_screen(&mut self, cx: &mut Context<Self>) -> bool {
-        match self.shown_remote_agent() {
-            Some(row) => {
-                self.read_home_screen(&row.terminal, cx);
-                true
-            }
-            None => {
-                self.screen_looking = false;
-                false
-            }
-        }
-    }
-
     /// The workspace and block of the terminal `terminal`, a remote workspace's viewer too: the
     /// Agents view's rows name them (`caller` is for what acts on a local terminal).
     fn watched_caller(&self, terminal: &str) -> Option<(String, BlockId)> {
@@ -376,15 +262,6 @@ impl Workspace {
                 .find(|(_, pane)| pane.term.id() == terminal)
                 .map(|(id, _)| (space.id.clone(), id))
         })
-    }
-
-    /// The row of the open popup's selection when it is a remote agent's.
-    fn shown_remote_agent(&self) -> Option<AgentRow> {
-        if !self.agents_open {
-            return None;
-        }
-        self.agents_selected()
-            .filter(|row| self.space_named(&row.space).is_some_and(|s| s.is_remote()))
     }
 
     /// How many agents of the workspaces that run finished since their person looked.
@@ -706,7 +583,6 @@ impl Workspace {
         if let Some(terminal) = self.agents_pinned.clone() {
             self.show_agent(rows, &terminal, false);
         }
-        self.follow_home_screen(cx);
         cx.notify();
     }
 
@@ -763,7 +639,6 @@ impl Workspace {
         if let Some(field) = &self.agents_search {
             field.update(cx, |field, cx| field.focus(window, cx));
         }
-        self.follow_home_screen(cx);
         cx.notify();
     }
 
@@ -816,7 +691,6 @@ impl Workspace {
             if let Some(field) = &self.agents_search {
                 field.update(cx, |field, cx| field.focus(window, cx));
             }
-            self.follow_home_screen(cx);
             cx.notify();
         }
     }

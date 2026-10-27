@@ -993,7 +993,8 @@ fn rows_details_and_buttons_are_drawn(cx: &mut TestAppContext) {
     assert!(drawn(handle, cx, name("agents-go".into())));
     click_id(handle, cx, row(&a.1));
     assert!(!drawn(handle, cx, name("agents-request".into())));
-    assert!(drawn(handle, cx, name("agents-screen".into())));
+    // Its terminal shows "hello", yet the details have no Screen.
+    assert!(!drawn(handle, cx, name("agents-screen".into())));
     click_id(handle, cx, name("agents-go".into()));
     ws.read_with(cx, |ws, _| {
         assert!(!ws.agents_open);
@@ -1247,8 +1248,7 @@ fn a_choice_the_search_hid_comes_back_with_the_search(cx: &mut TestAppContext) {
 
 // On a mirror: the agents of another computer (Templum to Templum, part 2h).
 
-use super::remote::{answer, apply, offline, remote_of, sent, show_remote, terminal_of_home};
-use crate::workspace::agents_view::{AGENT_SCREEN_AGAIN, SCREEN_LINES};
+use super::remote::{apply, offline, remote_of, sent, show_remote, terminal_of_home};
 use crate::workspace::remote::HomeAgent;
 use templum_api::store::Scope;
 
@@ -1386,148 +1386,7 @@ fn a_remote_agent_is_done_here_until_looked_at_here_and_home_s_done_reads_idle(
 }
 
 #[gpui_kit::test]
-fn a_screen_read_keeps_its_last_twelve_clean_lines(cx: &mut TestAppContext) {
-    let (handle, ws, _dir) = offline(cx);
-    // The start's connecting (nothing to connect to) settles first.
-    cx.run_until_parked();
-    apply(
-        handle,
-        &ws,
-        cx,
-        terminal_of_home(Some(home_agent("working"))),
-    );
-    ws.update(cx, |ws, _| {
-        if let Some(r) = ws
-            .others
-            .iter_mut()
-            .find(|s| s.id == "r1")
-            .and_then(|s| s.remote.as_mut())
-        {
-            r.status = templum_api::client::Status::Live;
-            r.me = Some(templum_api::model::MeView {
-                scope: Scope::Read,
-                ..Default::default()
-            });
-        }
-    });
-    frame(handle, cx);
-    open_agents(handle, &ws, cx);
-    let row = ws.read_with(cx, |ws, _| ws.agent_rows().remove(0));
-    cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.select_agent(&row.terminal, window, cx))
-    })
-    .unwrap();
-    let reads = |cx: &mut TestAppContext| {
-        sent(&ws, cx)
-            .into_iter()
-            .filter(|(tool, _)| tool == "read_terminal")
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(
-        reads(cx),
-        [(
-            "read_terminal".to_string(),
-            json!({ "block": "abcde", "lines": SCREEN_LINES })
-        )]
-    );
-    let long: Vec<String> = (0..10_000)
-        .map(|n| match n {
-            9_995 => "red \u{1b}[31mtext".to_string(),
-            n => format!("line {n}"),
-        })
-        .collect();
-    answer(handle, &ws, cx, 0, Ok(json!({ "text": long.join("\n") })));
-    ws.read_with(cx, |ws, _| {
-        let (block, lines) = remote_of(ws).screen.clone().expect("a screen");
-        assert_eq!(block, "abcde");
-        assert_eq!(lines.len(), SCREEN_LINES);
-        assert_eq!(lines.last().map(String::as_str), Some("line 9999"));
-        assert!(
-            lines.iter().all(|l| !l.chars().any(char::is_control)),
-            "{lines:?}"
-        );
-    });
-    // Again after a while, while the popup shows it.
-    let again = |cx: &mut TestAppContext| {
-        ws.update(cx, |ws, _| {
-            if let Some(r) = ws
-                .others
-                .iter_mut()
-                .find(|s| s.id == "r1")
-                .and_then(|s| s.remote.as_mut())
-            {
-                r.status = templum_api::client::Status::Live;
-            }
-        });
-        cx.executor().advance_clock(AGENT_SCREEN_AGAIN);
-        cx.run_until_parked();
-    };
-    ws.update(cx, |ws, _| {
-        ws.others
-            .iter_mut()
-            .find(|s| s.id == "r1")
-            .unwrap()
-            .remote
-            .as_mut()
-            .unwrap()
-            .status = templum_api::client::Status::Live;
-    });
-    let before = reads(cx).len();
-    again(cx);
-    assert_eq!(reads(cx).len(), before + 1);
-    // Closed: no more.
-    let newest = reads_index(&ws, cx);
-    answer(handle, &ws, cx, newest, Ok(json!({ "text": "x" })));
-    cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.close_agents(window, cx))
-    })
-    .unwrap();
-    let before = reads(cx).len();
-    again(cx);
-    assert_eq!(reads(cx).len(), before);
-}
-
-/// The index among the kept calls of the newest `read_terminal`.
-fn reads_index(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> usize {
-    ws.read_with(cx, |ws, _| {
-        ws.calls
-            .iter()
-            .rposition(|(_, call, _)| call.tool == "read_terminal")
-            .unwrap()
-    })
-}
-
-#[gpui_kit::test]
-fn a_streamed_remote_agent_s_screen_is_not_read(cx: &mut TestAppContext) {
-    let (handle, ws, _dir) = mirrored_agent(cx, "working");
-    ws.update(cx, |ws, _| {
-        let r = ws
-            .others
-            .iter_mut()
-            .find(|s| s.id == "r1")
-            .unwrap()
-            .remote
-            .as_mut()
-            .unwrap();
-        r.status = templum_api::client::Status::Live;
-        r.me = Some(templum_api::model::MeView {
-            scope: Scope::Read,
-            ..Default::default()
-        });
-        let viewer = r.homes["abcde"];
-        r.streaming = vec![("abcde".into(), viewer)];
-    });
-    open_agents(handle, &ws, cx);
-    let row = ws.read_with(cx, |ws, _| ws.agent_rows().remove(0));
-    cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.select_agent(&row.terminal, window, cx))
-    })
-    .unwrap();
-    assert!(sent(&ws, cx).is_empty());
-}
-
-#[gpui_kit::test]
-fn a_remote_agent_s_details_and_screen_draw(cx: &mut TestAppContext) {
+fn a_remote_agent_s_details_draw_and_its_screen_is_never_read(cx: &mut TestAppContext) {
     let (handle, ws, _dir) = mirrored_agent(cx, "working");
     cx.run_until_parked();
     ws.update(cx, |ws, _| {
@@ -1544,16 +1403,29 @@ fn a_remote_agent_s_details_and_screen_draw(cx: &mut TestAppContext) {
             scope: Scope::Read,
             ..Default::default()
         });
-        r.screen = Some(("abcde".into(), vec!["$ cargo test".into(), "ok".into()]));
     });
     open_agents(handle, &ws, cx);
     let row = ws.read_with(cx, |ws, _| ws.agent_rows().remove(0));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.select_agent(&row.terminal, window, cx))
+    })
+    .unwrap();
+    cx.executor().advance_clock(Duration::from_secs(5));
+    cx.run_until_parked();
     assert!(drawn(
         handle,
         cx,
         name(format!("agents-row-{}", row.terminal))
     ));
-    assert!(drawn(handle, cx, name("agents-screen".into())));
+    assert!(!drawn(handle, cx, name("agents-screen".into())));
+    // Home is asked for nothing while the popup shows its agent.
+    assert!(
+        !sent(&ws, cx)
+            .iter()
+            .any(|(tool, _)| tool == "read_terminal"),
+        "{:?}",
+        sent(&ws, cx)
+    );
 }
 
 #[gpui_kit::test]

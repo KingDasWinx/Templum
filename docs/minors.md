@@ -2520,9 +2520,9 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   runs a rule from the mirror; no display looked at the group's spacing, the dim group at 50%, or Save dimmed on a
   Control share with its tooltip. Fix: look at them on a display with a mirror shown, and adjust.
 - [ ] **The Agents popup's remote groups and details, and a remote chip's effort line, were checked headlessly
-  only.** (`agents_view.rs`, `detail`, `agent_row`; `block.rs`, the usage chip.) A test draws the remote row and its
-  screen; no display looked at the dim group, the Task and Subagents sections of a remote agent, or the tooltip's
-  "Effort: high" line. Fix: look at them with a mirror shown.
+  only.** (`agents_view.rs`, `detail`, `agent_row`; `block.rs`, the usage chip.) A test draws the remote row; no
+  display looked at the dim group, the Task and Subagents sections of a remote agent, or the tooltip's "Effort: high"
+  line. Fix: look at them with a mirror shown.
 - [ ] **A switched rule or a cancelled schedule of home's shows a round trip later.** (`workspace/remote_rules.rs`,
   `set_home_rule`, `cancel_home_schedule`.) The switch and a cancelled schedule's row change when home's state arrives
   (the spec's holds name blocks, cards, items and wires), so a click looks unanswered for a moment. Fix: a hold over

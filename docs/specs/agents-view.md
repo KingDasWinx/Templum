@@ -31,8 +31,8 @@ them (**Done**), counts those on a sidebar button, and takes the person to any a
    subagents), waiting for its subagents, done, idle, starting; and how long it has been so.
 3. "This agent finished": a turn that ended while the person wasn't looking marks its agent **Done** until they look
    at its block; the sidebar button counts them.
-4. What the agent works on and what it costs, without opening its block: its task, its card, its context and usage,
-   its last screen lines.
+4. What the agent works on and what it costs, without opening its block: its task, its card, its context and usage.
+   Not its screen: Go to terminal shows it (card 224).
 5. One press to the agent ("Go to terminal"), or to its request in the inbox ("Open request").
 6. Hundreds of agents cost only the rows on screen.
 
@@ -210,9 +210,6 @@ designer's call* for the words). Every line is a label beside its words; the con
 - **Cost:** the usage chip's tooltip lines, each beside its label (*the orchestrator's call*: the same data and words
   as the chip): **Context** with its bar ("42% used"), **Tokens** ("1.2M"), **Cost** ("$3.10 at API prices"),
   **Effort**. The model is the card's.
-- **Screen:** the last 12 lines of its terminal (`SharedTerm::lines`, which leaves out a suggestion where the cursor
-  waits, card 147), plain monospace in the terminal's font family, on a card the content's width, cut at its width,
-  never wrapped. Read only for the selected agent (*the orchestrator's call*).
 - **The foot**, which stays while the details scroll, its buttons at the right of the content's width:
   - **Open request** (ghost): only while a request of its waits in the inbox (*the designer's call:* an agent's own
     dialog has no request, and is answered in its terminal: Go to terminal). It opens the Requests inbox at its oldest
@@ -254,10 +251,9 @@ and its context. Its state is home's, except that home's own Done reads as idle:
 watch, an agent whose turn ended while nobody here looked at its block, and looking at it here (the workspace shown, its
 viewer focused) clears it, as for a local one. The details give home's model and effort, role, task (its number, its
 first three lines, who handed it and how long ago), the count of its subagents (no lines), its usage with an "Effort:
-high" line, and its screen: the viewer's lines when home streams that block, else the last 12 lines read through
-`read_terminal` every 2 s while the popup shows it (and the share can read). Go to terminal shows the mirrored
-workspace with the viewer focused. A remote agent is never heard by this computer's event automations. The usage chip's
-tooltip of a remote terminal ends with the same "Effort: high" line.
+high" line; never its screen, so the open popup asks home for nothing. Go to terminal shows the mirrored workspace
+with the viewer focused. A remote agent is never heard by this computer's event automations. The usage chip's tooltip
+of a remote terminal ends with the same "Effort: high" line.
 
 ## Constraints
 
@@ -265,10 +261,10 @@ tooltip of a remote terminal ends with the same "Effort: high" line.
   test-support tests in crates/templum/src/workspace/tests/agents_view.rs); minors go to docs/minors.md; no
   speculative structure.
 - **Performance** (*the orchestrator's call*): the list is a virtual list (`uniform_list`, as gallery.rs and
-  git_block/history.rs use), so hundreds of rows cost only those on screen; the screen lines are read for the
-  selected agent only. Closed, the popup costs the watch of each agent's state (a few comparisons per terminal per
-  frame, the loop `hear` already runs) and the badge's count. The pull request runs `cargo run --release -p templum
-  -- --bench` and `--bench-mixed` (CLAUDE.md, Performance) and pastes their JSON lines; the bar is `p95_ms` ≤ 16.7.
+  git_block/history.rs use), so hundreds of rows cost only those on screen. Closed, the popup costs the watch of each
+  agent's state (a few comparisons per terminal per frame, the loop `hear` already runs) and the badge's count. The
+  pull request runs `cargo run --release -p templum -- --bench` and `--bench-mixed` (CLAUDE.md, Performance) and
+  pastes their JSON lines; the bar is `p95_ms` ≤ 16.7.
 - Theme tokens only for colors; nothing animates.
 - Specs to update with the change: workspaces.md (The sidebar's foot), config.md (`all_agents` in `[keys]`),
   ask-inbox.md (its Non-goal on card 153 links here), docs/guide.md (the Agents button), ARCHITECTURE.md (the new
@@ -277,9 +273,8 @@ tooltip of a remote terminal ends with the same "Effort: high" line.
 ## Left to the builder
 
 Sizes beyond the list's width, paddings, the rows' exact layout and truncation, the hollow ring's look, the chips'
-look, the empty states' look, the details' section spacing, the screen box's look, which key handler of the popup
-takes ↑ ↓ Enter Esc before the field does, and where exactly Templum notes a state's change when it hears it (the
-plan names the places).
+look, the empty states' look, the details' section spacing, which key handler of the popup takes ↑ ↓ Enter Esc before
+the field does, and where exactly Templum notes a state's change when it hears it (the plan names the places).
 
 ## As built
 

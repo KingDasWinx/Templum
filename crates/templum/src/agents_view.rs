@@ -21,7 +21,7 @@ use crate::balloon;
 use crate::inbox::{age, count_badge, dim, one_line, text as text_field, where_words};
 use crate::popup;
 use crate::usage;
-use crate::workspace::agents_view::{AgentRow, Doing, Item, SCREEN_LINES, Show, items};
+use crate::workspace::agents_view::{AgentRow, Doing, Item, Show, items};
 use crate::workspace::{Pane, Workspace};
 
 /// The list's width, pixels.
@@ -608,40 +608,6 @@ fn detail(ws: &Workspace, row: &AgentRow, now: Instant, cx: &mut Context<Workspa
         });
         Some(popup::section(ws, "Cost").children(rows))
     });
-    // The viewer's lines when home streams it, else the last read of its screen.
-    let mut lines = pane.term.shared().lines(SCREEN_LINES);
-    if lines.is_empty()
-        && let (Some(remote), Some(home)) = (
-            ws.space_named(&row.space).and_then(|s| s.remote.as_deref()),
-            &pane.remote,
-        )
-        && let Some((block, read)) = &remote.screen
-        && *block == home.block
-    {
-        lines = read.clone();
-    }
-    let screen = (!lines.is_empty()).then(|| {
-        popup::section(ws, "Screen").child(
-            div()
-                .id("agents-screen")
-                .w_full()
-                .overflow_hidden()
-                .p(px(12.0))
-                .rounded(px(8.0))
-                .bg(ui.card)
-                .font_family(ws.cell.font.family.clone())
-                .text_size(px(SMALL))
-                .children(lines.into_iter().map(|line| {
-                    let line = if line.is_empty() {
-                        "\u{a0}".to_string()
-                    } else {
-                        line
-                    };
-                    div().truncate().child(line)
-                }))
-                .test_support(),
-        )
-    });
     let terminal = row.terminal.clone();
     let asked = ws.asking(&row.terminal).is_some();
     let foot = popup::foot(ws).child(
@@ -681,8 +647,7 @@ fn detail(ws: &Workspace, row: &AgentRow, now: Instant, cx: &mut Context<Workspa
                 .gap(px(18.0))
                 .child(summary)
                 .children(work)
-                .children(cost)
-                .children(screen),
+                .children(cost),
         );
     div()
         .flex_1()

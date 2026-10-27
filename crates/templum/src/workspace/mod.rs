@@ -1713,9 +1713,6 @@ pub struct Workspace {
     pub(crate) next_schedule: u64,
     /// The look at the schedules runs (`schedules.rs`).
     scheduling: bool,
-    /// A task reads the screen of the remote agent the Agents popup shows every
-    /// `AGENT_SCREEN_AGAIN`.
-    screen_looking: bool,
     /// `wait_for` watches whose match is typed back (`wait: false`), the last one's id, and
     /// whether their look runs (`schedules.rs`).
     pub(crate) watches: Vec<schedules::Watch>,
@@ -2127,7 +2124,6 @@ impl Workspace {
             schedules: Vec::new(),
             next_schedule: 0,
             scheduling: false,
-            screen_looking: false,
             watches: Vec::new(),
             next_watch: 0,
             watching: false,

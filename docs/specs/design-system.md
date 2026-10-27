@@ -151,8 +151,7 @@ them and never redraws its own frame.
 - **A detail** (card 222; Requests, Agents): what is read there, not typed, is laid out as a form is. A summary card
   first, its words in rows beside their labels (Requests' From and Where, Agents' Agent, State, Terminal and Where);
   then sections of labelled rows (Agents' Work and Cost). A name, a title or a folder is cut to one line; a text the
-  person reads (a task, what an agent asks) wraps under its field. A block of monospace lines (an agent's screen) is
-  a card the content's width under its section's name, with no label. An action with words on the item shown (Go to
+  person reads (a task, what an agent asks) wraps under its field. An action with words on the item shown (Go to
   terminal) is a button of the foot, the one Enter does solid. Its content and its foot share their sides: 16 px, as
   the Automations editor's (Requests keeps its request balloon's 18).
 - **Filter chips** (Agents): over a list, 12 px from its sides as its rows' words; a chip is its name and its count, 6
