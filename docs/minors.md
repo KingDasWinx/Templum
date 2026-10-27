@@ -187,8 +187,11 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **A few tests still look at a glide mid-flight on the real clock.** `navigation.rs` (the tests around
   `restart_glide` at lines 231 and 312, and the two-notch zoom at line 770) and `editor.rs:437` set the glide's start
   and draw a frame in the same update, so the frame lands mid-glide only if it comes within about 110 ms of
-  `Instant::now()`. The window is far narrower than the one `lod.rs` had (an update apart), and none was seen failing.
-  A person sees nothing; a contributor may see CI fail once on a very busy runner. Fix: draw again from the same
+  `Instant::now()`. The window is far narrower than the one `lod.rs` had (an update apart). `blocks.rs:99`
+  (`shortcuts_open_and_close_terminals`, "the view glides" after a new terminal is shown) fails in full runs on the
+  maintainer's machine (three of three on 2026-10-26, at 93cf3b5b too), and passes alone, even 20 times beside 12
+  busy loops. A person sees nothing; a contributor may see CI fail once on a very busy
+  runner. Fix: draw again from the same
   camera while the frame landed past the glide, as `zoom_mid_glide` in `lod.rs` does.
 - [ ] **`the_welcome_opened_again_shows_the_system_and_changes_only_what_was_chosen` failed once in a full run.**
   (`crates/templum/src/workspace/tests/welcome.rs`, seen by the orchestrator under load; not reproduced in 30 runs of
