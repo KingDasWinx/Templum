@@ -457,6 +457,23 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   batch 8's spike S8-1 found are its last call's (38279 = 10 + 10 + 38259 cached); the tooltip's "Tokens: 38k" reads
   as the session's. Fix: drop `tokens` for a relayed session (its cost is shown), or name it "Context".
 
+## Terminal history
+
+- [ ] **Keys that scroll the history don't show the scrollbar.** Only the wheel and Jump to the bottom do
+  (`Workspace::scrolled_history`, `crates/templum/src/block.rs`); Previous prompt and Next prompt
+  (`Terminal::jump_to_prompt`), Find going to a match and Shift+PageUp on a mirror (`remote_page`,
+  `crates/templum/src/workspace/remote.rs`) move the view with the bar hidden, so only *N lines below* says it moved.
+  Fix: call `scrolled_history` after each of them.
+- [ ] **The terminal's scrollbar shows on hover where the system hides scrollbars until one scrolls.** gpui-kit's
+  theme picks `ScrollbarMode::Scrolling` there (macOS's automatic scrollbars), and the kanban's and checklists' bars
+  follow it, but `history_bar` (`crates/templum/src/block.rs`) shows the terminal's while the pointer is over its strip
+  whatever the mode. Fix: read `Theme::global(cx).scrollbar.mode()` there and leave the hover out under `Scrolling`.
+
+- [ ] **With Find open, the scrollbar's strip lies under the find field's right end.** The field sits at the text's
+  top right (`find_bar`, `crates/templum/src/block.rs`) over the strip's top 38 pixels: the pointer there shows the bar
+  under the field, and the strip's capture-phase press takes a right-click there for the block's menu. Fix: start the
+  strip under the field while it is open.
+
 ## Programs in a terminal
 
 - [ ] **The Templum Agent's builds still share Templum's cgroup.** Only terminals get a systemd scope

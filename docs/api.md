@@ -469,7 +469,8 @@ data: {"size":{"cols":120,"rows":40},"cursor":{"row":3,"col":10,"shape":"block",
   shortcuts a program would take, and a client that sends the mouse sends only what `mouse` and `mouse_moves` say; a
   home older than this field sends none.
 - **The live screen.** The frame is what the program drew, never the scrollback the person scrolled to or their
-  selection: `read_terminal` reads the scrollback.
+  selection: `read_terminal` reads the scrollback. Where a terminal's view is in its history (its scrollbar, *N lines
+  below*) is the person's, as the camera and the keyboard are: it isn't in the state, and no tool moves it.
 - **At most 20 frames a second** per terminal. Each stream queues 20 frames or 8 MiB; a client that falls further behind loses
   them and gets one `whole` frame of the newest screen, never a backlog. A terminal stream doesn't resume: it always
   opens whole, and `Last-Event-ID` is ignored.
@@ -676,7 +677,8 @@ don't need to copy it again, for the same Client ID and address (a new code for 
 Secret typed again). The name is home's.
 
 **On a mirrored workspace.** Not mirrored: an editor's content (a card names it). Scrolling back in a mirrored shell (the wheel, Shift+PageUp,
-Find) reads home's last 2000 lines, without colors, and again after it changed; the mouse reaches a program that asked
+Find) reads home's last 2000 lines, without colors, and again after it changed, and its scrollbar and *N lines below*
+work over them; the mouse reaches a program that asked
 for it, with a Full share. Notes are edited there as here: what you type goes to home after a pause, checked
 against home's text; a change home made in the same place keeps both texts, yours as a new note beside it. Not on a
 mirrored workspace: editors, deleting a checklist, drawing, Move

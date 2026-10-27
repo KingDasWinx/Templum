@@ -90,6 +90,7 @@ All coordinates in `templum-canvas` are **world units**: logical pixels at zoom 
 | `write(bytes)` | Raw input, used by the IME commit path. Like `key` and `paste`, it scrolls the view back to the bottom. |
 | `resize(cols, rows, cell_px)` | Resizes the grid and the PTY. A no-op if unchanged. |
 | `scroll(lines)` | In the alternate screen with alternate-scroll mode set, it sends ↑/↓ keys. Otherwise it scrolls the history. |
+| `SharedTerm::scrollback() -> Option<Scrollback>`, `scroll_to(below)` | Where the view is: the history's lines, how many are under the view (`below`, 0 at the live screen), the screen's lines and whether the program asked for the mouse; None while the PTY thread holds the grid (`Snapshot::scrollback` keeps the last one read). `scroll_to` puts the view `below` lines back, as far as the history goes. `Scrollback::thumb` and `below_at` turn it into the scrollbar's shares and back; `bar` says whether a scrollbar is drawn. |
 | `select_start(cell, side, kind)`, `select_update(cell, side)`, `select_clear()`, `selection_text()` | `kind` is `Simple`, `Word` or `Line`, using alacritty's `Selection`. |
 | `title() -> String` | The last OSC 0/2 title. With none, the shell's name: `$SHELL` basename, or `powershell` on Windows. |
 | `exited() -> bool` | True once the shell has exited. |
@@ -160,7 +161,9 @@ Painting (in `grid.rs`):
 | Drag the bottom-right handle | Resize the block. The PTY gets the new grid size, clamped to 20×4 |
 | Drag empty canvas | Pan |
 | Drag in a terminal body | Select text. Double-click selects a word, triple-click selects a line. Letting go copies the selection to the clipboard (`terminal.copy_on_select`, on by default) |
-| Wheel or two-finger scroll over a body | Scroll that terminal (see `Terminal::scroll`) |
+| Wheel or two-finger scroll over a body | Scroll that terminal (see `Terminal::scroll`); its scrollbar shows ([below](#the-scrollbar-and-jump-to-the-bottom)) |
+| Drag a terminal's scrollbar thumb, or press its track | Scroll its history there |
+| Click a scrolled-back terminal's *N lines below* | Back to its live screen |
 | Two-finger scroll over empty canvas or a title bar | Pan |
 | A mouse's wheel over empty canvas or a title bar | Zoom one step around the pointer (pans with a drawing tool) |
 | Ctrl+wheel anywhere, or pinch | Zoom one step around the pointer |
@@ -182,6 +185,41 @@ even when the drag ended outside it. It fades in over 120 ms, stays, and fades o
 several lines says how many ("Copied 3 lines"), counting up to the last line with text. It has no listener: clicks
 and the pointer's text cursor go through it to the grid. Ctrl+Shift+C and the menu's Copy show nothing: the person
 asked for those copies; the pill answers the one they didn't ask for.
+
+### The scrollbar and Jump to the bottom
+
+*(Kanban card 230.)* A terminal with a history has a scrollbar, and a terminal scrolled back a way back to the live
+screen. Up close only (the Full level, where the wheel scrolls the history); far away the wheel moves the canvas and
+nothing is drawn.
+
+- **Where:** a strip over the right of the text, `kanban::TRACK` (16) wide, from the text's top down to the resize
+  grip's square, so the grip keeps its presses. Everything is the zoom's, as the rest of the block: the strip, the
+  thumb, the inset; the layout and the wrapping never change.
+- **Look:** the app's scrollbar (`kanban::scrollbar`, as a kanban column's, a checklist's and the popups'): its thumb
+  6 wide, 8 while the pointer is over it or holds it, 48 at the least, 4 in from the strip's edge, in the theme's
+  colors. Its length is the screen's share of the history and the screen together, its place the view's
+  (`Scrollback::thumb`).
+- **When it shows:** while the pointer is over the strip or holds the thumb, and while the person scrolls the history
+  (the wheel, Jump to the bottom), for the theme's idle (2 s); it fades in over 300 ms and out over 500 ms. A history
+  that grows at the live screen doesn't show it, nor does a bar drawn again (zoomed back in, its workspace shown
+  again): the kit's own showing would take those for scrolling, so the terminal keeps which bar shows
+  (`block::Bars`) and draws the kit's bar only then.
+- **Hidden, the strip is the text's:** a press there selects text or reaches the program. Shown, it takes the presses:
+  a drag of the thumb moves the view (to the nearest line, `Scrollback::below_at`), a press on the track jumps the
+  thumb's middle there; an unfocused block is focused, the middle button pans and a right-click opens the block's
+  menu as over the rest of the block.
+- **No bar** without a history (a fresh terminal, the alternate screen, where a full-screen program has none), and
+  over a program that asked for the mouse while the view is at the live screen: its clicks on the last columns are
+  its own. Shift and the wheel go back in its history anyway, and then the bar shows.
+- **Jump to the bottom:** while the view is scrolled back, a pill at the body's bottom right, 8 in from the text's
+  corner (clear of the grip), in the Copied pill's look (22 high, `surface` on `card`, a hairline border, its shadow),
+  with an accent ↓ and how many lines are under the view ("1 line below", "120 lines below"), its tooltip "Jump to
+  the bottom". A click shows the live screen; typing still does too.
+- **A mirror's terminal** has the same over the history it read from home (`VIEWER_HISTORY`, 2000 lines), once the
+  person went back: the first wheel step or Shift+PageUp asks for home's history, and the lines it found nothing for
+  wait for it (`RemoteSpace::back`) instead of being lost.
+- **In the API:** nothing. The view's place in the history is the person's, as the camera and the keyboard are: no
+  tool moves it, the stream's frame stays the live screen, and `read_terminal` reads any part of the history.
 
 ### Keyboard
 

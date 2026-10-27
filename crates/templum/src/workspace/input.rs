@@ -1273,8 +1273,20 @@ impl Workspace {
                 pane.scrolled.set(true);
                 pane.term.scroll(lines as i32);
             }
+            if !told {
+                self.scrolled_history(id, cx);
+            }
             cx.notify();
         }
+    }
+
+    /// Terminal `id` shows its live screen again (its Jump to the bottom), as typing in it does.
+    pub(crate) fn scroll_to_bottom(&mut self, id: BlockId, cx: &mut Context<Self>) {
+        if let Some(pane) = self.space.terminal(id) {
+            pane.term.shared().scroll_to(0);
+        }
+        self.scrolled_history(id, cx);
+        cx.notify();
     }
 }
 

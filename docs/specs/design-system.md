@@ -97,6 +97,18 @@ Alacritty's format dropped into a folder, all switchable from a picker in the ti
 - Scales snap to 0.02 steps: a block is drawn at zoom × scale, so text is rasterized at only a few extra sizes.
 - Nothing else animates (no animated zoom).
 
+### Scrollbars
+
+Every list or body that scrolls draws the same scrollbar, `kanban::scrollbar_over` (or `kanban::scrollbar` inside a
+strip of its own): gpui-kit's, over the list, never in it (in it, it would scroll away). Its track is `kanban::TRACK`
+(16) wide at the right edge; its thumb is 6 wide (8 under the pointer or held), 48 long at the least and 4 in from
+the edge, in the kit theme's scrollbar colors: no color of its own. On the canvas every size is the block's zoom's.
+It shows while the pointer is over its track and while the content scrolls, fading in over 300 ms and out over
+500 ms after the theme's 2 s idle, and only once the content overflows. Shown, its strip takes the presses: the list
+or block under it hears them first in the capture phase, so a press still picks the block and the middle button
+still pans the canvas. A terminal's history has its own rules for when it shows, the same look
+([walking-skeleton.md](walking-skeleton.md#the-scrollbar-and-jump-to-the-bottom)).
+
 ### Popups
 
 *(Kanban card 217.)* Every popup over the canvas — Git, Requests, Agents and Automations today, and any new modal of

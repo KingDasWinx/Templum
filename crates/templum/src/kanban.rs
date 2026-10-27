@@ -15,7 +15,7 @@ use gpui_kit::component::input::{
 };
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::scroll::Scrollbar;
+use gpui_kit::component::scroll::{Scrollbar, ScrollbarHandle};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::*;
@@ -497,33 +497,43 @@ fn board_view(
         .into_any_element()
 }
 
+/// How wide a scrollbar's track is at zoom 1: the strip that takes its presses.
+pub(crate) const TRACK: f32 = 16.0;
+
 /// A scrollbar over a list that scrolls on `handle` (a column's cards, the ask_user dialog's
-/// body): gpui-component's, as the notes' and the menus' are, which the theme shows on hover or
-/// while scrolling and only once the content overflows. Its track and thumb (the widths
-/// gpui-component draws at zoom 1) scale with the zoom `z` like everything in the block:
-/// unscaled, the track would be a quarter of a column at 0.25.
-pub(crate) fn scrollbar_over(handle: &ScrollHandle, id: ElementId, z: f32) -> AnyElement {
+/// body, a terminal's history): gpui-component's, as the notes' and the menus' are, which the
+/// theme shows on hover or while scrolling and only once the content overflows. Its track and
+/// thumb (the widths gpui-component draws at zoom 1) scale with the zoom `z` like everything in
+/// the block: unscaled, the track would be a quarter of a column at 0.25.
+pub(crate) fn scrollbar_over(
+    handle: &(impl ScrollbarHandle + Clone),
+    id: ElementId,
+    z: f32,
+) -> AnyElement {
     div()
         .id(id)
         .absolute()
         .inset_0()
-        .child(
-            Scrollbar::vertical(handle)
-                .id("thumb")
-                .viewport_from_layout()
-                .styles(|s| {
-                    s.track(|t| t.width(px(16.0 * z)))
-                        .thumb(|t| {
-                            t.width(px(6.0 * z))
-                                .inset(px(4.0 * z))
-                                .min_length(px(48.0 * z))
-                        })
-                        .thumb_hover(|t| t.width(px(8.0 * z)))
-                        .thumb_active(|t| t.width(px(8.0 * z)))
-                }),
-        )
+        .child(scrollbar(handle, z))
         .test_support()
         .into_any_element()
+}
+
+/// `scrollbar_over`'s scrollbar, over its parent's bounds.
+pub(crate) fn scrollbar(handle: &(impl ScrollbarHandle + Clone), z: f32) -> Scrollbar {
+    Scrollbar::vertical(handle)
+        .id("thumb")
+        .viewport_from_layout()
+        .styles(|s| {
+            s.track(|t| t.width(px(TRACK * z)))
+                .thumb(|t| {
+                    t.width(px(6.0 * z))
+                        .inset(px(4.0 * z))
+                        .min_length(px(48.0 * z))
+                })
+                .thumb_hover(|t| t.width(px(8.0 * z)))
+                .thumb_active(|t| t.width(px(8.0 * z)))
+        })
 }
 
 #[allow(clippy::too_many_arguments)]

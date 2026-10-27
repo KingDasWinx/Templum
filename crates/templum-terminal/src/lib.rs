@@ -9,6 +9,7 @@ pub mod palette;
 #[cfg(target_os = "linux")]
 mod scope;
 mod screen;
+mod scrollback;
 mod shells;
 mod snapshot;
 mod tap;
@@ -31,6 +32,7 @@ pub use integration::install;
 pub use link::{Target, resolve};
 pub use palette::Palette;
 pub use screen::{Paint, Screen, Styled};
+pub use scrollback::Scrollback;
 pub use shells::{ShellOption, available_shells, default_shell, default_shell_label, is_shell};
 pub use snapshot::{Bar, Cursor, Row, Run, Snapshot, Span};
 pub use tap::{Mark, Outcome, Pattern, Status};

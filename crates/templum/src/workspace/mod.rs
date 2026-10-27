@@ -1473,6 +1473,8 @@ pub struct Workspace {
     /// Sub-step accumulators: wheel zoom, terminal scrolling (in lines).
     zoom_acc: f32,
     scroll_acc: f32,
+    /// Which terminal's scrollbar shows (`block::history_bar`).
+    pub(crate) bars: crate::block::Bars,
     /// The terminal cell the pointer was last reported over, with no button down, to a program
     /// that asked for every move.
     hover_cell: Option<(BlockId, usize, usize)>,
@@ -2000,6 +2002,7 @@ impl Workspace {
             notify,
             zoom_acc: 0.0,
             scroll_acc: 0.0,
+            bars: Default::default(),
             hover_cell: None,
             command,
             config_dir,

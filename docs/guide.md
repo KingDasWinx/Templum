@@ -16,8 +16,10 @@ knowing. **Welcome** in the settings panel's footer shows it again.
 | Drag empty canvas, or scroll over it | Pan |
 | Hold Alt (Option on macOS), then drag or scroll anywhere | A drag pans and the wheel zooms, even over blocks: they don't react while Alt is held |
 | Drag with the middle button, anywhere | Pan |
-| Scroll over a terminal | Scroll its history |
-| Click, drag or scroll in a program that uses the mouse (htop, vim, Claude Code full screen) | The program gets it; hold Shift to select text instead |
+| Scroll over a terminal | Scroll its history; a scrollbar shows at its right while you scroll or point there |
+| Drag a terminal's scrollbar, or click its track | Go to that place in its history |
+| Click *120 lines below* in a scrolled-back terminal | Back to its live screen (typing goes back too) |
+| Click, drag or scroll in a program that uses the mouse (htop, vim, Claude Code full screen) | The program gets it, its last columns too (no scrollbar over them); hold Shift to select text, or to scroll the history, instead |
 | Ctrl+scroll, or pinch | Zoom, from 1% to 300%: far out, blocks show their titles, then only their shapes and a terminal's status dot |
 | Drag in a terminal (double-click: word, triple-click: line) | Select text, copied to the clipboard as you let go (Settings ▸ Terminal turns that off) |
 | Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal, Kanban board, Note, Checklist or Editor, where you clicked |

@@ -817,6 +817,7 @@ mod remote_notes;
 mod remote_rules;
 mod requests;
 mod screen;
+mod scrollback;
 mod selection;
 mod settings_edits;
 mod settings_panel;

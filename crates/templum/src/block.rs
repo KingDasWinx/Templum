@@ -3,6 +3,9 @@
 //! is laid out at its real size. The close button and the grip show only while the pointer is
 //! over the block.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui_kit::assets::IconName;
 use gpui_kit::base::animation::Lerp as _;
 use gpui_kit::base::motion::{Transition, transition};
@@ -772,6 +775,34 @@ pub(crate) fn render(
                         )
                     }
                 })
+                // Up close only, like the wheel that scrolls it: far away the wheel moves the
+                // canvas and a terminal's history stays still.
+                .when(live && level == Level::Full, |el| {
+                    let view = pane
+                        .term
+                        .shared()
+                        .scrollback()
+                        .unwrap_or_else(|| pane.snapshot.borrow().scrollback);
+                    // From the text's top to the grip's square: the grip keeps its presses.
+                    let h =
+                        (r.h - 2.0 * BORDER - (chrome::TITLE_H + chrome::PAD + chrome::HANDLE) * z)
+                            .max(0.0);
+                    el.when(view.bar(), |el| {
+                        el.child(history_bar(
+                            ws,
+                            id,
+                            pane.term.shared(),
+                            view,
+                            h,
+                            z,
+                            window,
+                            cx,
+                        ))
+                    })
+                    .when(view.below > 0, |el| {
+                        el.child(to_bottom(ws, id, view.below, z, cx))
+                    })
+                })
                 // Its find field is kept while the block is far, and comes back with its letters.
                 .when_some(
                     pane.find.as_ref().filter(|_| live && level == Level::Full),
@@ -1258,6 +1289,238 @@ fn find_bar(ws: &Workspace, n: usize, bar: &FindBar, z: f32) -> AnyElement {
                     .child("No matches"),
             )
         })
+        .test_support()
+        .into_any_element()
+}
+
+/// A terminal's history as the kit's scrollbar takes it: a track `height` pixels high over its
+/// history and its screen, the thumb where the view is.
+#[derive(Clone)]
+struct History {
+    term: templum_terminal::SharedTerm,
+    /// The view as it was drawn, then where the thumb put it.
+    view: Rc<Cell<templum_terminal::Scrollback>>,
+    height: f32,
+}
+
+/// Further than any history: the offset of a view at the live screen (see `History::offset`).
+const AT_THE_END: f32 = 1.0e9;
+
+impl History {
+    fn content(&self) -> f32 {
+        self.height / self.view.get().thumb().1
+    }
+}
+
+impl gpui_kit::component::scroll::ScrollbarHandle for History {
+    /// Unused: the scrollbar takes its strip's bounds (`viewport_from_layout`).
+    fn viewport_bounds(&self) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+        gpui_kit::Bounds::default()
+    }
+
+    /// At the live screen, an offset no history reaches: the kit keeps the thumb at the end of
+    /// the track, and output that lengthens the history doesn't read as the person scrolling,
+    /// which would show the bar while a program prints.
+    fn offset(&self) -> gpui_kit::Point<gpui_kit::Pixels> {
+        let view = self.view.get();
+        let y = if view.below == 0 {
+            AT_THE_END
+        } else {
+            view.thumb().0 * self.content()
+        };
+        point(px(0.0), px(-y))
+    }
+
+    fn set_offset(&self, offset: gpui_kit::Point<gpui_kit::Pixels>) {
+        let view = self.view.get();
+        let below = view.below_at(-f32::from(offset.y) / self.content());
+        self.term.scroll_to(below);
+        self.view
+            .set(templum_terminal::Scrollback { below, ..view });
+    }
+
+    fn content_size(&self) -> gpui_kit::Size<gpui_kit::Pixels> {
+        gpui_kit::size(px(0.0), px(self.content()))
+    }
+}
+
+/// Which terminal's scrollbar shows: the one whose strip is under the pointer (its thumb held
+/// too, which keeps the pointer's moves), and the one the person scrolled, for the theme's idle.
+/// Not the kit's own showing, which would take a history that grows at the live screen, and a bar
+/// drawn again (zoomed back in, its workspace shown again), for the person scrolling.
+#[derive(Default)]
+pub(crate) struct Bars {
+    pub hovered: Option<BlockId>,
+    scrolled: Option<(BlockId, std::time::Instant)>,
+    /// A frame once the idle is over, to fade the bar.
+    _timer: Option<gpui_kit::Task<()>>,
+}
+
+/// The theme's scrollbar timings (its idle, its fades), unless no theme is set.
+fn scrollbar_motion(cx: &App) -> gpui_kit::component::scroll::ScrollbarMotion {
+    cx.try_global::<gpui_kit::base::Theme>()
+        .map(|theme| theme.scrollbar.motion())
+        .unwrap_or_default()
+}
+
+impl Workspace {
+    /// The person scrolled terminal `id`'s history: its scrollbar shows, then fades.
+    pub(crate) fn scrolled_history(&mut self, id: BlockId, cx: &mut Context<Workspace>) {
+        let idle = scrollbar_motion(cx).idle();
+        self.bars.scrolled = Some((id, cx.background_executor().now()));
+        self.bars._timer = Some(cx.spawn(async move |ws, cx| {
+            cx.background_executor().timer(idle).await;
+            let _ = ws.update(cx, |_, cx| cx.notify());
+        }));
+    }
+}
+
+/// A terminal's scrollbar, over the right of its text, `h` high (down to the resize grip):
+/// the app's scrollbar, shown while the pointer is over its strip and while the person scrolls
+/// the history, then fading. Hidden, the strip is the text's. Shown, it takes the presses that go
+/// to the bar: an unfocused block is focused, and the middle button and a right-click do what
+/// they do over the rest of the block.
+#[allow(clippy::too_many_arguments)]
+fn history_bar(
+    ws: &Workspace,
+    id: BlockId,
+    term: &templum_terminal::SharedTerm,
+    view: templum_terminal::Scrollback,
+    h: f32,
+    z: f32,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
+    let n = id.0 as usize;
+    let motion = scrollbar_motion(cx);
+    let now = cx.background_executor().now();
+    let shown = ws.bars.hovered == Some(id)
+        || ws
+            .bars
+            .scrolled
+            .is_some_and(|(b, at)| b == id && now.saturating_duration_since(at) < motion.idle());
+    let opacity = transition(
+        ElementId::from(("history-shown", n)),
+        if shown { 1.0_f32 } else { 0.0 },
+        Transition::new(if shown { motion.enter() } else { motion.exit() }),
+        window,
+        cx,
+    );
+    let history = History {
+        term: term.clone(),
+        view: Rc::new(Cell::new(view)),
+        height: h,
+    };
+    div()
+        .id(("history-bar", n))
+        .absolute()
+        .top(px(chrome::PAD * z))
+        .right(px(chrome::PAD * z))
+        .w(px(kanban::TRACK * z))
+        .h(px(h))
+        .on_hover(cx.listener(move |ws, hovered: &bool, _, cx| {
+            if *hovered {
+                ws.bars.hovered = Some(id);
+            } else if ws.bars.hovered == Some(id) {
+                ws.bars.hovered = None;
+            }
+            cx.notify();
+        }))
+        .when(opacity > 0.0, |el| {
+            el.capture_any_mouse_down(cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                if ws.space.focused != Some(id) {
+                    ws.focus_block(id, window, cx);
+                }
+                match e.button {
+                    MouseButton::Middle => {
+                        ws.begin_pan(e.position);
+                        cx.stop_propagation();
+                    }
+                    MouseButton::Right => {
+                        ws.open_block_menu(id, e.position, window, cx);
+                        cx.stop_propagation();
+                    }
+                    _ => {}
+                }
+            }))
+            .child(
+                div()
+                    .id(("history-scrollbar", n))
+                    .absolute()
+                    .inset_0()
+                    .opacity(opacity)
+                    .child(
+                        kanban::scrollbar(&history, z)
+                            .mode(gpui_kit::component::scroll::ScrollbarMode::Always),
+                    )
+                    .test_support(),
+            )
+        })
+        .test_support()
+        .into_any_element()
+}
+
+/// While a terminal is scrolled back, at its body's bottom right: how many lines are under the
+/// view, a click going back to the live screen (typing does too). The look of the Copied pill.
+fn to_bottom(
+    ws: &Workspace,
+    id: BlockId,
+    below: usize,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
+    const H: f32 = 22.0;
+    const GAP: f32 = 8.0;
+    let ui = ws.ui;
+    let bg = ui.surface.blend(ui.card);
+    let label = if below == 1 {
+        "1 line below".to_string()
+    } else {
+        format!("{below} lines below")
+    };
+    div()
+        .id(("to-bottom", id.0 as usize))
+        .absolute()
+        // Clear of the resize grip, which shows in the corner while the pointer is over the block.
+        .right(px((chrome::PAD + GAP) * z))
+        .bottom(px((chrome::PAD + GAP) * z))
+        .h(px(H * z))
+        .flex()
+        .items_center()
+        .gap(px(4.0 * z))
+        .px(px(8.0 * z))
+        .rounded(px(6.0 * z))
+        .bg(bg)
+        .border_1()
+        .border_color(ui.hairline)
+        .shadow(vec![BoxShadow {
+            color: ui.shadow,
+            offset: point(px(0.0), px(2.0 * z)),
+            blur_radius: px(8.0 * z),
+            spread_radius: px(0.0),
+            inset: false,
+        }])
+        .whitespace_nowrap()
+        .text_size(px(TITLE_FONT * z))
+        .text_color(ui.title)
+        .cursor_pointer()
+        .hover(move |s| s.bg(bg.blend(ui.hover)))
+        .child(
+            Icon::new(IconName::ArrowDown)
+                .size(px(12.0 * z))
+                .text_color(ui.accent),
+        )
+        .child(label)
+        .tooltip(|window, cx| Tooltip::new("Jump to the bottom").build(window, cx))
+        // The press is the button's, not a selection's nor a program's under it.
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |ws, _: &MouseDownEvent, window, cx| {
+                ws.focus_block(id, window, cx);
+                cx.stop_propagation();
+            }),
+        )
+        .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.scroll_to_bottom(id, cx)))
         .test_support()
         .into_any_element()
 }

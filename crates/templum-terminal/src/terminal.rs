@@ -25,6 +25,7 @@ use crate::input::{
     KeyInput, MouseInput, MouseKind, encode_key, encode_mouse, paste_bytes, typed_bytes,
 };
 use crate::palette::{self, Palette};
+use crate::scrollback::Scrollback;
 use crate::tap::{Mark, Pattern, Status, Tap};
 
 /// Called (coalesced) when a terminal has something new to show.
@@ -434,6 +435,22 @@ impl SharedTerm {
 
     pub fn modes(&self) -> Modes {
         Modes::of(*self.0.lock_unfair().mode())
+    }
+
+    /// Where its view is in its history. None while the PTY thread holds the grid: painting never
+    /// waits for it, and [`crate::Snapshot::scrollback`] has the last one read.
+    pub fn scrollback(&self) -> Option<Scrollback> {
+        self.0.try_lock_unfair().map(|term| Scrollback::of(&term))
+    }
+
+    /// Scrolls the view to `below` lines back from the live screen (0: the live screen), as far
+    /// as the history goes.
+    pub fn scroll_to(&self, below: usize) {
+        let mut term = self.0.lock_unfair();
+        let delta = below as i32 - term.grid().display_offset() as i32;
+        term.scroll_display(Scroll::Delta(delta));
+        drop(term);
+        self.touched();
     }
 
     /// The grid's columns and screen lines now.
@@ -2486,6 +2503,32 @@ mod tests {
         );
         assert_eq!(shared.screen().unwrap().title, None);
         assert!(!shared.modes().full_screen);
+    }
+
+    #[test]
+    fn the_scrollback_says_where_the_view_is_and_scroll_to_moves_it() {
+        let (term, _) = headless(10, 4);
+        assert_eq!(term.scrollback().unwrap().history, 0, "a fresh terminal");
+        feed(&term, b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9");
+        let back = term.scrollback().unwrap();
+        assert_eq!((back.history, back.below, back.lines), (5, 0, 4));
+        term.scroll_to(3);
+        assert_eq!(term.scrollback().unwrap().below, 3);
+        let mut snap = crate::Snapshot::default();
+        snap.refresh(&term, &Palette::default());
+        assert_eq!(snap.scrollback.below, 3, "the snapshot keeps it");
+        assert_eq!(snap.rows[0].text, "3", "three lines over the screen's 6");
+        term.scroll_to(100);
+        assert_eq!(term.scrollback().unwrap().below, 5, "as far as it goes");
+        term.scroll_to(0);
+        assert_eq!(term.scrollback().unwrap().below, 0);
+        let held = term.0.lock();
+        assert_eq!(term.scrollback(), None, "painting doesn't wait");
+        drop(held);
+        feed(&term, b"\x1b[?1049h\x1b[?1000h");
+        let full = term.scrollback().unwrap();
+        assert_eq!(full.history, 0, "full screen has no history");
+        assert!(full.mouse);
     }
 
     #[test]

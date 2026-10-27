@@ -13,6 +13,7 @@ use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::vte::ansi::CursorShape;
 
 use crate::palette::{self, Palette};
+use crate::scrollback::Scrollback;
 use crate::tap::{Mark, line_mark, mark_of};
 use crate::{Rgb, SharedTerm};
 
@@ -160,6 +161,8 @@ pub struct Snapshot {
     pub rows: Vec<Row>,
     /// None when hidden or scrolled out of view.
     pub cursor: Option<Cursor>,
+    /// Where the view was in the history at the last read.
+    pub scrollback: Scrollback,
     /// Rows copied by the last `refresh`: every row, the changed ones, or none (nothing changed).
     pub rebuilt: usize,
     taken: Option<Instant>,
@@ -203,6 +206,7 @@ impl Snapshot {
         };
         term.reset_damage();
         let blinking = term.cursor_style().blinking;
+        self.scrollback = Scrollback::of(&term);
         let content = term.renderable_content();
         let offset = content.display_offset as i32;
         let selection = content.selection;

@@ -2568,6 +2568,50 @@ fn the_wheel_over_a_remote_shell_reads_home_s_history_and_scrolls_in_it(cx: &mut
     assert!(!scrolled_back(&ws, cx, viewer));
 }
 
+/// Over the history it read from home, a viewer has the scrollbar and Jump to the bottom of a
+/// terminal here.
+#[gpui_kit::test]
+fn a_remote_shell_s_history_has_its_scrollbar_and_its_jump_to_the_bottom(cx: &mut TestAppContext) {
+    let ((home_handle, home), (handle, ws), (_, _, terminal), _keep) = shown_mirror(cx);
+    let viewer = focus_viewer(handle, &ws, cx);
+    let n = viewer.0 as usize;
+    home_printed(&home, cx, terminal, 60);
+    pump_home(&home, cx, "home's output on the mirror", |cx| {
+        draw(handle, cx);
+        draw(home_handle, cx);
+        shown(&ws, cx, viewer).contains("row 60.")
+    });
+    let has = |cx: &mut TestAppContext, what: &'static str| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find((what, n)).is_some()
+        })
+        .unwrap()
+    };
+    assert!(!has(cx, "history-bar"), "no history read yet");
+    let body = body_of(handle, cx, viewer);
+    let at = (
+        f32::from(body.origin.x) + 20.,
+        f32::from(body.origin.y) + 20.,
+    );
+    cx.update_window(handle, |_, window, cx| {
+        wheel(window, cx, at, ScrollDelta::Lines(point(0., 1.)), false)
+    })
+    .unwrap();
+    pump_home(&home, cx, "the view back in home's history", |cx| {
+        draw(handle, cx);
+        scrolled_back(&ws, cx, viewer)
+    });
+    assert!(has(cx, "history-bar") && has(cx, "to-bottom"));
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("to-bottom", n), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(!scrolled_back(&ws, cx, viewer), "at the live screen");
+    assert!(!has(cx, "to-bottom") && has(cx, "history-bar"));
+}
+
 #[gpui_kit::test]
 fn the_wheel_over_a_program_at_home_is_its_mouse_or_arrow_keys(cx: &mut TestAppContext) {
     let ((home_handle, home), (handle, ws), (_, _, terminal), _keep) = shown_mirror(cx);
