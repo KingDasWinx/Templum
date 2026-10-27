@@ -61,8 +61,6 @@ Top to bottom, in a centered column ([Screens](design-system.md#screens)):
   [cockpit.md](cockpit.md#6-the-workspaces-screen)), **Open folder…** (the system's folder picker: the
   workspace whose folder it is is shown; else a new workspace named after the folder, with that folder, is made and
   shown), **Connect to a Templum…** (plug) and **Settings** (gear).
-- **The search:** "Find a workspace by name or folder"; it filters the workspace cards as you type (the name, or the
-  folder as written or with `~`), whatever the case.
 - **Waiting for you:** four tiles, what needs the person across every workspace, each a press away:
 
   | Tile | Counts | A press |
@@ -74,7 +72,10 @@ Top to bottom, in a centered column ([Screens](design-system.md#screens)):
 
   A tile at zero is calm (dim, no pointer, no press). The words follow the count: "1 agent needs you", "2 agents need
   you", "1 request waits", "3 automations went wrong".
-- **Workspaces:** a card per workspace in the sidebar's order, in a grid of as many 220 px columns as fit (at most
+- **Workspaces:** at the right of the section's name, on its line, the search ("Find by name or folder", the
+  [search field](design-system.md#search-fields)): what it finds is workspaces, so it sits with them. It filters the
+  cards as you type (the name, or the folder as written or with `~`), whatever the case. Then a card per workspace in
+  the sidebar's order, in a grid of as many 220 px columns as fit (at most
   four). A card has the workspace's tile (icon, image or initials, its color), its name, its folder ("~/…"), then:
   - what it holds, as before: "3 terminals · 1 note · 2 boards"; "Stopped · 2 terminals"; "Empty"; a mirror's "Mirror
     of winx-desktop · live · 3 terminals" (the computer and the connection's state: `connecting`, `live`,

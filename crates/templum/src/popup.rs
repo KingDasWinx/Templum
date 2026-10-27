@@ -6,17 +6,20 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, BoxShadow, ClickEvent, Context, Div, ElementId, FontWeight, Hsla, MouseButton,
-    MouseDownEvent, SharedString, Stateful, TestSupportExt, div, point, px,
+    AnyElement, App, BoxShadow, ClickEvent, Context, Div, ElementId, Entity, Focusable as _,
+    FontWeight, Hsla, MouseButton, MouseDownEvent, SharedString, Stateful, TestSupportExt, Window,
+    div, point, px,
 };
 use templum_canvas::Edges;
 
 use crate::git_block::widgets::icon_button;
 use crate::grid::hsla;
 use crate::sidebar;
+use crate::theme::Ui;
 use crate::workspace::Workspace;
 
 /// Between a popup and the canvas's edges and the sidebar, pixels.
@@ -30,6 +33,8 @@ pub(crate) const LABEL_W: f32 = 92.0;
 const FIELD_H: f32 = 24.0;
 /// What is said about things: a subtitle, a form's labels.
 const SMALL: f32 = 11.5;
+/// A search field's height: the Home's header actions'.
+const SEARCH_H: f32 = 28.0;
 
 /// The popup's box, `w` × `h` pixels, a column: the header, then its body. Presses inside never
 /// reach the canvas below.
@@ -293,4 +298,27 @@ pub(crate) fn foot(ws: &Workspace) -> Div {
         .py(px(10.0))
         .border_t_1()
         .border_color(ws.ui.hairline)
+}
+
+/// A search field (design-system.md, Search fields), the Home's and the Agents popup's: quiet at
+/// rest (the cards' surface and hairline), the search icon before its words, its clear button
+/// only with text. While it has the keyboard its border is the soft ring, never the kit's accent
+/// ring: it has the keyboard most of the time.
+pub(crate) fn search(ui: Ui, field: &Entity<InputState>, window: &Window, cx: &App) -> Input {
+    let focused = field.read(cx).focus_handle(cx).is_focused(window);
+    let input = Input::new(field)
+        .cleanable(true)
+        .focus_bordered(false)
+        .prefix(
+            Icon::new(IconName::Search)
+                .size(px(14.0))
+                .text_color(ui.title_dim),
+        )
+        .py(px(2.0))
+        .text_size(px(13.0))
+        .rounded(px(8.0))
+        .bg(ui.surface)
+        .border_color(if focused { ui.ring } else { ui.hairline });
+    // Styled's height: Input's own `h` is for multi-line fields only.
+    Styled::h(input, px(SEARCH_H))
 }

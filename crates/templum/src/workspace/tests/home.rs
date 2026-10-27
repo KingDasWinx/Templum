@@ -280,6 +280,57 @@ fn the_search_finds_a_workspace_by_name_or_folder(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_search_sits_on_the_workspaces_line_at_its_right(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    three(handle, &ws, cx);
+    open_home(handle, cx);
+    act(handle, cx, |w, _| {
+        let search = w.find("home-search").bounds();
+        let card = w.find("space-card-default").bounds();
+        // The column's right edge: the header's last action.
+        let right = w.find("home-settings").bounds().right();
+        assert!(search.bottom() <= card.top(), "over the cards");
+        assert!(search.top() > w.find("home-needs-you").bounds().bottom());
+        assert!(
+            (search.right() - right).abs() < px(0.5),
+            "at the column's right edge: {search:?} {right:?}"
+        );
+        assert!(search.size.width <= px(280.0), "not the column's width");
+        assert!(search.size.height <= px(28.0));
+        assert!(
+            w.within("home-search").try_find("clean").is_none(),
+            "no clear button without text"
+        );
+    });
+    act(handle, cx, |w, cx| w.input("ap", cx));
+    act(handle, cx, |w, _| {
+        assert!(
+            w.within("home-search").try_find("clean").is_some(),
+            "with text"
+        );
+    });
+    // A narrow window: the actions go under the greeting, which keeps its words whole, and the
+    // search narrows with the column.
+    gpui_kit::VisualTestContext::from_window(handle, cx)
+        .simulate_resize(gpui_kit::size(px(520.0), px(760.0)));
+    act(handle, cx, |w, _| {
+        let holds = w.find("home-holds").bounds();
+        assert!(w.find("home-new").bounds().top() >= holds.bottom());
+        assert!(
+            holds.size.width >= px(220.0),
+            "the greeting's line isn't squeezed"
+        );
+        let search = w.find("home-search").bounds();
+        // One column: Api's card, the one "ap" finds, spans it.
+        let right = w.find("space-card-w2").bounds().right();
+        assert!(
+            (search.right() - right).abs() < px(0.5),
+            "{search:?} {right:?}"
+        );
+    });
+}
+
+#[gpui_kit::test]
 fn clicking_a_card_shows_its_workspace(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     three(handle, &ws, cx);

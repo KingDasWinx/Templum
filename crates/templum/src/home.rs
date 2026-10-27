@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -31,6 +31,10 @@ pub(crate) const CONTENT_MAX: f32 = 1040.0;
 /// A card's narrowest: the grid has as many columns of it as fit, at most four.
 const CARD_MIN: f32 = 220.0;
 const GAP: f32 = 16.0;
+/// The search field's widest, at the Workspaces section's right; narrower when the column is.
+const SEARCH_W: f32 = 280.0;
+/// The greeting's narrowest ("Good afternoon" fits): in less, the actions go under it.
+const TITLE_MIN: f32 = 220.0;
 /// The most recent folders shown.
 const RECENT: usize = 6;
 
@@ -314,9 +318,8 @@ impl Workspace {
             self.leave_space();
             self.git_open = false;
             self.inbox_open = false;
-            let search = cx.new(|cx| {
-                InputState::new(window, cx).placeholder("Find a workspace by name or folder")
-            });
+            let search =
+                cx.new(|cx| InputState::new(window, cx).placeholder("Find by name or folder"));
             cx.subscribe(&search, |ws, _, event: &InputEvent, cx| {
                 if let InputEvent::Change = event {
                     if let Some(screen) = &mut ws.screen {
@@ -661,7 +664,7 @@ pub(crate) fn render(
                 .flex()
                 .flex_col()
                 .gap(px(4.0))
-                .min_w(px(0.0))
+                .min_w(px(TITLE_MIN))
                 .flex_1()
                 .child(
                     div()
@@ -718,12 +721,6 @@ pub(crate) fn render(
                         .test_support(),
                 ),
         );
-    let search = Input::new(&screen.search).cleanable(true).prefix(
-        Icon::new(IconName::Search)
-            .size(px(14.0))
-            .text_color(ui.title_dim),
-    );
-
     let counts = ws.waiting(&rows);
     let tiles = div()
         .grid()
@@ -754,8 +751,27 @@ pub(crate) fn render(
                 .enumerate()
                 .map(|(n, &at)| card(ws, order[at], at, highlight == Some(n), wall, cx)),
         );
-    let workspaces = popup::section(ws, "Workspaces")
+    // The search finds workspaces only: it sits on their section's line, at its right.
+    let workspaces = div()
+        .flex()
+        .flex_col()
         .gap(px(12.0))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(12.0))
+                .child(crate::inbox::section(ws, "Workspaces").flex_shrink_0())
+                .child(
+                    div()
+                        .id("home-search")
+                        .w(px(SEARCH_W))
+                        .min_w(px(0.0))
+                        .child(popup::search(ui, &screen.search, window, cx))
+                        .test_support(),
+                ),
+        )
         .child(grid)
         .when(cards.is_empty(), |el| {
             el.child(
@@ -817,14 +833,7 @@ pub(crate) fn render(
         .flex()
         .flex_col()
         .gap(px(28.0))
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(16.0))
-                .child(header)
-                .child(search),
-        )
+        .child(header)
         .child(
             popup::section(ws, "Waiting for you")
                 .gap(px(12.0))

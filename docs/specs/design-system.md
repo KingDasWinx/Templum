@@ -201,13 +201,13 @@ workspaces, not a popup over the canvas. It follows the Popups standard's type, 
 - **Ground:** `ui.canvas`, opaque, without the dots.
 - **Column:** centered, `home::CONTENT_MAX` (1040 px) at most, 32 px at its sides (16 px when the room is under
   640 px), 40 px above and 48 px below. It scrolls whole, with the standard scrollbar over the screen's right edge.
-- **Header:** the title, 22 px semibold in the foreground, over a dim line (13 px, `ui.title_dim`); the actions at its
-  right, 8 px apart and 28 px high: one tinted primary (the accent at 16%, 24% under the pointer, its words in the
+- **Header:** the title, 22 px semibold in the foreground, over a dim line (13 px, `ui.title_dim`), never narrower than
+  220 px (the actions wrap under it rather than cut its words); the actions at its right, 8 px apart and 28 px high: one tinted primary (the accent at 16%, 24% under the pointer, its words in the
   accent, medium, 12 px at its sides, 8 px corners), ghost buttons (the `hover` fill under the pointer), then 28 px icon
-  buttons named by their tooltips. A search field under it, 16 px below, the column's width, the kit's medium field
-  (32 px) with the search icon.
+  buttons named by their tooltips. No search under it: a search goes with what it finds (below).
 - **Sections:** 28 px apart; each one's name in the popups' small dim capitals (`inbox::section`, 11.5 px), 12 px over
-  its content.
+  its content. A section's search (the Home's Workspaces) sits on its name's line, at the column's right edge, 280 px
+  wide at most and narrower as the column is: a [search field](#search-fields).
 - **Cards:** `ui.surface` on the ground, a 1 px `ui.hairline` border, 12 px corners (the popup frame's), 16 px padding
   (14 for a count's tile), the blocks' unfocused shadow (offset y 4, blur 12, `ui.shadow`), 16 px apart. Under the
   pointer the border is `hover_border`; the keyboard's highlight adds the `hover` fill; none is marked current (a
@@ -222,6 +222,26 @@ workspaces, not a popup over the canvas. It follows the Popups standard's type, 
 - **Motion:** none: shown and left at once, as a workspace is.
 - **Empty:** a list with nothing to show is one dim line ("No workspace matches “api”"); an optional section with
   nothing is left out.
+
+### Search fields
+
+*(Kanban card 279.)* A field that filters a list — the Home's workspaces, the Agents popup's agents — is
+`popup::search`, never a bare kit `Input`, whose focus ring (the full accent, 1 px, around a field that has the
+keyboard as soon as its place opens) would be the loudest thing there:
+
+- **Place:** beside or over what it filters, never across a page above unrelated sections: on a screen, on the line
+  of its section's name, at the right; in a popup's list, over the list (Agents: 12 px from the list's sides).
+- **Size:** 28 px high (the Screens header's actions), 8 px corners; on a screen 280 px wide at most, in a list its
+  width.
+- **Rest:** `ui.surface` with a 1 px `ui.hairline` border: the cards' quiet look, no shadow.
+- **Keyboard:** while it has the keyboard its border is `ui.ring` (the accent at 40%) and the caret blinks: no kit
+  focus ring, no glow. It has no hover state: the text cursor is the pointer's cue.
+- **Inside:** the search icon (14 px, `ui.title_dim`) 10 px from its left edge and 6 px before the words (13 px), both
+  on the field's middle; a placeholder that names what it finds by, not what the place already says ("Find by name
+  or folder" under Workspaces, "Find an agent"); the kit's clear button at its right only while it holds text.
+- **Keys:** Esc empties it (empty, a popup's Esc closes the popup); Up, Down and Enter move through and open what it
+  found.
+  No shortcut hint: where it lives, typing already reaches it.
 
 ## Themes
 

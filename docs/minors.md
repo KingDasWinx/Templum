@@ -581,6 +581,9 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   once (`tree_of`, `crates/templum/src/workspace/spaces.rs`) and two seconds later kills only what it read; a
   program that ignores the hangup and starts another meanwhile leaves that one alive. Fix: at the kill, read the
   tree again and also kill what is still in the stopped shells' sessions (Unix).
+- [ ] **The Home's Waiting for you tiles cut their words in a narrow window.** (`home.rs`, `tiles`: 2 columns under
+  960 px.) Under about 560 px of column the 2 columns leave "automations went wr…" cut, which the Screens standard
+  says never happens. Fix: one column when a tile's longest words don't fit in half the column.
 - [ ] **The Home's pointer presses were checked headlessly only.** (`home.rs`: the tiles, a card's ⋯, a recent
   folder, Open folder….) On a display only its keys and looks were checked (`--dev`, keys sent to the test window
   alone): no pointer tool was at hand. Fix: click each one on a display, light and dark, beside the Git popup.

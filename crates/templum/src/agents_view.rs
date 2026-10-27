@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
-use gpui_kit::component::input::Input;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -46,7 +45,7 @@ pub(crate) fn popup(
     h: f32,
     all: &[AgentRow],
     listed: Vec<AgentRow>,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
@@ -83,6 +82,7 @@ pub(crate) fn popup(
                     all,
                     listed,
                     selected.as_ref().map(|r| r.terminal.clone()),
+                    window,
                     cx,
                 ))
                 .child(div().w(px(1.0)).h_full().flex_shrink_0().bg(ui.hairline))
@@ -114,6 +114,7 @@ fn list(
     all: &[AgentRow],
     listed: Vec<AgentRow>,
     selected: Option<String>,
+    window: &Window,
     cx: &mut Context<Workspace>,
 ) -> Div {
     let ui = ws.ui;
@@ -225,7 +226,7 @@ fn list(
                 .px(px(12.0))
                 .pt(px(12.0))
                 .pb(px(8.0))
-                .child(Input::new(search))
+                .child(popup::search(ui, search, window, cx))
                 .test_support()
         }))
         .child(
