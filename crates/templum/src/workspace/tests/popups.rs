@@ -262,4 +262,11 @@ fn the_headers_count_what_is_there() {
         "/src/api · Main"
     );
     assert_eq!(crate::inbox::where_words(None, "Main"), "Main");
+    // A folder under the home is shortened as the Home's cards shorten it.
+    let rest = std::path::Path::new("code").join("api");
+    let folder = std::env::home_dir().unwrap().join(&rest);
+    assert_eq!(
+        crate::inbox::where_words(Some(&folder.display().to_string()), "Main"),
+        format!("~/{} · Main", rest.display())
+    );
 }

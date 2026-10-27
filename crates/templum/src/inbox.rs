@@ -356,10 +356,13 @@ fn detail(ws: &Workspace, wait: &Wait, w: f32, h: f32, cx: &mut Context<Workspac
         .into_any_element()
 }
 
-/// Where the asking terminal works: its folder, when known, and the workspace.
+/// Where the asking terminal works: its folder, when known (under the home as `~/…`), and the workspace.
 pub(crate) fn where_words(folder: Option<&str>, space: &str) -> String {
     match folder {
-        Some(folder) => format!("{folder} · {space}"),
+        Some(folder) => format!(
+            "{} · {space}",
+            crate::agents::tilde(std::path::Path::new(folder))
+        ),
         None => space.to_string(),
     }
 }

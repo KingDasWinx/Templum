@@ -2220,10 +2220,6 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   height, so a header is a row's 48 px with its name at the bottom (`crates/templum/src/agents_view.rs`, `list`):
   twice the 14 px Automations leaves over a group's name. Fix: gpui's variable-height `list` (`ListState`), or a
   header drawn in the first row of its group.
-- [ ] **Where shows the folder's whole path.** `inbox::where_words` (`crates/templum/src/inbox.rs`), used by the
-  Agents details and the Requests card, prints the raw folder ("/home/winx/Documents/github/Templum · Main") where
-  the Home's cards shorten it with `agents::tilde` ("~/Documents/github/Templum"). Fix: pass the folder through
-  `agents::tilde` in `where_words`.
 
 ## Popups
 
