@@ -2640,7 +2640,10 @@ fn send_becomes_stop_while_it_works(cx: &mut TestAppContext) {
         has(cx, "agent-send") && !has(cx, "agent-stop"),
         "idle: Send, dim while empty"
     );
-    assert!(has(cx, "agent-hint"), "the keys while it has the keyboard");
+    assert!(
+        !has(cx, "agent-hint"),
+        "no line telling the keys while it has the keyboard"
+    );
     ws.update(cx, |ws, _| ws.templum_agent.conversation.person("go"));
     assert!(
         has(cx, "agent-stop") && !has(cx, "agent-send"),
@@ -3015,23 +3018,12 @@ fn only_the_one_with_the_keyboard_shows_a_focus_ring(cx: &mut TestAppContext) {
     let (_, uid) = busy_terminal(handle, &ws, cx);
     let _answers = control_later(handle, &ws, cx, 7, "close_block", json!({"block": uid}));
     open_chat(handle, &ws, cx);
-    let hint = |cx: &mut TestAppContext| {
-        cx.update_window(handle, |_, window, cx| {
-            window.render_frame(cx);
-            window.try_find("agent-hint").is_some()
-        })
-        .unwrap()
-    };
-    assert!(hint(cx), "the field has the keyboard: its keys");
+    assert!(pill_has_keys(handle, &ws, cx), "the field has the keyboard");
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| ws.focus_approval(window, cx))
     })
     .unwrap();
     assert!(!pill_has_keys(handle, &ws, cx), "the approval took it");
-    assert!(
-        !hint(cx),
-        "the field shows no keys, nor ring, while the approval has them"
-    );
 }
 
 #[gpui_kit::test]

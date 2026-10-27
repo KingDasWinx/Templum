@@ -39,11 +39,6 @@ const SWEEP: std::time::Duration = std::time::Duration::from_millis(1600);
 /// The model chip is cut past this.
 const CHIP_MAX: f32 = 220.0;
 
-/// What the composer says of its keys while it has the keyboard.
-pub(crate) const HINT: &str = "Enter to send · Shift+Enter for a new line · Esc to close";
-pub(crate) const HINT_WORKING: &str =
-    "Enter to queue it · Shift+Enter for a new line · Esc to close";
-
 /// What the pill says at rest.
 pub(crate) fn rest(ws: &Workspace) -> &'static str {
     if ws.templum_agent.installed() {
@@ -80,7 +75,7 @@ pub(crate) fn render(
     let ui = ws.ui;
     let agent = &ws.templum_agent;
     let typing = ws.agent_has_keys(window, cx);
-    // The field itself has the keyboard (not the approval): its border, ring and keys.
+    // The field itself has the keyboard (not the approval): its border and ring.
     let field_focused = agent
         .input
         .as_ref()
@@ -242,19 +237,6 @@ pub(crate) fn render(
                     .tooltip(|window, cx| Tooltip::new("Stop").build(window, cx))
                     .test_support()
             });
-            let hint = field_focused.then(|| {
-                div()
-                    .id("agent-hint")
-                    .min_w(px(0.0))
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .text_right()
-                    .text_size(px(12.0))
-                    .text_color(ui.title_dim)
-                    .child(if working { HINT_WORKING } else { HINT })
-                    .test_support()
-            });
             let bar = div()
                 .flex()
                 .items_center()
@@ -267,14 +249,7 @@ pub(crate) fn render(
                         .overflow_hidden()
                         .child(model_chip(ws, cx)),
                 )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .flex()
-                        .justify_end()
-                        .children(hint),
-                )
+                .child(div().flex_1())
                 .children(send)
                 .children(stop)
                 .with_animation(

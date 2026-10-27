@@ -267,13 +267,14 @@ rest keeps its working look. The streamed text grows in place and the body follo
 ### The composer
 
 *The orchestrator's call*: a rounded field that grows with its text up to a limit, the model picker as a chip, Send
-becoming Stop while it works, a hint with the keys. *The designer's call* for the rest:
+becoming Stop while it works; no line telling the keys (card 226 took out card 143's hint: it said nothing the person
+needed). *The designer's call* for the rest:
 
 ```
 ╭────────────────────────────────────────────────────────────────╮
 │ Ask Templum to build, run or tidy your canvas…                 │
 │                                                                │
-│ [Claude Code · opus ▾]     Enter to send · Shift+Enter … (↑)   │
+│ [Claude Code · opus ▾]                                   (↑)   │
 ╰────────────────────────────────────────────────────────────────╯
 ```
 
@@ -289,10 +290,7 @@ becoming Stop while it works, a hint with the keys. *The designer's call* for th
     side padding, `hover` on hover; its menu is the header chip's of today (Default, the models with a check,
     Another model…), opening upward, and a choice gives the keyboard back to the field. The pill's old engine label
     (a click opened Settings) goes: Another model… opens Settings;
-  - **the hint,** right-aligned against the buttons, one line cut with "…", 12 px `title_dim`, only while the
-    composer has the keyboard: "Enter to send · Shift+Enter for a new line · Esc to close"; while the agent works,
-    "Enter to queue it · Shift+Enter for a new line · Esc to close";
-  - **the buttons,** 28 px circles:
+  - **the buttons,** right-aligned, 28 px circles:
     - **Send** (`arrow-up`, 15 px): with text, an `accent` fill and the arrow in `on_accent`; without, a `hover` fill,
       the arrow in `title_dim`, and no click. It shows whenever the agent doesn't work, so the bar doesn't jump at the
       first letter;
@@ -371,7 +369,6 @@ back into view, show at once. Every one goes through GPUI's animations, which sh
 | A long call | Wraps, at most 12 lines then "⋯ N more lines" |
 | A long code block | Wraps; shows whole; the chat scrolls |
 | A wide table | Cut at the column's edge |
-| The hint on a narrow composer | Cut with "…"; the chip and the buttons keep their size |
 | The empty state in a short card | The body scrolls |
 | What an approval will do | Its box scrolls past 160 px, with a scrollbar |
 
@@ -381,7 +378,7 @@ back into view, show at once. Every one goes through GPUI's animations, which sh
 call*, a guide, not code written now):
 
 - **Workspace, block and board tools:** tool rows. Their sentences are Templum's, their call opens the same way.
-- **File input:** chips in the composer's bar, between the model chip and the hint, each with a ✕.
+- **File input:** chips in the composer's bar, right of the model chip, each with a ✕.
 - **Slash commands:** a list rising from the composer, the column's width, rows as the tasks drawer's.
 - **History:** the header's title becomes a menu (its conversations, then New chat).
 - **Voice:** a microphone button left of Send, the same 28 px circle.
