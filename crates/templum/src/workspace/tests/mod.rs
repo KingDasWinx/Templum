@@ -88,12 +88,14 @@ fn open_as(
     data_dir: Option<std::path::PathBuf>,
 ) -> (AnyWindowHandle, Entity<Workspace>) {
     let (handle, ws) = open_welcomed(cx, command, config_dir, data_dir);
-    // An empty data folder is a first run: the welcome, then the first terminal. The tests
-    // of everything else start where the welcome leaves them.
+    // An empty data folder is a first run: the welcome, then the first terminal; a saved one
+    // opens on the Home. The tests of everything else start on the canvas they leave.
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
             ws.close_welcome(window, cx);
             ws.welcome = None;
+            ws.close_screen(window, cx);
+            ws.screen = None;
         })
     })
     .unwrap();
@@ -101,7 +103,7 @@ fn open_as(
     (handle, ws)
 }
 
-/// `open_as`, with the welcome of a first run still open.
+/// `open_as`, with the welcome of a first run, or the Home of a later start, still open.
 fn open_welcomed(
     cx: &mut TestAppContext,
     command: Option<(String, Vec<String>)>,
@@ -797,6 +799,7 @@ mod git_sync;
 mod git_trash;
 mod grid;
 mod history;
+mod home;
 mod inbox;
 mod instructions;
 mod kanban;
@@ -816,7 +819,6 @@ mod remote_content;
 mod remote_notes;
 mod remote_rules;
 mod requests;
-mod screen;
 mod scrollback;
 mod selection;
 mod settings_edits;

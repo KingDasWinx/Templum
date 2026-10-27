@@ -71,6 +71,7 @@ impl Workspace {
                         .look
                         .icon
                         .map(|icon| crate::space_dialog::icon_name(icon).to_string()),
+                    opened: space.opened.and_then(|t| i64::try_from(t).ok()),
                     remote: space
                         .remote
                         .as_deref()

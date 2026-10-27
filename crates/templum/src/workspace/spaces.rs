@@ -1,6 +1,6 @@
 //! The workspaces: loading, switching, adding, renaming and deleting them, and their index.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use gpui_kit::component::notification::Notification;
@@ -218,6 +218,7 @@ impl Workspace {
                         .map(|(d, name)| session::icons_dir(d).join(name)),
                 },
                 folder: entry.folder.clone(),
+                opened: entry.opened,
                 ..Space::default()
             };
             // A remote workspace has no canvas of its own: home's blocks come each time.
@@ -269,6 +270,7 @@ impl Workspace {
         self.active = index.active.min(spaces.len() - 1);
         self.space = spaces.remove(self.active);
         self.others = spaces;
+        self.space.opened = Some(crate::notes::now());
         if no_index && !first_saved {
             // A first run: the welcome, whose closing opens the first terminal in the shell
             // picked there. Without a data folder (`--bench`) nothing is kept: no welcome.
@@ -277,6 +279,9 @@ impl Workspace {
             } else {
                 self.open_first_terminal(window, cx);
             }
+        } else if self.data_dir.is_some() {
+            // Every other start opens on the Home, the workspace shown last loaded behind it.
+            self.open_home(window, cx);
         }
     }
 
@@ -295,20 +300,15 @@ impl Workspace {
     /// Shows workspace `to` (a position in the sidebar). What only makes sense on screen ends
     /// with the one left: its fading blocks, its animations, a drag.
     pub(crate) fn switch_to(&mut self, to: usize, window: &mut Window, cx: &mut Context<Self>) {
+        // The Home goes, the workspace shown asked for too: the person wants the canvas.
+        self.close_screen(window, cx);
         if to == self.active || to > self.others.len() {
             return;
         }
-        // A menu for something on the canvas left behind, and the screen it was picked on. A
-        // welcome makes way: a first run's terminal opens in the workspace it was for.
+        // A menu for something on the canvas left behind. A welcome makes way: a first run's
+        // terminal opens in the workspace it was for.
         self.menu = None;
         self.close_welcome(window, cx);
-        if let Some(screen) = self.screen.take() {
-            self.screen = Some(if screen.closing {
-                screen
-            } else {
-                screen.reversed(std::time::Instant::now())
-            });
-        }
         let left = &mut self.space;
         // Their shells close now.
         left.ghosts.clear();
@@ -326,6 +326,7 @@ impl Workspace {
         self.others.insert(self.active, current);
         self.space = self.others.remove(to);
         self.active = to;
+        self.space.opened = Some(crate::notes::now());
         // A mirrored workspace has no drawing tool, and the Wire tool only while home can wire:
         // the one picked on the workspace left is let go.
         let wires = self.tool == Tool::Wire && self.why_not(Deed::Wire).is_none();
@@ -354,6 +355,38 @@ impl Workspace {
     /// Creates an empty workspace after the last one and shows it.
     pub(crate) fn new_space(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.make_space();
+        self.switch_to(self.others.len(), window, cx);
+    }
+
+    /// Open folder… and a recent folder: the workspace whose folder it is is shown; else a new
+    /// workspace named after the folder, with that folder, is made and shown.
+    pub(crate) fn open_folder_space(
+        &mut self,
+        folder: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let at = (self.order().iter())
+            .position(|s| !s.is_remote() && s.folder.as_deref() == Some(folder));
+        if let Some(at) = at {
+            return self.switch_to(at, window, cx);
+        }
+        if !folder.is_dir() {
+            return self.warn(
+                format!("{} isn't a folder anymore.", folder.display()),
+                window,
+                cx,
+            );
+        }
+        let id = self.make_space();
+        let name = folder.file_name().map_or_else(
+            || folder.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        if let Some(space) = self.space_by_id_mut(&id) {
+            space.name = name;
+            space.folder = Some(folder.to_path_buf());
+        }
         self.switch_to(self.others.len(), window, cx);
     }
 
@@ -818,6 +851,7 @@ impl Workspace {
                         .map(|n| n.to_string_lossy().into_owned()),
                     folder: s.folder.clone(),
                     stopped: s.stopped,
+                    opened: s.opened,
                     remote: s.remote.as_ref().map(|r| session::RemoteEntry {
                         // Before home's first state the camera is nobody's: it isn't kept. Nor
                         // is one that isn't finite or lies beyond MOST_FAR: the entry couldn't be

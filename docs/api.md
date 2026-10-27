@@ -210,6 +210,11 @@ automation numbers; a request is `r<n>` (the inbox's; `n` starts at the Unix tim
 a restarted Templum never reuses a request id a mirror may still hold) or `a<n>` (the Templum Agent's approvals). Times
 are Unix seconds.
 
+**Workspaces and the Home.** A workspace has `opened`, when it was last opened (shown) in Templum, in Unix seconds:
+null for one not opened since Templum kept it. It is what the Home's cards say ("Opened 3 h ago"); the Home's other
+counts are the state's too: the blocks' `agent.state` (`needs_you`, `done`), `requests` and `automations[].last`. The
+Home itself is window chrome, like the popups: it isn't in the state and no tool opens it; `show` closes it.
+
 **Agents and schedules.** An agent's block has `agent.task`, the task it works on:
 `{"id":"t7","text":"…","by":"b7k2m","since":1761560000}` (`text` at most 2,000 characters; `by` the block that handed
 it, `"api"` for the API, null for one the token doesn't see), and `agent.role`, the role it was opened with, or null.

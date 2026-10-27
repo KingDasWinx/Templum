@@ -240,7 +240,7 @@ The state, in short (*the designer's call*; the OpenAPI document has every field
 ```json
 { "app": { "version": "0.1.5", "api": 1, "shown": "w3" },
   "workspaces": [{ "id": "w3", "name": "API", "folder": "/home/me/api", "color": "blue", "shown": true,
-                   "stopped": false }],
+                   "stopped": false, "opened": 1761559000 }],
   "blocks": [{ "id": "b7k2m", "workspace": "w3", "kind": "terminal", "title": "Claude Code · api",
                "folder": "/home/me/api", "rect": { "x": 0, "y": 0, "w": 720, "h": 480 }, "z": 3,
                "opened_by": null, "board": null,

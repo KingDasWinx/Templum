@@ -48,15 +48,21 @@ impl Workspace {
     /// The requests waiting for the person in the workspace shown (questions, plans and yes/no
     /// requests whose terminal is here), oldest first.
     pub(crate) fn inbox(&self) -> Vec<&Wait> {
+        (self.requests_waiting().into_iter())
+            .filter(|(_, space)| *space == self.space.id)
+            .map(|(w, _)| w)
+            .collect()
+    }
+
+    /// The requests waiting for the person in every workspace, with their workspace's id, oldest
+    /// first: the Home counts them.
+    pub(crate) fn requests_waiting(&self) -> Vec<(&Wait, String)> {
         self.waits
             .iter()
             .filter(|w| matches!(w.what, Waiting::Question { .. } | Waiting::Allow { .. }))
             // An answer sent to another computer leaves the list until its state drops it.
             .filter(|w| !w.remote.as_ref().is_some_and(|r| r.sent))
-            .filter(|w| {
-                self.request_space(w)
-                    .is_some_and(|space| space == self.space.id)
-            })
+            .filter_map(|w| Some((w, self.request_space(w)?)))
             .collect()
     }
 
@@ -84,6 +90,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // It is drawn over the canvas: the Home over it goes.
+        self.close_screen(window, cx);
         self.inbox_open = true;
         self.git_open = false;
         self.agents_open = false;

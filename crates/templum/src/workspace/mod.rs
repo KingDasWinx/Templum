@@ -887,6 +887,8 @@ pub(crate) struct Space {
     /// Its programs were ended and its blocks dropped; `saved` holds its canvas, which opening
     /// it brings back.
     pub stopped: bool,
+    /// When it was last shown, Unix seconds (`notes::now`); None before this was kept.
+    pub opened: Option<u64>,
     pub canvas: Canvas,
     /// What each block of the canvas holds. Inserted and removed together with `canvas`'s blocks.
     pub blocks: HashMap<BlockId, Body>,
@@ -1635,8 +1637,8 @@ pub struct Workspace {
     quit_armed: Option<Instant>,
     /// The settings panel, open or sliding out.
     pub(crate) settings: Option<Panel>,
-    /// The workspaces screen, open or sliding out.
-    pub(crate) screen: Option<crate::spaces_screen::Screen>,
+    /// The Home (docs/specs/home.md), open or fading out.
+    pub(crate) screen: Option<crate::home::Screen>,
     /// The welcome, open or fading out.
     pub(crate) welcome: Option<crate::welcome::Welcome>,
     /// The panel's keyboard focus: Esc and the settings shortcut close it from there.

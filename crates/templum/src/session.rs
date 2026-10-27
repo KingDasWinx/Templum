@@ -182,6 +182,14 @@ pub(crate) struct IndexEntry {
         deserialize_with = "any_true"
     )]
     pub stopped: bool,
+    /// When it was last opened (shown), Unix seconds: the Home's "Opened 3 h ago". A value that
+    /// doesn't read is none.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "any_time"
+    )]
+    pub opened: Option<u64>,
     /// A workspace of another computer (docs/specs/templum-to-templum.md, Persistence on the
     /// mirror): no `<id>.json` is ever written for it. A value that doesn't read is none.
     #[serde(
@@ -254,6 +262,10 @@ fn any_folder<'de, D: Deserializer<'de>>(d: D) -> Result<Option<PathBuf>, D::Err
 
 fn any_remote<'de, D: Deserializer<'de>>(d: D) -> Result<Option<RemoteEntry>, D::Error> {
     Ok(serde_json::from_value(serde_json::Value::deserialize(d)?).ok())
+}
+
+fn any_time<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    Ok(serde_json::Value::deserialize(d)?.as_u64())
 }
 
 fn any_true<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {

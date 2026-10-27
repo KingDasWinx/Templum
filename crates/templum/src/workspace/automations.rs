@@ -1351,6 +1351,8 @@ impl Workspace {
 
     /// Opens the popup with the keyboard on the list; the other popups close and the badge clears.
     pub(crate) fn open_automations(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // It is drawn over the canvas: the Home over it goes.
+        self.close_screen(window, cx);
         self.automations_open = true;
         self.git_open = false;
         self.inbox_open = false;

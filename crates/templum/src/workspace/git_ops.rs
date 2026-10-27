@@ -58,9 +58,11 @@ impl Workspace {
 
     /// Shows the popup on the workspace's Git, with the keyboard, read afresh.
     pub(crate) fn open_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.why_not(Deed::Git("look")).is_some() {
+        if self.why_not(Deed::Git("look")).is_some() || self.space.git.is_none() {
             return;
         }
+        // It is drawn over the canvas: the Home over it goes.
+        self.close_screen(window, cx);
         let Some(git) = self.space.git_mut() else {
             return;
         };

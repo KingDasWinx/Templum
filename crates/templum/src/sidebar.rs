@@ -1,5 +1,6 @@
-//! The workspaces sidebar: a tile per workspace (click: show it; right-click: rename, delete),
-//! and + for a new one; the agents, requests and Git buttons at its foot. See docs/specs/workspaces.md.
+//! The workspaces sidebar: the Home button, a tile per workspace (click: show it; right-click:
+//! rename, delete), and + for a new one; the agents, requests and Git buttons at its foot. See
+//! docs/specs/workspaces.md.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
@@ -42,8 +43,8 @@ pub(crate) fn render(
         .enumerate()
         .map(|(i, space)| tile(ws, i, space, cx))
         .collect();
-    let screen = div()
-        .id("workspaces-button")
+    let home = div()
+        .id("home-button")
         .flex()
         .flex_shrink_0()
         .items_center()
@@ -51,14 +52,15 @@ pub(crate) fn render(
         .size(px(TILE))
         .rounded(px(10.0))
         .cursor_pointer()
+        .when(ws.home_up(), move |el| el.bg(ui.pressed))
         .hover(move |s| s.bg(ui.hover))
         .active(move |s| s.bg(ui.pressed))
         .child(
-            Icon::new(IconName::LayoutGrid)
+            Icon::new(IconName::House)
                 .size(px(16.0))
                 .text_color(ui.title),
         )
-        .tooltip(|window, cx| Tooltip::new("Workspaces").build(window, cx))
+        .tooltip(|window, cx| Tooltip::new("Home").build(window, cx))
         .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.toggle_screen(window, cx)))
         .test_support();
     let plus = div()
@@ -145,7 +147,7 @@ pub(crate) fn render(
                 .min_h(px(0.0))
                 .w_full()
                 .overflow_y_scroll()
-                .child(screen)
+                .child(home)
                 .children(tiles)
                 .child(plus)
                 .child(connect),
@@ -183,7 +185,7 @@ fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) ->
     let color = space.look.color.as_deref().and_then(|c| tint(c, &ws.theme));
     let fg = hsla(ws.theme.palette.foreground, 1.0);
     let inner = div().id(ElementId::Name(format!("workspace-{}", space.id).into()));
-    let inner = crate::spaces_screen::draggable(inner, space, i, ui, cx)
+    let inner = crate::home::draggable(inner, space, i, ui, cx)
         .relative()
         .flex()
         .items_center()

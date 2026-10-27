@@ -859,6 +859,12 @@ impl Workspace {
     ) {
         // The cursor shows again on any key.
         self.blink_on = true;
+        // The Home is over the canvas: no key reaches a block under it.
+        if self.home_up() {
+            self.home_key_from_canvas(e, window, cx);
+            cx.stop_propagation();
+            return;
+        }
         // Esc closes the usage popover.
         if self.usage_open && e.keystroke.key == "escape" {
             self.usage_open = false;

@@ -171,6 +171,42 @@ them and never redraws its own frame.
 - **Colors:** the theme's tokens only (`ui.surface`, `hairline`, `hover`, `card`, `accent`, `title_dim`, `shadow`) and
   the palette's yellow and red for what waits or failed: a popup adds no color.
 
+### Screens
+
+*(Kanban card 256.)* A full-window screen — the [Home](home.md) today — is a place, not a popup over the canvas. It
+follows the Popups standard's type, radii and colors, at a page's scale (`crates/templum/src/home.rs`):
+
+- **Place and layering:** window chrome below the title bar and beside the sidebar (the whole width when the sidebar
+  is hidden), over the canvas, which stays loaded and running under it; the canvas's zoom never scales it. It occludes
+  the canvas: no press, wheel, hover or key reaches a block under it. The sidebar stays usable. What the title bar opens
+  (the theme picker, the usage popover) and the menus are drawn over it; a popup, Settings or a workspace shown
+  closes it. No backdrop: Esc, the button that opened it, or a press on what it shows leaves it.
+- **Ground:** `ui.canvas`, opaque, without the dots.
+- **Column:** centered, `home::CONTENT_MAX` (1040 px) at most, 32 px at its sides (16 px when the room is under
+  640 px), 40 px above and 48 px below. It scrolls whole, with the standard scrollbar over the screen's right edge.
+- **Header:** the title, 22 px semibold in the foreground, over a dim line (13 px, `ui.title_dim`); the actions at its
+  right, 8 px apart and 28 px high: one tinted primary (the accent at 16%, 24% under the pointer, its words in the
+  accent, medium, 12 px at its sides, 8 px corners), ghost buttons (the `hover` fill under the pointer), then 28 px icon
+  buttons named by their tooltips. A search field under it, 16 px below, the column's width, the kit's medium field
+  (32 px) with the search icon.
+- **Sections:** 28 px apart; each one's name in the popups' small dim capitals (`inbox::section`, 11.5 px), 12 px over
+  its content.
+- **Cards:** `ui.surface` on the ground, a 1 px `ui.hairline` border, 12 px corners (the popup frame's), 16 px padding
+  (14 for a count's tile), the blocks' unfocused shadow (offset y 4, blur 12, `ui.shadow`), 16 px apart. Under the
+  pointer the border is `hover_border`; the keyboard's highlight adds the `hover` fill; the current one (the workspace
+  behind) has the `accent` border and a 2 px `ring`. What is stopped or not live is drawn at 45%, as its sidebar tile.
+  A grid has as many 220 px columns as fit, at most four.
+- **Type:** a card's title 14 px semibold; its words 12 px `ui.title_dim`; small words 11.5 px; a count 20 px semibold.
+  A name is cut to one line at its end, a path at its start (its last folder shows).
+- **Colors:** tokens only (`ui.canvas`, `surface`, `card`, `hairline`, `hover`, `hover_border`, `accent`, `ring`,
+  `title`, `title_dim`, `shadow`); the palette's yellow for what waits, red for what went wrong, green for the dot of an
+  agent at work (the sidebar's), the accent for what is done. A count at zero has no color: its tile is dim and takes no
+  press.
+- **Motion:** it fades in rising 24 px over 200 ms (`motion::slid`, the welcome's), and fades out the same; opened at
+  launch it is up at once.
+- **Empty:** a list with nothing to show is one dim line ("No workspace matches “api”"); an optional section with
+  nothing is left out.
+
 ## Themes
 
 ### Theme files

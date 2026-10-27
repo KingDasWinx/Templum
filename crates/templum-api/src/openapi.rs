@@ -78,6 +78,7 @@ fn schemas() -> Value {
             ("shown", b()),
             ("stopped", b()),
             ("icon", maybe("string")),
+            ("opened", maybe("integer")),
         ]),
         "Rect": view(&[("x", n()), ("y", n()), ("w", n()), ("h", n())]),
         "BlockView": view(&[
@@ -835,6 +836,7 @@ mod tests {
                 shown: true,
                 stopped: false,
                 icon: Some("rocket".into()),
+                opened: Some(1_761_559_000),
                 remote: Some(RemoteView {
                     computer: Some("winx-desktop".into()),
                     host: "templum.example.com".into(),

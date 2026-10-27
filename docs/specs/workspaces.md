@@ -32,6 +32,8 @@ Terminals in the workspaces you aren't looking at keep running, so an agent keep
 ## The sidebar
 
 - **Where:** a 56 px column on the left of the window, under the title bar, next to the canvas.
+- **Home** (a house) at its top, above the tiles: opens or closes the [Home](home.md), and is pressed while it is up.
+  The sidebar stays usable beside the Home: a tile shows its workspace and closes it.
 - **Tiles:** one per workspace, in order, 40 px square with a 10 px radius, showing the first letter of its name
   (two for a two-word name: "Side project" is "SP").
   - The active tile has the `hover` fill, a hairline border and a 3 px accent bar on its left.

@@ -811,7 +811,7 @@ impl Render for Workspace {
         let screen = self
             .screen
             .as_ref()
-            .map(|s| crate::spaces_screen::render(self, s, now, window, cx));
+            .map(|s| crate::home::render(self, s, now, window, cx));
         let welcome = self
             .welcome
             .as_ref()
@@ -848,12 +848,12 @@ impl Render for Workspace {
             // The popups over the Templum agent.
             .children(agent)
             .children(popup)
-            // Under what the title bar opens: the settings, the theme picker, the screen.
+            // Under what the title bar opens: the settings, the theme picker, the usage popover.
             .children(welcome)
+            .children(screen)
             .children(panel)
             .children(picker)
             .children(usage)
-            .children(screen)
             .children(self.menu.as_ref().map(|m| menu::render(m, window)))
     }
 }

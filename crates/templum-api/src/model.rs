@@ -72,6 +72,9 @@ pub struct WorkspaceView {
     /// Its Lucide icon name, or None for its initials.
     #[serde(default)]
     pub icon: Option<String>,
+    /// When it was last opened (shown), Unix seconds; None for one not opened since this was kept.
+    #[serde(default)]
+    pub opened: Option<i64>,
     /// Where a mirrored workspace comes from; left out for a local one. A remote workspace's
     /// blocks are never in the state (docs/specs/templum-to-templum.md, What the mirror's API shows).
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -25,7 +25,7 @@ use crate::workspace::agents_view::Doing;
 use crate::workspace::automations::{AUTOMATION_LOOK, unix};
 
 /// A rule that notifies every day at 09:00, on, unnamed.
-fn notify(text: &str) -> Automation {
+pub(super) fn notify(text: &str) -> Automation {
     Automation {
         id: 0,
         name: String::new(),

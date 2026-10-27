@@ -182,7 +182,7 @@ impl Command {
             Command::NewWorkspace => "New workspace",
             Command::ConnectTemplum => "Connect to a Templum…",
             Command::ToggleSidebar => "Show or hide the sidebar",
-            Command::Workspaces => "The workspaces screen",
+            Command::Workspaces => "Home: your workspaces and what waits for you",
             Command::GoToWaiting => "Go to the terminal waiting for you",
             Command::AllAgents => "Show all agents",
             Command::Automations => "Show automations",

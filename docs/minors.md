@@ -581,6 +581,13 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   once (`tree_of`, `crates/templum/src/workspace/spaces.rs`) and two seconds later kills only what it read; a
   program that ignores the hangup and starts another meanwhile leaves that one alive. Fix: at the kill, read the
   tree again and also kill what is still in the stopped shells' sessions (Unix).
+- [ ] **The canvas under the Home still paints while the Home is up.** (`workspace/render.rs`, `area`; `home.rs`.)
+  The Home is opaque once up, but the workspace behind it keeps drawing its blocks, so an agent streaming output there
+  still costs frames nobody sees (the benches don't open the Home: they have no data folder). Fix: while the Home is
+  fully up and not fading, leave the canvas's blocks out of `area` (keep its size, so the terminals don't resize).
+- [ ] **The Home's pointer presses were checked headlessly only.** (`home.rs`: the tiles, a card's ⋯, a recent
+  folder, Open folder….) On a display only its keys and looks were checked (`--dev`, keys sent to the test window
+  alone): no pointer tool was at hand. Fix: click each one on a display, light and dark, beside the Git popup.
 
 ## Welcome
 
@@ -2281,9 +2288,6 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **The banner, the remote tile and the Forget… dialog were checked headlessly only.** (`mirror.rs`,
   `connect_dialog.rs`.) Their spacing, the veil's strength and the Connect dialog's added-authority choice were not
   looked at on a display. Fix: look at them with two `--dev` instances (stop, revoke and delete at home).
-- [ ] **A remote workspace's card on the workspaces screen is not dimmed when it isn't live.**
-  (`spaces_screen.rs`, `card`.) The sidebar tile is; the card only says "Mirror of winx-desktop · …". Fix: the
-  card's opacity follows `RemoteSpace::dim`.
 - [ ] **The banner's words carry no bold.** (`workspace/remote.rs`, `banner_words`.) The spec bolds "Try again",
   "Paste a new code…" and the names; the text is plain and the buttons carry the actions. Fix: spans in `Banner`.
 - [ ] **Connect anyway keeps the choice in the key only after the client saved it.** (`client/remote.rs`,
