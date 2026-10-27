@@ -281,6 +281,26 @@ pub(crate) fn dot_color(ws: &Workspace, pane: Option<&Pane>) -> Option<Hsla> {
         .map(|(color, _)| color)
 }
 
+/// What a row's agent works on: the task's first line, else its card, else its folder (under the
+/// home as `~/…`).
+pub(crate) fn about(row: &AgentRow) -> String {
+    row.task
+        .as_ref()
+        .and_then(|task| task.lines().next().map(str::to_string))
+        .filter(|line| !line.is_empty())
+        .or_else(|| {
+            row.card
+                .as_ref()
+                .map(|(id, title)| format!("#{id} {title}"))
+        })
+        .or_else(|| {
+            row.folder
+                .as_deref()
+                .map(|folder| crate::agents::tilde(std::path::Path::new(folder)))
+        })
+        .unwrap_or_default()
+}
+
 /// The color of the state's words: its dot's, the accent for Done.
 pub(crate) fn tone(ws: &Workspace, row: &AgentRow, pane: Option<&Pane>) -> Option<Hsla> {
     match row.doing {
@@ -312,19 +332,7 @@ fn agent_row(ws: &Workspace, row: &AgentRow, now: Instant) -> gpui_kit::Stateful
             .border_color(ui.title_dim)
             .test_support(),
     };
-    // What it works on: the task's first line, else its card, else its folder.
-    let about = row
-        .task
-        .as_ref()
-        .and_then(|task| task.lines().next().map(str::to_string))
-        .filter(|line| !line.is_empty())
-        .or_else(|| {
-            row.card
-                .as_ref()
-                .map(|(id, title)| format!("#{id} {title}"))
-        })
-        .or_else(|| row.folder.clone())
-        .unwrap_or_default();
+    let about = about(row);
     let state = format!(
         "{} · {}",
         row.doing.label(),

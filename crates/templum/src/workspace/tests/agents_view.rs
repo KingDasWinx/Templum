@@ -13,7 +13,7 @@ use super::subagents::hook;
 use super::terminals::set_active;
 use super::*;
 use crate::agents_view::{
-    dot_color, empty_words, handed_words, header_text, held_words, tone, usage_rows,
+    about, dot_color, empty_words, handed_words, header_text, held_words, tone, usage_rows,
 };
 use crate::alert::Alert;
 use crate::automations::Heard;
@@ -410,6 +410,26 @@ fn mark_all_seen_clears_every_done_mark(cx: &mut TestAppContext) {
     assert_eq!(ws.read_with(cx, |ws, _| ws.done_count()), 1);
     ws.update(cx, |ws, _| ws.others[0].stopped = true);
     assert_eq!(ws.read_with(cx, |ws, _| ws.done_count()), 0);
+}
+
+#[test]
+fn a_row_says_what_its_agent_works_on() {
+    let mut row = made("w1", "t1", "Claude Code", Doing::Working(0), Instant::now());
+    assert_eq!(about(&row), "");
+    // With no task and no card: its folder, under the home as `~/…`.
+    let rest = std::path::Path::new("code").join("api");
+    row.folder = Some(
+        std::env::home_dir()
+            .unwrap()
+            .join(&rest)
+            .display()
+            .to_string(),
+    );
+    assert_eq!(about(&row), format!("~/{}", rest.display()));
+    row.card = Some((152, "Attachments".into()));
+    assert_eq!(about(&row), "#152 Attachments");
+    row.task = Some("Review the PRs\nthen merge".into());
+    assert_eq!(about(&row), "Review the PRs");
 }
 
 /// A row of terminal `terminal` titled `title` in workspace `space`, the rest empty.

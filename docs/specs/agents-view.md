@@ -181,7 +181,7 @@ Two lines (*the orchestrator's call*):
    dim; at the right, the context used ("42%", or "84k ctx" when the window's size is unknown, as the usage chip says
    it; nothing when unknown).
 2. Dim: the task's first line (`Handed.text`), else its card ("#152 Attachments", by the inbox's card rule), else its
-   folder; at the right, the state and its age ("Done · 3m", "Needs you · 12m").
+   folder ("~/api"); at the right, the state and its age ("Done · 3m", "Needs you · 12m").
 
 *The designer's call:* the state's words take the color of their dot (Done the accent, as the badge).
 
