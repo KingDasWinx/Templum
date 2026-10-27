@@ -215,7 +215,8 @@ null for one not opened since Templum kept it. It is what the Home's cards say (
 counts are the state's too: the blocks' `agent.state` (`needs_you`, `done`), `requests` and `automations[].last`. The
 Home is a screen in place of a workspace's canvas, where Templum starts: while it is shown, `app.shown` is null, no
 workspace has `shown: true` and `view` is null (`event: view` sends `null`). No tool opens it; `show` leaves it for the
-workspace (or the block's), a stopped one started.
+workspace (or the block's), a stopped one started. Stopping the last workspace running in Templum shows the Home, with
+every workspace `stopped`.
 
 **Agents and schedules.** An agent's block has `agent.task`, the task it works on:
 `{"id":"t7","text":"…","by":"b7k2m","since":1761560000}` (`text` at most 2,000 characters; `by` the block that handed

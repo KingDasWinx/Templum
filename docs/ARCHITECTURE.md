@@ -320,8 +320,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   their output never wakes the UI. The sidebar (`sidebar.rs`) switches them by swapping. The Home (`home.rs`,
   `Workspace::screen`) is shown in the canvas's place: `space` then holds the workspace shown last, unseen like a
   hidden one (`render.rs` doesn't build `canvas_area`, the Home's root holds the canvas's focus), and `shown_space`
-  is none; `switch_to` leaves the Home, and `hold_space` changes the one held while the Home stays (a delete or a
-  stop from the Home). `session.rs` keeps their
+  is none; `switch_to` leaves the Home, and `hold_space` changes the one held while the Home stays (a delete, a stop
+  of the last workspace running, which leaves `space` stopped under the Home). `session.rs` keeps their
   order, names and looks in `workspaces/index.json` ([specs/workspaces.md](specs/workspaces.md)). A stopped one
   (`Space::stopped`) has no blocks: its canvas waits in `Space::saved`, which the snapshots never write over, and
   `switch_to` restores it as a start does. Its processes end through `templum_terminal::tree` (read before the

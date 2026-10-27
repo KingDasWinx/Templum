@@ -514,6 +514,135 @@ fn stopping_the_active_workspace_shows_the_one_before(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// Four workspaces, Main, w2, w3 and w4, each with a terminal (Main its first run's); Main shown.
+fn four(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            for _ in 0..3 {
+                ws.new_space(window, cx);
+                ws.open(Rect::new(0.0, 0.0, 600.0, 400.0), window, cx);
+            }
+            ws.switch_to(0, window, cx);
+        })
+    })
+    .unwrap();
+}
+
+/// Stops `id` (nothing at work in it: at once); the workspace shown then, and whether the Home is.
+fn stop(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: &str,
+) -> (String, bool) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.stop_space(id, window, cx);
+            assert!(ws.spaces().any(|s| s.id == id && s.stopped), "{id} stopped");
+            (ws.space.id.clone(), ws.home_up())
+        })
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn stopping_the_shown_workspace_shows_the_nearest_running_one_above_else_below(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    four(handle, &ws, cx);
+    // The first has none above: the one below.
+    assert_eq!(stop(handle, &ws, cx, "default"), ("w2".into(), false));
+    // w3 has w2 above it.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.switch_to(2, window, cx))
+    })
+    .unwrap();
+    assert_eq!(stop(handle, &ws, cx, "w3"), ("w2".into(), false));
+    // w4: w3 above is stopped, skipped for w2.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.switch_to(3, window, cx))
+    })
+    .unwrap();
+    assert_eq!(stop(handle, &ws, cx, "w4"), ("w2".into(), false));
+}
+
+#[gpui_kit::test]
+fn stopping_the_shown_workspace_skips_stopped_ones_below(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    four(handle, &ws, cx);
+    stop(handle, &ws, cx, "w2");
+    assert_eq!(stop(handle, &ws, cx, "default"), ("w3".into(), false));
+}
+
+#[gpui_kit::test]
+fn stopping_the_last_running_workspace_shows_the_home(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    four(handle, &ws, cx);
+    for id in ["w2", "w3", "w4"] {
+        stop(handle, &ws, cx, id);
+    }
+    let (held, home) = stop(handle, &ws, cx, "default");
+    assert!(home, "none runs: the Home, not a stopped one started");
+    assert_eq!(held, "default", "the one stopped, held under it");
+    ws.read_with(cx, |ws, cx| {
+        assert!(ws.spaces().all(|s| s.stopped && s.blocks.is_empty()));
+        assert!(
+            ws.order()
+                .iter()
+                .all(|s| ws.counts(s).line() == "Stopped · 1 terminal")
+        );
+        let state = ws.api_state(cx);
+        assert_eq!(state.app.shown, None);
+        assert!(state.workspaces.iter().all(|w| w.stopped && !w.shown));
+    });
+    // Any card starts its workspace.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.switch_to(2, window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(!ws.home_up() && ws.space.id == "w3" && !ws.space.stopped);
+        assert_eq!(ws.space.terminals().count(), 1, "its terminal, back");
+    });
+}
+
+#[gpui_kit::test]
+fn the_only_workspace_can_be_stopped_landing_on_the_home(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.terminals().count(), 1, "the first run's");
+        assert!(ws.can_stop(&ws.space), "the menu's Stop");
+    });
+    assert_eq!(stop(handle, &ws, cx, "default"), ("default".into(), true));
+    // From the Home's card it starts again.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.switch_to(0, window, cx))
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(!ws.home_up() && !ws.space.stopped);
+        assert_eq!(ws.space.terminals().count(), 1);
+    });
+}
+
+#[gpui_kit::test]
+fn stopping_the_workspace_held_under_the_home_keeps_the_home(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    four(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.show_home(window, cx))
+    })
+    .unwrap();
+    assert_eq!(stop(handle, &ws, cx, "default"), ("default".into(), true));
+    assert_eq!(
+        stop(handle, &ws, cx, "w3"),
+        ("default".into(), true),
+        "a hidden one"
+    );
+}
+
 #[gpui_kit::test]
 fn stopping_asks_first_when_a_terminal_is_at_work(cx: &mut TestAppContext) {
     use gpui_kit::component::WindowExt as _;

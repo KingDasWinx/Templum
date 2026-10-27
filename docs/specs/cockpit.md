@@ -418,9 +418,10 @@ does for all of them:
 - The canvas is written as on quit (the agents found in it are kept, to resume), then its blocks are dropped. Each
   shell gets SIGHUP as when a block closes; 2 s later, every process that was below a shell and still runs is
   killed (SIGKILL; TerminateProcess on Windows), so programs that ignore the hangup end too.
-- **Stopping the active workspace** first shows the one before it, as deleting does. Stop is disabled while it is
-  the only workspace, and for one stopped already. A workspace whose file couldn't be read still stops: its file is
-  kept as it is, and starting it in the same session brings back what was stopped.
+- **Stopping the active workspace** first shows the nearest one running above it, else below it; with none running,
+  the Home (kanban card 264, [workspaces.md](workspaces.md#workspaces)). Stop is disabled only for one stopped already
+  and for a mirror: the only workspace can be stopped. A workspace whose file couldn't be read still stops: its file
+  is kept as it is, and starting it in the same session brings back what was stopped.
 - A stopped workspace's tile is dimmed and has no dots; its card says "Stopped" and counts what its saved canvas
   holds.
 - **Opening it starts it** (a click, the screen, Ctrl+Tab, Ctrl+digit): its canvas comes back as on a start of
@@ -453,7 +454,8 @@ moves the block, or the selection it is part of:
   `image` is a file name inside `workspaces/icons/` (letters, digits, `-`, `_`, `.`, no path separators, no
   `..`); a file that doesn't exist or can't be decoded shows the icon instead and says nothing.
 - `folder` is an absolute path; one that isn't a folder anymore is ignored when a terminal starts. `stopped` is
-  true for a stopped workspace; the active one is never stopped (an index that says so starts it).
+  true for a stopped workspace; the active one is stopped only when every workspace was: Templum opens on the Home
+  then, as always, and the card chosen starts its workspace.
 - An unknown value never makes the whole index unreadable: only that key is dropped.
 - Deleting a workspace removes its image file along with setting its canvas aside.
 

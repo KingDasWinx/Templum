@@ -79,7 +79,9 @@ elsewhere; a green dot on a tile means Claude Code or Codex is running in it.
   its blocks and terminals live, where you can type, move blocks and answer its agents. See
   [api.md](api.md#templum-to-templum).
 - **Stop** ends every program of a workspace (shells, agents, servers) and keeps its layout; opening it starts its
-  terminals again, agents resumed. A stopped workspace stays stopped across restarts and costs nothing at launch.
+  terminals again, agents resumed. Stopping the one you're in takes you to the nearest running workspace above it,
+  else below; when none runs (the only one too), to the Home. A stopped workspace stays stopped across restarts and
+  costs nothing at launch.
 - **Move to workspace ▸** (right-click a block or a selection) sends blocks to another workspace while they run: an
   agent keeps working there.
 

@@ -3,7 +3,7 @@
 - **Date:** 2026-10-27
 - **Status:** Implemented (kanban card 256, "a home screen to be the starting point and general control of all the
   workspaces"; card 265, "the Home screen must be a real screen, not a modal; it must be Templum's initial screen when
-  it opens")
+  it opens"; card 264, stopping the last workspace running lands on it)
 - **Builds on:** [cockpit.md §6](cockpit.md#6-the-workspaces-screen) (the workspaces screen it replaces: its cards,
   search, keys, drag and drop and right-click menu), [welcome.md](welcome.md) (a first run's welcome comes first),
   [agents-view.md](agents-view.md), [ask-inbox.md](ask-inbox.md) and [automations.md](automations.md) (what waits, and
@@ -30,6 +30,8 @@ never one over the other.
 - **Not without a data folder** (`--bench`): nothing to come back to.
 - **Again:** the **Home** item atop the sidebar (a house), the workspace's name in the title bar, and the `workspaces`
   command (Ctrl+Shift+O, Cmd+Shift+O on macOS). On the Home they do nothing more: it is shown.
+- **When no workspace runs:** stopping the last workspace running, the only one included, shows the Home
+  ([workspaces.md](workspaces.md#workspaces)).
 - **Leaving it is choosing a workspace:** its card, its sidebar tile, Ctrl+1–9, Ctrl+Tab and Ctrl+Shift+Tab (the
   first and the last workspace: the Home sits above them in the sidebar), New workspace, Open folder…, a recent
   folder, or anything that goes to a block (a notification's click, Go to the terminal waiting, the API's `show`). A
@@ -124,7 +126,7 @@ this window, not to the state.
 | `home.rs` (was `spaces_screen.rs`) | `Screen` (the Home shown: its search, highlight, scroll), the counts, `show_home`, the keys, the tiles' presses, Open folder…, and the drawing: header, tiles, cards, recent folders |
 | `sidebar.rs` | The Home item in place of the grid button, marked as the workspace shown is while the Home is |
 | `title_bar.rs` | "Home" in place of the workspace's name, no zoom level |
-| `workspace/spaces.rs` | The Home at launch (not on a first run); `switch_to` leaves it, the workspace held under it included (`hold_space` keeps one there, `leave_space` ends what only makes sense on screen); `shown_space` is none on it; `opened` stamped when a workspace is shown, kept in the index |
+| `workspace/spaces.rs` | The Home at launch (not on a first run); `switch_to` leaves it, the workspace held under it included (`hold_space` keeps one there, `leave_space` ends what only makes sense on screen); `shown_space` is none on it; stopping the last workspace running shows it; `opened` stamped when a workspace is shown, kept in the index |
 | `workspace/render.rs` | The Home in the canvas's place beside the sidebar (`canvas_area` isn't built), under the popups, the theme picker, the usage popover and the menus; the Templum Agent hidden; the Home's root holds the canvas's focus, so no key reaches a block |
 | `workspace/api_state.rs`, `control.rs` | `app.shown` null, no workspace `shown`, `view` null and no ", shown" in `overview` on the Home |
 | `session.rs` | The index's `opened` (Unix seconds; one that doesn't read is none) |
@@ -140,5 +142,6 @@ run nor without a data folder; the sidebar's Home item, the title bar's name and
 more); Ctrl+1 and a tile leave it; next and previous go to the first and the last; the API's state (`app.shown` null,
 no workspace shown, no `view`) and `show` leaving it; the search by name and by folder, Esc emptying it; Up, Down and
 Enter; Settings, Agents and Automations over it, Requests and Git in a workspace; each tile's count and its press; a
-card's words; the ⋯ opens the workspace's menu; a recent folder and Open folder…; keys never reach the canvas. Unit:
-the greeting by hour, the columns by width, the tiles' words, the card's lines.
+card's words; the ⋯ opens the workspace's menu; a recent folder and Open folder…; keys never reach the canvas.
+Stopping (`workspace/tests/workspaces.rs`): the last workspace running and the only one land on the Home. Unit: the
+greeting by hour, the columns by width, the tiles' words, the card's lines.

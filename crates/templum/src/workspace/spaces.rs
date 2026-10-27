@@ -730,28 +730,32 @@ impl Workspace {
         );
     }
 
-    /// A workspace can be stopped unless it is the last one, or stopped already.
+    /// A workspace can be stopped unless it is stopped already, or a mirror: the last one running
+    /// too, which leaves the Home.
     pub(crate) fn can_stop(&self, space: &Space) -> bool {
-        !self.others.is_empty() && !space.stopped && !space.is_remote()
+        !space.stopped && !space.is_remote()
     }
 
     /// Ends every program of the workspace with `id`, as quitting would: its canvas is written
     /// (the agents in it found, to resume), its blocks dropped and its processes ended. The one
-    /// shown first gives its place to the one before it. Opening it starts it again.
+    /// shown first gives its place to the nearest one running above it, else below it; with none
+    /// running, to the Home. Opening it starts it again.
     pub(crate) fn stop_now(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(at) = self.order().iter().position(|s| s.id == id) else {
+        let Some(at) = (self.order().iter()).position(|s| s.id == id && self.can_stop(s)) else {
             return;
         };
-        if self.others.is_empty() {
-            return;
-        }
-        if at == self.active {
-            let to = if at > 0 { at - 1 } else { 1 };
-            // The Home stays: the workspace under it changes.
-            if self.home_up() {
-                self.hold_space(to);
-            } else {
-                self.switch_to(to, window, cx);
+        if at == self.active && !self.home_up() {
+            let to = {
+                let order = self.order();
+                let running = |i: &usize| !order[*i].stopped;
+                (0..at)
+                    .rev()
+                    .find(running)
+                    .or_else(|| (at + 1..order.len()).find(running))
+            };
+            match to {
+                Some(to) => self.switch_to(to, window, cx),
+                None => self.show_home(window, cx),
             }
         }
         let (known, accounts) = (self.known_agents(), self.known_accounts());
@@ -759,11 +763,7 @@ impl Workspace {
         self.generation += 1;
         let generation = self.generation;
         let dir = self.data_dir.clone();
-        let Some(space) = self
-            .others
-            .iter_mut()
-            .find(|s| s.id == id && !s.stopped && !s.is_remote())
-        else {
+        let Some(space) = self.space_by_id_mut(id) else {
             return;
         };
         let (saved, _) = space.layout(known, accounts, cx).snapshot(dir.as_deref());

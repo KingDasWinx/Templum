@@ -84,6 +84,11 @@ Terminals in the workspaces you aren't looking at keep running, so an agent keep
 - **A theme, font or terminal setting change** applies to every workspace's terminals, hidden or not.
 - **Deleting** closes the workspace's terminals and keeps its file as `<id>.json.bak`. If it was active, the one
   before it becomes active (on the Home, the one held under it: the Home stays).
+- **Stopping** ends a workspace's programs and keeps its canvas ([cockpit.md](cockpit.md#stopping-a-workspace)). Any
+  workspace that runs can be stopped, the only one too. Stopping the one shown shows the nearest workspace running
+  above it in the sidebar, else the nearest below it, stopped ones skipped; when none runs, the Home, which then shows
+  every workspace stopped and starts the one whose card is chosen. Stopped from the Home, it leaves the Home as it is.
+  The confirmations (a terminal at work, unsaved files) come first, as before.
 - **The title bar** shows the active workspace's name where it said "Templum"; on the Home, a house and "Home".
 
 ## Shortcuts
