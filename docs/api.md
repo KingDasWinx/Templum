@@ -663,23 +663,24 @@ cloudflared tunnel --url http://127.0.0.1:7411
 
 (or a named tunnel to the API's port). Share *Through a tunnel or proxy* with the tunnel's `https://` address. If the
 tunnel sits behind **Cloudflare Access**, make a **service token** and allow it in the Access policy (recommended: the
-tunnel then refuses everyone but the mirror); the mirror takes the token's Client ID and Secret in *Connect ▸ More…*.
+tunnel then refuses everyone but the mirror); the mirror takes the token's Client ID and Secret in *Connect ▸ Network*.
 The tunnel's provider sees the traffic (HTTPS ends at its edge), including what is typed.
 
 ### 3. Connect (the mirror)
 
-Sidebar ▸ **Connect to a Templum…**, paste the code. The line under the field says where it goes and how it checks
-(`templum.example.com · checks its public certificate`, or `· pins Templum's certificate AB:CD:…`). **More…** takes the
-Cloudflare Access Client ID and Secret, and a proxy. The key is kept in this computer's keyring (the Keychain, the
-Credential Manager or the Secret Service); with no keyring you may keep it in a file only you can read (a copy of the
-data folder would carry it) or let it last until Templum quits. Connect tries it; on success the dialog closes, the
-remote workspace opens and the code leaves the clipboard if it still holds it. A failure stays in the dialog in words.
+Sidebar ▸ **Connect to a Templum…** (or the Home's plug button), paste the code. The line under the field says where it
+goes and how it checks (`templum.example.com · checks its public certificate`, or `· pins Templum's certificate
+AB:CD:…`). **Network** (folded) takes the Cloudflare Access Client ID and Secret, and a proxy. The key is kept in this
+computer's keyring (the Keychain, the Credential Manager or the Secret Service); with no keyring you may keep it in a
+file only you can read (a copy of the data folder would carry it) or let it last until Templum quits. Connect (or Enter)
+tries it; on success the dialog closes, the remote workspace opens and the code leaves the clipboard if it still holds
+it. A failure stays in the dialog in words; Cancel or Esc gives the connection up.
 
 The remote workspace is a tile in the sidebar like any other (with a mark), in Ctrl+Tab and Ctrl+1–9. Right-click it:
 **Open**, **Edit…**, **Disconnect** (or **Connect**), **Forget…** (which can revoke the share on home too).
 **Edit…** shows the connection (address, way in, whether it trusts an authority this computer added, the Access Client
 ID, the proxy, what the share can do, when it ends, the round trip), your own icon and color (none: home's), and
-**Paste a new code…** for when the share expired or was revoked. Its **More…** opens with the Access Client ID and the
+**Paste a new code…** for when the share expired or was revoked. Its **Network** opens with the Access Client ID and the
 proxy address this connection has; leave the Client Secret (or the proxy's login) empty and the old one stays, so you
 don't need to copy it again, for the same Client ID and address (a new code for another address needs the Client
 Secret typed again). The name is home's.
@@ -729,7 +730,7 @@ has past 50.
 
 ### 5. A proxy
 
-Type it in *Connect ▸ More…* (`http://proxy.corp:8080`, optionally with `user:password@`), or let Templum read
+Type it in *Connect ▸ Network* (`http://proxy.corp:8080`, optionally with `user:password@`), or let Templum read
 `HTTPS_PROXY`, `https_proxy` or `ALL_PROXY` (not for a host `NO_PROXY` names). Templum opens an HTTP `CONNECT` through
 it, then TLS inside, end to end. Basic credentials only: NTLM, Kerberos, PAC files and the system's proxy settings are
 not supported, and a proxy that wants them answers 407 ("The proxy … refused the connection").
@@ -753,7 +754,7 @@ What the banner says, what it means, and whether it tries again by itself:
   the two computers. Paste a new code only if you made the change.
 - **…'s certificate isn't valid:** expired, for another name, or signed by an unknown authority. Fix it where the
   tunnel or proxy runs, then **Try again**.
-- **Cloudflare Access stands in front of …:** add the service token in Paste a new code… ▸ More…, and allow it in the policy.
+- **Cloudflare Access stands in front of …:** add the service token in Paste a new code… ▸ Network, and allow it in the policy.
 - **… didn't answer as a Templum:** wrong address or port. **Try again**.
 
 ### 7. What a mirror can't do yet

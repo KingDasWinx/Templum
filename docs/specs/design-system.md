@@ -125,7 +125,8 @@ window, not in the Templum API.
 
 *(Kanban card 217.)* Every popup over the canvas — Git, Requests, Agents and Automations today, and any new modal of
 their kind — follows this one standard, built from the helpers of `crates/templum/src/popup.rs`: a new popup calls
-them and never redraws its own frame.
+them and never redraws its own frame. A dialog in the middle of the window wears the same frame, header and foot
+(*A dialog*, below).
 
 - **Place and layering** (`popup::slot`): over the canvas's bottom-left corner, `popup::GAP` (8 px) from the sidebar
   and from the window's bottom edge; window chrome, so the canvas's zoom never scales it. Only one is open at a time:
@@ -180,6 +181,25 @@ them and never redraws its own frame.
   the Automations editor's (Requests keeps its request balloon's 18).
 - **Filter chips** (Agents): over a list, 12 px from its sides as its rows' words; a chip is its name and its count, 6
   px at its sides, 2 px from the next; the chosen one on `ui.pressed`. They wrap when the list is narrow.
+- **A dialog** (card 280; the Connect dialog, `connect_dialog.rs`, is the reference): a short form or decision opened
+  over everything, built from `popup::dialog`, `dialog_frame`, `dialog_header`, then the form's helpers and `foot`.
+  - *Place:* the middle of the window across, a tenth of it down: gpui-kit's `Dialog` (`window.open_dialog`) holds
+    it and keeps its behavior (the dimmed backdrop, the keyboard kept in it and given back after, Esc, Enter for its
+    `on_ok`) and draws nothing of its own but its shadow. It shows at once, no slide.
+  - *Frame:* the popups' (`ui.surface`, hairline border, 12 px corners, the shadow), `popup::DIALOG_W` (520 px) wide
+    and as high as what it holds. No resize edges and no Full screen: a short form needs no more room.
+  - *Header:* the popups' (`dialog_header`): the tile, the title (a name, no ellipsis), a dim line of what the dialog
+    is for, and Close ("Close (Esc)"), which does what Esc does.
+  - *Body:* a form (sections of labelled rows), 16 px at its sides, above and below; a field's help is one dim line
+    (11.5 px, `title_dim`) under it, 4 px below, and what is wrong with what was typed takes its place in red.
+  - *A folded section:* its name in the sections' small dim capitals after a 12 px chevron (`ChevronRight`,
+    `ChevronDown` open), and while folded a dim word of what it holds; a press on them unfolds it.
+  - *Foot:* `popup::foot`, its content 16 px at its sides. Cancel (ghost) and the solid primary, the one Enter does,
+    at its right, the primary dimmed to 40% while it can't act; while the dialog waits, a 12 px spinner and dim words
+    at its left ("Connecting to …"); what went wrong above the buttons in red; a question the dialog asks above them
+    in yellow, its answers as ghost buttons in place of Cancel and the primary (Enter answers none). Cancel, Close,
+    Esc and a press outside all close it the same way.
+  - The card's dialog and the other kit dialogs can move here (docs/minors.md, Kanban and Templum to Templum).
 - **Colors:** the theme's tokens only (`ui.surface`, `hairline`, `hover`, `card`, `accent`, `title_dim`, `shadow`) and
   the palette's yellow and red for what waits or failed: a popup adds no color.
 

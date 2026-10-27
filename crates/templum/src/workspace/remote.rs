@@ -1297,7 +1297,7 @@ pub(crate) fn banner_words(remote: &RemoteSpace, now: Instant, wall: SystemTime)
                 Why::Access => (
                     format!(
                         "Cloudflare Access stands in front of {host}. Add a service token in \
-                         Paste a new code… ▸ More…, and allow it in the Access policy."
+                         Paste a new code… ▸ Network, and allow it in the Access policy."
                     ),
                     &[Act::TryNow, Act::Paste],
                 ),
@@ -4818,7 +4818,7 @@ mod tests {
         );
         says(
             &cut(Why::Access),
-            "Cloudflare Access stands in front of templum.example.com. Add a service token in Paste a new code… ▸ More…, and allow it in the Access policy.",
+            "Cloudflare Access stands in front of templum.example.com. Add a service token in Paste a new code… ▸ Network, and allow it in the Access policy.",
             &[Act::TryNow, Act::Paste],
             true,
         );

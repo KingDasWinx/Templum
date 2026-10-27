@@ -332,12 +332,7 @@ fn a_code_becomes_a_live_remote_workspace(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn a_code_that_cant_connect_leaves_nothing(cx: &mut TestAppContext) {
-    // An address nobody listens on.
-    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://127.0.0.1:{}", closed.local_addr().unwrap().port());
-    drop(closed);
-    let key = templum_api::code::Key::new("tpl_NOBODYHOME".into());
-    let code = code::encode(&url, &key, None);
+    let (code, host) = unreachable_code();
     let (handle, ws, _dir, store) = bare_mirror(cx);
     let before = ws.read_with(cx, |ws, _| {
         ws.spaces().map(|s| s.id.clone()).collect::<Vec<_>>()
@@ -351,10 +346,7 @@ fn a_code_that_cant_connect_leaves_nothing(cx: &mut TestAppContext) {
         // Not the banner's "Reconnecting to …" of a remote that is already forgotten.
         assert_eq!(
             ws.connect_result(),
-            Some(Err(format!(
-                "Couldn't reach {}.",
-                url.trim_start_matches("http://")
-            )))
+            Some(Err(format!("Couldn't reach {host}.")))
         );
         assert!(ws.pending_connect.is_none());
         assert_eq!(
@@ -406,6 +398,92 @@ fn the_connect_dialog_reads_the_code_empties_its_field_and_closes_live(cx: &mut 
         assert_eq!(ws.space.id, "r1");
         assert_eq!(remote_of(ws).status, Status::Live);
     });
+}
+
+/// A code for a loopback address nobody listens on: connecting to it fails at once.
+fn unreachable_code() -> (String, String) {
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host = format!("127.0.0.1:{}", closed.local_addr().unwrap().port());
+    drop(closed);
+    let key = templum_api::code::Key::new("tpl_NOBODYHOME".into());
+    (code::encode(&format!("http://{host}"), &key, None), host)
+}
+
+#[gpui_kit::test]
+fn enter_in_the_connect_dialog_connects_and_a_new_code_clears_the_failure(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    use gpui_kit::test::TestWindowExt as _;
+    no_motion(cx);
+    let (code, host) = unreachable_code();
+    let (handle, ws, _dir, _store) = bare_mirror(cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.connect_templum(window, cx));
+        window.render_frame(cx);
+        // Enter with nothing that reads does nothing.
+        window.press("enter", cx);
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx));
+        window.input(&code, cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+        // Enter is Connect: the dialog stays and waits.
+        assert!(window.has_active_dialog(cx));
+        assert!(window.try_find("connect-connecting").is_some());
+    })
+    .unwrap();
+    pump_until(cx, "the failure in the dialog", |cx| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("connect-error").is_some()
+        })
+        .unwrap()
+    });
+    cx.update_window(handle, |_, window, cx| {
+        assert!(window.has_active_dialog(cx));
+        assert!(window.try_find("connect-connecting").is_none());
+        assert_eq!(
+            ws.read(cx).connect_result(),
+            Some(Err(format!("Couldn't reach {host}.")))
+        );
+        // A new code is a new try: the old failure goes (as the field's change is heard).
+        window.input("t", cx);
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("connect-error").is_none());
+        assert!(
+            window.try_find("connect-says").is_some(),
+            "what is wrong with it"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn cancel_or_close_while_connecting_leaves_nothing(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    use gpui_kit::test::TestWindowExt as _;
+    no_motion(cx);
+    let (code, _) = unreachable_code();
+    for button in ["connect-cancel", "connect-close"] {
+        let (handle, ws, _dir, _store) = bare_mirror(cx);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.connect_templum(window, cx));
+            window.render_frame(cx);
+            window.input(&code, cx);
+            window.click("connect-go", cx);
+            window.render_frame(cx);
+            assert_eq!(ws.read(cx).pending_connect.as_deref(), Some("r1"));
+            window.click(button, cx);
+            window.render_frame(cx);
+            assert!(!window.has_active_dialog(cx), "{button}");
+            let ws = ws.read(cx);
+            assert!(ws.pending_connect.is_none(), "{button}");
+            assert!(ws.spaces().all(|s| s.id != "r1"), "{button}");
+        })
+        .unwrap();
+    }
 }
 
 /// `pump_until`, with home publishing its state on each round: its tick doesn't run on the

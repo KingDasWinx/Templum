@@ -161,24 +161,33 @@ The sidebar gets a **Connect to a Templum…** button under **+** (a plug icon, 
 designer's call*: visible, where the person looks for workspaces). The Home's header gets the same button
 beside New workspace, and the keymap a `connect_templum` command with no default key.
 
-**The Connect dialog:**
+**The Connect dialog** (kanban card 280: a dialog of the popups' kind, [design-system.md](design-system.md#popups),
+A dialog): its header is the plug's tile, **Connect to a Templum** and what Templum to Templum is, "Work in a workspace
+of another computer as if it were here" (for **Paste a new code…**: **Paste a new code**, "For build on
+winx-desktop"); its body is a form of labelled rows; its foot says how it goes, over **Cancel** and **Connect**.
 
-- **Connection code:** a field, focused. As soon as it holds a code, a line under it says what it is:
-  "templum.example.com · checks its public certificate" or "192.168.1.5:7411 · pins Templum's certificate
-  AB:CD:…:9F", or what is wrong: "This isn't a connection code: one starts with tplc1_.", "The code is cut short: copy
-  it again whole.", "This code is from a newer Templum: update this one.", "This code's address isn't encrypted:
-  Templum connects in plain HTTP only to this computer itself."
-- **More…** (folded): **Cloudflare Access service token**, Client ID and Client Secret, for a tunnel with Cloudflare
-  Access in front (docs/api.md recommends it): every request carries them (*the designer's call*: the second lock the
-  docs recommend must not lock the mirror out). **Proxy**, for a network that only reaches out through one
-  ([The client](#the-client)).
-- Under the field, where the key goes: "The key is kept in this computer's keyring (Keychain / Credential Manager / the
-  Secret Service)." With no keyring that answers: "This computer has no keyring Templum can use: the connection lasts
-  until Templum quits." and a switch, off: **Keep the key in a file only you can read** (`0600` in the data folder),
-  with "A copy of the data folder would carry it." ([Where the key is kept](#where-the-key-is-kept)).
-- **Connect** tries it: "Connecting…"; on success the dialog closes and the remote workspace opens; a failure stays in
-  the dialog in the words of [When it isn't live](#when-it-isnt-live). The code leaves the field's memory either way, and
-  if the clipboard still holds it after a success, Templum clears it (*the designer's call*).
+- **Code:** a field, focused, in the terminal's font, its format as its placeholder (`tplc1_…`). The line under it
+  says where to make one while it is empty ("Make one on the other computer: a workspace's Edit… ▸ Share…"); as soon
+  as it holds a code, what it is, after a check: "templum.example.com · checks its public certificate" or
+  "192.168.1.5:7411 · pins Templum's certificate AB:CD:…:9F", or in red what is wrong: "This isn't a connection code:
+  one starts with tplc1_.", "The code is cut short: copy it again whole.", "This code is from a newer Templum: update
+  this one.", "This code's address isn't encrypted: Templum connects in plain HTTP only to this computer itself."
+- **Key:** where the key goes: "Kept in this computer's keyring (the Keychain / the Credential Manager / the Secret
+  Service)." With no keyring that answers, a switch, off: **Keep the key in a file only you can read** (`0600` in the
+  data folder), over "This computer has no keyring Templum can use: the connection lasts until Templum quits.", or,
+  on, "A copy of the data folder would carry it." ([Where the key is kept](#where-the-key-is-kept)).
+- **Network** (folded; beside its name what it holds, "Access token · proxy proxy.corp:8080", or "Cloudflare Access,
+  proxy" when nothing): **Client ID** and **Client Secret**, "A Cloudflare Access service token, for a tunnel with
+  Access in front.": every request carries them (*the designer's call*: the second lock the docs recommend must not
+  lock the mirror out); **Proxy**, "For a network that reaches out only through a proxy." ([The client](#the-client)).
+- **Connect** (solid, and Enter) tries it: the foot says "Connecting to templum.example.com…" beside a spinner and
+  Connect waits; on success the dialog closes and the remote workspace opens; a failure stays in the foot, in red,
+  in the words of [When it isn't live](#when-it-isnt-live), until a new code is typed. The code leaves the field's
+  memory either way, and if the clipboard still holds it after a success, Templum clears it (*the designer's call*).
+  A certificate from an authority this computer added asks in the foot, in yellow, with **Don't connect** and
+  **Connect anyway** in place of Cancel and Connect (Enter answers neither).
+- **Cancel**, Close, Esc and a press outside the dialog close it; a connection under way is given up, and nothing of
+  it is left.
 
 ### The remote workspace
 
@@ -248,7 +257,7 @@ answering are disabled.
 | Pinned, and the certificate's fingerprint differs | "winx-desktop's certificate changed since you connected. If you made a New certificate there, share again and paste the new code. If you didn't, someone may be between the two computers: don't connect." **Paste a new code…** · **Forget** | No |
 | Public, and the certificate isn't valid | "templum.example.com's certificate isn't valid: it expired / it is for another name / no authority this computer trusts signed it. Fix it where the tunnel or proxy runs, then **Try again**." A self-signed one adds: "If it is Templum's own, share Directly instead: it is pinned." | No |
 | Public, valid only through an authority this computer added | [A private authority](#a-private-authority) | No |
-| Cloudflare Access answered (a redirect to `*.cloudflareaccess.com`, or its 403) | "Cloudflare Access stands in front of templum.example.com. Add a service token in Paste a new code… ▸ More…, and allow it in the Access policy." | No |
+| Cloudflare Access answered (a redirect to `*.cloudflareaccess.com`, or its 403) | "Cloudflare Access stands in front of templum.example.com. Add a service token in Paste a new code… ▸ Network, and allow it in the Access policy." | No |
 | Something that isn't a Templum answered (HTML, a 404 without Templum's error body) | "templum.example.com didn't answer as a Templum (HTTP 404, text/html). Check that the tunnel points at port 7411." **Try again** | No |
 | Home is too old (Templum's 404 for `GET /v1/me`) | "winx-desktop runs a Templum that can't be mirrored: update it." **Try again** | No |
 | The proxy refused (anything but its 502, 503, 504, which are "home doesn't answer") | "The proxy proxy.corp:8080 refused the connection (407: it asks for a login Templum can't give)." **Try again** | No |
@@ -332,7 +341,7 @@ server doesn't send its whole chain".
   a cap of 16 MiB per event: a bigger one drops that stream, which reopens.
 - **Connections per remote,** under home's 16 per token: one event stream, at most 11 terminal streams, one each for
   calls, slow calls and typing, one spare for a reconnect's overlap.
-- **Proxies:** the Connect dialog's More… has **Proxy** (`http://proxy.corp:8080`, optional), prefilled from
+- **Proxies:** the Connect dialog's Network has **Proxy** (`http://proxy.corp:8080`, optional), prefilled from
   `HTTPS_PROXY` (or `https_proxy`, `ALL_PROXY`) unless `NO_PROXY` names the host, and kept with the remote. Through it
   the mirror opens an HTTP `CONNECT`, with Basic credentials when the proxy's URL holds them (kept in the keyring with
   the key, never in the index), then its TLS inside, end to end. The system's own proxy settings and PAC files are not
@@ -1696,18 +1705,18 @@ changed:
   `KeySource::Save`, and drops the old keys (`Mirror::drop_key`; `RemoteSpace::old_keys`, one per code replaced, even one not yet kept) once
   the newest is `Kept`, or with the remote when it is forgotten. `Keys` remembers the entries it deleted this run and
   refuses to save one: the save of a code replaced again before it finished can't bring its key back. The dialog
-  closes at once; how it goes shows in the banner. Its **More…** opens with the remote's Access Client ID and proxy
+  closes at once; how it goes shows in the banner. Its **Network** opens with the remote's Access Client ID and proxy
   address; the secrets are never shown, and what the dialog leaves empty of them (the Client Secret for the same Client
   ID and address, the proxy's login for the same proxy) stays: `KeySource::Save { from: Some(Inherit) }` makes the
   client read them from the old key and save them with the new one, so they don't pass through the UI and the old key
   is deleted only after. The Client Secret is carried over only when the new code's scheme, host and port equal the
   old key's own (`Secrets::url`, bound to it since 1b, not the index entry); otherwise it is left out and the banner
-  says "The address changed: type the Client Secret again in More…". If the old key can't be read, the client stops
+  says "The address changed: type the Client Secret again under Network.". If the old key can't be read, the client stops
   before saving (`Why::Keyring`, no `Kept`, so no key is dropped; Try again reads it again), since it may hold the
   only copy of the secret. A code pasted again before the last is kept reads from the same key the last one's Save read from
   (`holder`, `RemoteSpace::inherits`, cleared at `Kept`), the entry that holds the secret, never an entry that may not
   have been written; a connection kept nowhere has none to inherit.
-  The Access banner says "Add a service token in Paste a new code… ▸ More…" and offers that button.
+  The Access banner says "Add a service token in Paste a new code… ▸ Network" and offers that button.
 - **The banner:** the round trip is yellow past 250 ms as 1c built it, and its tooltip says the real round trip, not
   one rounded to tens (the plan's `Banner::slow` wasn't needed). Under a day the share's end is told in hours or minutes
   ("ends in 5 h: share again on winx-desktop"), else in days rounded up. The ⓘ is `NOT_MIRRORED` plus the 500-block and

@@ -721,9 +721,10 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   (`crates/templum/src/kanban.rs`) opens gpui-kit's `Dialog`, centered a tenth down the window, with a header and a
   footer of its own: no tile, title and subtitle, no Full screen or Close, no resize edges. A person meets a window
   of another kind than Git, Requests, Agents and Automations, can't make the card larger than 600 wide, and closes it
-  only with Done, Esc or a press outside. Fix: draw it with `popup::frame`, `header` (the kanban tile, "Card #40",
-  "In Doing on Board 3", Full screen, Close) and `foot` (Delete card, Done), its body as it is, keeping its ids; the
-  design system's Popups section says where a modal of this kind sits.
+  only with Done, Esc or a press outside. Fix: draw it in the dialog place card 280 made (`popup::dialog`,
+  `dialog_frame`, `dialog_header`: the kanban tile, "Card #40", "In Doing on Board 3", Close) and `foot` (Delete card,
+  Done), its body as it is, keeping its ids; the design system's Popups section, A dialog, says how. Its width (the
+  card wants more than 520) and Full screen are that card's to decide.
 - [ ] **The description's grip dragged below the card dialog's footer goes under it.** The dialog's body (gpui-kit's)
   doesn't scroll while the grip is dragged (`description_field`, `crates/templum/src/kanban.rs`): a field low in the
   body can be made taller than what shows, the grip and the field's bottom out of sight until the person lets go and
@@ -2355,9 +2356,23 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   (`workspace/mod.rs`, `Workspace::with`.) `connect_remotes` runs in a task spawned at the end of `with` (so the tests
   can swap `keys` first); until it runs, a remote with no key shows "Connecting…" for a frame. Fix: set
   `Disconnected` in `load_spaces` for an entry with no key.
-- [ ] **The Connect dialog was checked headlessly only.** (`connect_dialog.rs`.) Its layout (More… unfolded, the
-  keyring switch, a long Cloudflare Access secret, a long error) was not looked at on a display. Fix: look at it with
-  `--dev` once.
+- [ ] **Part of the Connect dialog was checked headlessly only.** (`connect_dialog.rs`.) Card 280 looked at it with
+  `--dev` (empty, a code that reads, one that doesn't, Connecting…, a failure, Network unfolded, the keyring switch,
+  light and dark), not at a long Cloudflare Access secret, a failure of several lines, Paste a new code… nor the
+  pointer's hovers. Fix: look at those once.
+- [ ] **The Connect dialog's Network section opens only with the pointer.** (`connect_dialog.rs`, `network`.) Its
+  name and chevron are a press target, not a Tab stop, as the popups' hand-made buttons aren't; a person on the
+  keyboard can't reach the Access token or the proxy (the old More… couldn't either: Tab stayed in the code's field).
+  Fix: give the toggle a focus handle with `tab_stop(true)` and Enter/Space, with a test.
+- [ ] **The Share… dialog isn't a dialog of the popups' kind, and Enter closes it.** (`share_dialog.rs`, `open`.) It
+  is gpui-kit's alert dialog as the Connect dialog was before card 280: the kit's frame and title, labels over
+  stacked fields, the kit's buttons, no Close, no press outside to close it; Enter in a field closes it without
+  making the code. Fix: build it as the Connect dialog (`popup::dialog`, `dialog_frame`, `dialog_header`, rows,
+  `foot` with Cancel and a solid Make code that Enter does), keeping its ids, with a test for Enter.
+- [ ] **In a window too short for it, a dialog scrolls whole.** (`popup.rs`, `dialog`.) gpui-kit's dialog caps its
+  height at the window's and scrolls what it holds, so the header and the foot scroll away with the body, under the
+  kit's scrollbar. Fix: cap `dialog_frame` at the room the kit leaves and let the body scroll between the header
+  and the foot, with the standard scrollbar.
 - [ ] **A remote being connected shows in the sidebar as "Connecting…" while the Connect dialog waits.**
   (`workspace/remote.rs`, `connect_code`.) It is a hidden workspace from the first moment, so its tile is there (and a
   failed connect removes it again). Fix: leave it out of the sidebar until `connect_result` is Ok.

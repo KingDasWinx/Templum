@@ -450,7 +450,7 @@ impl Life {
                             self.say(Update::Refused {
                                 about: About::Key,
                                 sentence:
-                                    "The address changed: type the Client Secret again in More…"
+                                    "The address changed: type the Client Secret again under Network."
                                         .into(),
                             });
                         }

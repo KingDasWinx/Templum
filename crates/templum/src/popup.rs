@@ -2,17 +2,19 @@
 //! drawn one way (docs/specs/design-system.md, Popups): the frame, the header across its width,
 //! the slot (its place, its resize edges, the backdrop a press outside closes it on), full screen
 //! and a form's layout. Window chrome: the canvas's zoom never scales them. Only one is open at a
-//! time, and they share one size (`Workspace::git_popup_size`).
+//! time, and they share one size (`Workspace::git_popup_size`). A dialog in the middle of the
+//! window (`dialog`) wears the same frame, header and foot.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
+use gpui_kit::component::dialog::{Dialog, DialogEntrance};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, BoxShadow, ClickEvent, Context, Div, ElementId, Entity, Focusable as _,
     FontWeight, Hsla, MouseButton, MouseDownEvent, SharedString, Stateful, TestSupportExt, Window,
-    div, point, px,
+    div, point, px, transparent_black,
 };
 use templum_canvas::Edges;
 
@@ -30,7 +32,11 @@ pub(crate) const HEADER: f32 = 55.0;
 pub(crate) const CONTENT_MAX: f32 = 680.0;
 /// A form's label column, and the height of a small field a label sits beside.
 pub(crate) const LABEL_W: f32 = 92.0;
-const FIELD_H: f32 = 24.0;
+pub(crate) const FIELD_H: f32 = 24.0;
+/// A dialog's width: a short form's.
+pub(crate) const DIALOG_W: f32 = 520.0;
+/// The frame's corners.
+const RADIUS: f32 = 12.0;
 /// What is said about things: a subtitle, a form's labels.
 const SMALL: f32 = 11.5;
 /// A search field's height: the Home's header actions'.
@@ -39,11 +45,14 @@ const SEARCH_H: f32 = 28.0;
 /// The popup's box, `w` × `h` pixels, a column: the header, then its body. Presses inside never
 /// reach the canvas below.
 pub(crate) fn frame(id: &'static str, ws: &Workspace, w: f32, h: f32) -> Stateful<Div> {
+    surface(id, ws).w(px(w)).h(px(h))
+}
+
+/// The frame without its size: a dialog's is as high as what it holds.
+fn surface(id: &'static str, ws: &Workspace) -> Stateful<Div> {
     let ui = ws.ui;
     div()
         .id(id)
-        .w(px(w))
-        .h(px(h))
         .flex()
         .flex_col()
         .overflow_hidden()
@@ -51,7 +60,7 @@ pub(crate) fn frame(id: &'static str, ws: &Workspace, w: f32, h: f32) -> Statefu
         .text_color(hsla(ws.theme.palette.foreground, 1.0))
         .border_1()
         .border_color(ui.hairline)
-        .rounded(px(12.0))
+        .rounded(px(RADIUS))
         .shadow(vec![BoxShadow {
             color: ui.shadow,
             offset: point(px(0.0), px(12.0)),
@@ -105,34 +114,7 @@ pub(crate) fn header(
     } else {
         (IconName::Maximize2, "Full screen")
     };
-    div()
-        .id(ElementId::Name(format!("{name}-header").into()))
-        .flex()
-        .items_center()
-        .flex_shrink_0()
-        .h(px(HEADER))
-        .gap(px(10.0))
-        .px(px(12.0))
-        .border_b_1()
-        .border_color(ui.hairline)
-        .child(tile)
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .min_w(px(0.0))
-                .child(
-                    div()
-                        .min_w(px(0.0))
-                        .truncate()
-                        .text_size(px(14.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(title),
-                )
-                .children(subtitle),
-        )
-        .child(div().flex_1())
+    head(ws, name, tile, title, subtitle)
         .children(actions)
         .child(
             icon_button("popup-full", icon, ui, 1.0)
@@ -154,6 +136,91 @@ pub(crate) fn header(
             .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.close_popup(window, cx)))
             .test_support(),
         )
+}
+
+/// What every header holds before its buttons: `tile`, the title over its `subtitle`, then the
+/// room that pushes the buttons to the right.
+fn head(
+    ws: &Workspace,
+    name: &'static str,
+    tile: Div,
+    title: impl IntoElement,
+    subtitle: Option<AnyElement>,
+) -> Stateful<Div> {
+    div()
+        .id(ElementId::Name(format!("{name}-header").into()))
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .h(px(HEADER))
+        .gap(px(10.0))
+        .px(px(12.0))
+        .border_b_1()
+        .border_color(ws.ui.hairline)
+        .child(tile)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .min_w(px(0.0))
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .text_size(px(14.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(title),
+                )
+                .children(subtitle),
+        )
+        .child(div().flex_1())
+}
+
+/// `popup` in a dialog in the middle of the window: gpui-kit's `Dialog` (opened with
+/// `window.open_dialog`) keeps the behavior — the backdrop a press on closes it, Esc, Enter for
+/// its `on_ok`, the keyboard kept in it and given back after — shows at once and draws nothing
+/// of its own around `popup`, a `dialog_frame`.
+pub(crate) fn dialog(dialog: Dialog, popup: impl IntoElement) -> Dialog {
+    dialog
+        .w(px(DIALOG_W))
+        .close_button(false)
+        .entrance(DialogEntrance::None)
+        .p_0()
+        .gap_0()
+        .border_0()
+        .bg(transparent_black())
+        // Its shadow, which it always draws, then follows the frame's corners.
+        .rounded(px(RADIUS))
+        .child(popup)
+}
+
+/// A dialog's box, `DIALOG_W` wide and as high as what it holds: the popups' frame.
+pub(crate) fn dialog_frame(id: &'static str, ws: &Workspace) -> Stateful<Div> {
+    surface(id, ws).w(px(DIALOG_W))
+}
+
+/// A dialog's header: the popups' without Full screen (a short form needs no more room), its
+/// Close doing `close`, what Esc does. Ids: `{name}-header`, `{name}-close`.
+pub(crate) fn dialog_header(
+    ws: &Workspace,
+    name: &'static str,
+    tile: Div,
+    title: impl IntoElement,
+    subtitle: Option<AnyElement>,
+    close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    head(ws, name, tile, title, subtitle).child(
+        icon_button(
+            ElementId::Name(format!("{name}-close").into()),
+            IconName::Close,
+            ws.ui,
+            1.0,
+        )
+        .tooltip(|window, cx| Tooltip::new("Close (Esc)").build(window, cx))
+        .on_click(close)
+        .test_support(),
+    )
 }
 
 /// `popup`, `w` × `h` pixels, over the canvas's bottom-left corner beside the sidebar, with its
