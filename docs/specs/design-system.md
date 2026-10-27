@@ -109,6 +109,18 @@ or block under it hears them first in the capture phase, so a press still picks 
 still pans the canvas. A terminal's history has its own rules for when it shows, the same look
 ([walking-skeleton.md](walking-skeleton.md#the-scrollbar-and-jump-to-the-bottom)).
 
+### Text areas
+
+*(Kanban card 258; the card dialog's description is the reference.)* A text area for real text (a description, not
+a one-line comment) grows with its text, a line at a time, from a useful height (6 lines) to a cap (16), then
+scrolls in itself: gpui-kit's `auto_grow`. Typing grows the dialog downward only. When the person may want it
+larger, it has a **grip** in its bottom-right corner: gpui-kit's resize-corner icon at 10 in `title_dim`, in a 14
+square 1 in from the corner, over the field (a press there is the grip's, not the text's), with the ns-resize cursor,
+held through the drag. The drag moves the field's bottom by the pointer's way, between a least height (64) and what
+its dialog's body can show at once; the field then keeps that height whatever its text, which scrolls in it. The
+height set is window chrome: kept as dragged, written in the index as the drag ends, drawn clamped to a smaller
+window, not in the Templum API.
+
 ### Popups
 
 *(Kanban card 217.)* Every popup over the canvas — Git, Requests, Agents and Automations today, and any new modal of

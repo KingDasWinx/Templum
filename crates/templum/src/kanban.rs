@@ -2,7 +2,7 @@
 //! none; the Boards dialog, and the dialog of an open card. Everything is drawn at the block's zoom `z`, like a
 //! terminal's text. See docs/specs/kanban.md.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
@@ -21,9 +21,10 @@ use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, BoxShadow, ClickEvent, ClipboardEntry, ClipboardItem, Context, Div,
-    DragMoveEvent, ElementId, Entity, ExternalPaths, FontWeight, Hsla, Image, MouseButton,
-    MouseDownEvent, ObjectFit, PathPromptOptions, Render, ScrollHandle, ScrollWheelEvent,
-    SharedString, Stateful, TestSupportExt, Window, div, img, point, px, relative,
+    DragMoveEvent, ElementId, EmptyView, Entity, ExternalPaths, FontWeight, Hsla, Image,
+    MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit, PathPromptOptions, Render, ScrollHandle,
+    ScrollWheelEvent, SharedString, Stateful, TestSupportExt, Window, div, img, point, px,
+    relative,
 };
 use templum_canvas::{BlockId, EDGE_ZONE, Point, Rect, Size, edge_scroll};
 
@@ -1575,6 +1576,100 @@ fn place(boards: &Boards, board: u64, held: impl Fn(&Column) -> bool) -> String 
 const DIALOG_W: f32 = 600.0;
 const SIDE: f32 = 20.0;
 
+/// The description's field (card 258): until the person sizes it, it grows with its text from
+/// `TEXT_ROWS.0` lines to `TEXT_ROWS.1`, then scrolls. Its grip sets its height, from `TEXT_MIN`
+/// to what the dialog leaves it: the window's height less `DIALOG_CHROME` (the kit's margins, the
+/// header, the footer and the body's padding), so the whole field and its section's name fit in
+/// the body at once.
+const TEXT_ROWS: (usize, usize) = (6, 16);
+const TEXT_MIN: f32 = 64.0;
+const DIALOG_CHROME: f32 = 190.0;
+
+/// The description's grip, being dragged.
+struct TextGrip;
+
+/// Where the grip was pressed (the pointer's height in the window) and, once the drag moves, the
+/// field's height then: the field follows the pointer's way from there, so a dialog that moves up
+/// as it grows doesn't run off with it.
+type Grab = Rc<Cell<(f32, Option<f32>)>>;
+
+/// The description's height `set` by the person, as the window can draw it.
+fn text_height(set: f32, window: &Window) -> f32 {
+    let room = f32::from(window.viewport_size().height) - DIALOG_CHROME;
+    set.min(room).max(TEXT_MIN)
+}
+
+/// The description's field and, in its bottom-right corner, the grip that sets its height
+/// (`card-description-grip`). The drag's end writes the height in the index, for every card's
+/// dialog.
+fn description_field(
+    ws: &Entity<Workspace>,
+    field: &Entity<TextareaState>,
+    height: Option<f32>,
+    grab: &Grab,
+    ui: Ui,
+) -> impl IntoElement {
+    let keep = {
+        let ws = ws.clone();
+        move |_: &MouseUpEvent, window: &mut Window, cx: &mut App| {
+            if cx.has_active_drag() {
+                ws.update(cx, |ws, cx| ws.write_index(window, cx));
+            }
+        }
+    };
+    let grip = div()
+        .id("card-description-grip")
+        .absolute()
+        .right(px(1.0))
+        .bottom(px(1.0))
+        .size(px(14.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        // Over the field's corner: a press there is the grip's, not the text's.
+        .occlude()
+        .cursor_ns_resize()
+        .child(
+            Icon::new(IconName::ResizeCorner)
+                .size(px(10.0))
+                .text_color(ui.title_dim),
+        )
+        // The field's scrollbar under the grip takes any press in its strip while it shows, and
+        // would jump the text: the press stops here (GPUI has already noted the drag's start).
+        .on_mouse_down(MouseButton::Left, {
+            let grab = grab.clone();
+            move |e: &MouseDownEvent, _, cx: &mut App| {
+                grab.set((f32::from(e.position.y), None));
+                cx.stop_propagation();
+            }
+        })
+        .on_drag(TextGrip, |_, _, _, cx| cx.new(|_| EmptyView))
+        // The button is let go over the grip, or anywhere else.
+        .on_mouse_up(MouseButton::Left, keep.clone())
+        .on_mouse_up_out(MouseButton::Left, keep)
+        .test_support();
+    let (ws, field_now, grab) = (ws.clone(), field.clone(), grab.clone());
+    div()
+        .id("card-description")
+        .relative()
+        .child(Textarea::new(field).when_some(height, |el, h| el.h(px(h))))
+        .child(grip)
+        .on_drag_move::<TextGrip>(move |e, window, cx| {
+            let (from, start) = grab.get();
+            let start = start.unwrap_or(f32::from(e.bounds.size.height));
+            grab.set((from, Some(start)));
+            let h = text_height(start + f32::from(e.event.position.y) - from, window);
+            ws.update(cx, |ws, cx| {
+                // Sized once, the field stops following its text: it fills the height set.
+                if ws.description_h.replace(h).is_none() {
+                    field_now.update(cx, |f, cx| f.set_auto_grow(1, 1, cx));
+                }
+                cx.notify();
+            });
+        })
+        .test_support()
+}
+
 /// A section's header in the card's dialog: its icon and name at the left and, at the right, what
 /// it holds.
 /// A mirrored card's attachments, by name and size: they are home's, so nothing here draws a
@@ -2055,15 +2150,22 @@ fn open_draft(
         outcome: Outcome::Open,
     }));
     ws.card_work = Some(open.clone());
+    // A height the person set is the field's: one line at the least, the text scrolling in it.
+    let rows = if ws.description_h.is_some() {
+        (1, 1)
+    } else {
+        TEXT_ROWS
+    };
     let ws = cx.entity();
     let title = cx.new(|cx| InputState::new(window, cx).default_value(opened.title.clone()));
     let title_focus = title.clone();
     let description = cx.new(|cx| {
         TextareaState::new(window, cx)
-            .rows(4)
+            .auto_grow(rows.0, rows.1)
             .placeholder("Add a description")
             .default_value(opened.description.clone())
     });
+    let grab: Grab = Rc::default();
     let comment = cx.new(|cx| {
         TextareaState::new(window, cx)
             .rows(2)
@@ -2175,10 +2277,11 @@ fn open_draft(
         })
     };
     // A dialog, not an alert: a press outside it asks, or closes it.
-    window.open_dialog(cx, move |dialog, _, cx| {
+    window.open_dialog(cx, move |dialog, window, cx| {
         let ws_now = ws.read(cx);
         let ui = ws_now.ui;
         let palette = ws_now.theme.palette;
+        let text_h = ws_now.description_h.map(|h| text_height(h, window));
         let space = open.borrow().space.clone();
         let boards_now = ws_now.boards_in(&space);
         // The card as it is now with the person's changes over it: an agent's changes to what
@@ -3159,7 +3262,7 @@ fn open_draft(
                             .flex_col()
                             .gap(px(8.0))
                             .child(section(ui, IconName::FileText, "Description", None))
-                            .child(Textarea::new(&description)),
+                            .child(description_field(&ws, &description, text_h, &grab, ui)),
                     )
                     .children(files)
                     .child(

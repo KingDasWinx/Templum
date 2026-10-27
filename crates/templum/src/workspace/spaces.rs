@@ -267,6 +267,7 @@ impl Workspace {
         }
         self.sidebar = index.sidebar;
         self.git_size = index.git_size.map(|s| Size::new(s.w, s.h));
+        self.description_h = index.description_h;
         self.active = index.active.min(spaces.len() - 1);
         self.space = spaces.remove(self.active);
         self.others = spaces;
@@ -878,11 +879,12 @@ impl Workspace {
                 .unwrap_or(0),
             sidebar: self.sidebar,
             git_size: self.git_size.map(|s| session::SavedSize { w: s.w, h: s.h }),
+            description_h: self.description_h,
         }
     }
 
     /// Writes the index at once: it changes only on a user's action.
-    pub(super) fn write_index(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn write_index(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(dir) = self
             .data_dir
             .as_ref()

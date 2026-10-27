@@ -2374,3 +2374,130 @@ fn a_remote_workspace_s_board_acts_write_nothing_here(cx: &mut TestAppContext) {
         "boards.json byte for byte"
     );
 }
+
+/// The open card's description field, as drawn (auto grow settles a frame after the text).
+fn description_box(handle: AnyWindowHandle, cx: &mut TestAppContext) -> (f32, f32) {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let b = window.find("card-description").bounds();
+        (f32::from(b.top()), f32::from(b.size.height))
+    })
+    .unwrap()
+}
+
+/// Types `n` lines in the field that has the keyboard, each after an Enter.
+fn type_lines(handle: AnyWindowHandle, cx: &mut TestAppContext, n: usize) {
+    for i in 0..n {
+        super::card_draft::press_key(handle, cx, "enter");
+        cx.simulate_input(handle, &format!("line{i}"));
+    }
+}
+
+/// Drags the description's grip `dy` pixels down (up when negative) and lets it go there.
+fn drag_grip(handle: AnyWindowHandle, cx: &mut TestAppContext, dy: f32) {
+    let from = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find("card-description-grip").bounds().center()
+        })
+        .unwrap();
+    let to = from + point(px(0.0), px(dy));
+    hold_drag(handle, cx, from, to);
+    release(handle, cx, to);
+}
+
+#[gpui_kit::test]
+fn the_description_starts_six_lines_high_and_grows_with_its_text_to_sixteen(
+    cx: &mut TestAppContext,
+) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (block, _, todo) = super::card_draft::empty_board(handle, &ws, cx);
+    super::card_draft::click_add(handle, cx, block, todo);
+    let (_, empty) = description_box(handle, cx);
+    super::card_draft::click_on(handle, cx, "card-description");
+    cx.simulate_input(handle, "line");
+    type_lines(handle, cx, 5);
+    assert_eq!(description_box(handle, cx).1, empty, "six lines fit");
+    type_lines(handle, cx, 4);
+    let ten = description_box(handle, cx).1;
+    assert!(ten > empty, "it grows with its text: {empty} → {ten}");
+    type_lines(handle, cx, 6);
+    let sixteen = description_box(handle, cx).1;
+    let line = (sixteen - ten) / 6.0;
+    assert!(
+        (ten - empty - 4.0 * line).abs() < 0.5,
+        "a line at a time: {empty}, {ten}, {sixteen}"
+    );
+    assert!(empty > 6.0 * line, "six lines high with nothing typed");
+    type_lines(handle, cx, 5);
+    assert_eq!(
+        description_box(handle, cx).1,
+        sixteen,
+        "past sixteen lines it scrolls"
+    );
+}
+
+#[gpui_kit::test]
+fn the_descriptions_grip_sets_its_height_within_its_bounds_for_every_card(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let (block, board, todo) = super::card_draft::empty_board(handle, &ws, cx);
+    super::card_draft::click_add(handle, cx, block, todo);
+    let (top, before) = description_box(handle, cx);
+    drag_grip(handle, cx, 120.0);
+    assert_eq!(
+        description_box(handle, cx),
+        (top, before + 120.0),
+        "its bottom follows the pointer"
+    );
+    let saved = || {
+        let crate::session::Loaded::Saved(index) = crate::session::load_index(data.path()) else {
+            panic!("no index");
+        };
+        index.description_h
+    };
+    assert_eq!(saved(), Some(before + 120.0), "written as the drag ends");
+    drag_grip(handle, cx, -1000.0);
+    assert_eq!(
+        description_box(handle, cx).1,
+        64.0,
+        "no lower than its least"
+    );
+    drag_grip(handle, cx, 336.0);
+    assert_eq!(description_box(handle, cx).1, 400.0);
+    // A window too short for it draws what fits, and gives the height set back when it grows.
+    cx.simulate_window_resize(handle, size(px(1280.), px(500.)));
+    assert_eq!(description_box(handle, cx).1, 500.0 - 190.0);
+    cx.simulate_window_resize(handle, size(px(1280.), px(800.)));
+    assert_eq!(description_box(handle, cx).1, 400.0);
+    super::card_draft::press_key(handle, cx, "escape");
+    assert!(!super::card_draft::dialog_open(handle, cx));
+    // The next card's dialog has it, and its text scrolls in it; typing still edits it.
+    super::card_draft::click_add(handle, cx, block, todo);
+    assert_eq!(description_box(handle, cx).1, 400.0);
+    cx.simulate_input(handle, "Notes");
+    super::card_draft::click_on(handle, cx, "card-description");
+    cx.simulate_input(handle, "first");
+    type_lines(handle, cx, 30);
+    assert_eq!(
+        description_box(handle, cx).1,
+        400.0,
+        "a height set doesn't grow"
+    );
+    super::card_draft::click_on(handle, cx, "card-done");
+    let card = &super::card_draft::cards(&ws, cx, board)[0];
+    assert_eq!(card.title, "Notes");
+    assert!(
+        card.description.starts_with("first\nline0\n"),
+        "{:?}",
+        card.description
+    );
+    assert!(card.description.ends_with("\nline29"));
+    // A new Templum on the same folder.
+    assert_eq!(saved(), Some(400.0));
+    let (_, again) = open_in(cx, None, Some(data.path().to_path_buf()));
+    again.read_with(cx, |ws, _| assert_eq!(ws.description_h, Some(400.0)));
+}

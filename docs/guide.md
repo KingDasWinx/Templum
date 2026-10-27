@@ -150,9 +150,10 @@ and hides the pill. The conversation is kept across restarts; **New chat** start
 The toolbar's board button (or Ctrl+Shift+K) puts a kanban block on the canvas, Trello-style. Create a board
 in it (it starts with To do, Doing and Done), or open one. Drag cards between columns and columns by their titles,
 click a card to edit its title, description and colored labels, and right-click a column or the block to rename or
-delete it. The button at the left of the block's header opens the Boards dialog: find a board, open it in the block,
-or delete it with its trash. Boards aren't tied to a canvas: any block, in any workspace, can show any board, and
-blocks showing the same board stay in sync. Boards are kept in `boards.json`, next to
+delete it. The description grows with what you write; drag the grip at its bottom-right corner to give it the height
+you like, which every card's dialog keeps. The button at the left of the block's header opens the Boards dialog: find
+a board, open it in the block, or delete it with its trash. Boards aren't tied to a canvas: any block, in any
+workspace, can show any board, and blocks showing the same board stay in sync. Boards are kept in `boards.json`, next to
 the `workspaces` folder.
 
 ## Notes

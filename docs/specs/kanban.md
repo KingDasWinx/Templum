@@ -370,7 +370,18 @@ header and the footer stay). Sizes in pixels; every color comes from the theme.
      - **Labels:** the six as round swatches (22, gap 8, `label-{name}`): a 2 ring of the label's ANSI color; the
        card's own are filled with it and checked (the terminal's background color for the check). A tooltip says
        "Toggle the red label".
-  3. **Description:** a section header (below), 8, the multi-line field (4 rows, placeholder "Add a description").
+  3. **Description:** a section header (below), 8, the multi-line field (`card-description`, placeholder "Add a
+     description"; card 258). It is 6 lines high and grows a line at a time with its text up to 16, then scrolls:
+     the dialog grows down with it (the kit keeps it in the window, and its body scrolls past that), and typing never
+     moves it otherwise. Its **grip** (`card-description-grip`), gpui-kit's resize-corner icon (10, `title_dim`) in
+     a 14 square at the field's bottom-right corner, with the ns-resize cursor (held through the drag), drags its
+     height: the field follows the pointer's way from where it was pressed, at least 64 high and at most the window's
+     height less 190 (the kit's margins, the header, the footer and the body's padding), so the field and its
+     section's name fit in the body at once. Once sized, the field keeps that height whatever its text (which
+     scrolls in it), in every card's dialog: the height set is window chrome, kept as dragged
+     (`Workspace::description_h`) and written in the index as `description_h` when the drag ends, like the Git
+     popup's `git_size`; a window too short for it draws what fits and gives it back when it grows. It is not in
+     the Templum API. The comment field keeps its 2 rows.
   4. **Attachments** (card 152, [below](#attachments-kanban-card-152)): the section header (`paperclip`) with their
      number and **Attach** at the right, then thumbnails and rows; with no data folder it is not drawn.
   5. **Checklist:** the section header with "2/5" at the right when it has items; 8; a progress bar 4 high, rounded,

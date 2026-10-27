@@ -118,6 +118,14 @@ pub(crate) struct Index {
         deserialize_with = "usable_size"
     )]
     pub git_size: Option<SavedSize>,
+    /// The card dialog's description height the person dragged it to, pixels; none until they
+    /// do, and the field grows with its text. Kept as dragged, like `git_size`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "usable_height"
+    )]
+    pub description_h: Option<f32>,
 }
 
 /// A width and a height, pixels.
@@ -134,6 +142,15 @@ fn usable_size<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SavedSize>, D::
         serde_json::from_value::<SavedSize>(serde_json::Value::deserialize(d)?)
             .ok()
             .filter(|s| s.w > 0.0 && s.h > 0.0 && s.w.is_finite() && s.h.is_finite()),
+    )
+}
+
+/// A height above zero; anything else is none, as `usable_size`.
+fn usable_height<'de, D: Deserializer<'de>>(d: D) -> Result<Option<f32>, D::Error> {
+    Ok(
+        serde_json::from_value::<f32>(serde_json::Value::deserialize(d)?)
+            .ok()
+            .filter(|h| *h > 0.0 && h.is_finite()),
     )
 }
 
@@ -295,6 +312,7 @@ impl Index {
             active: 0,
             sidebar: true,
             git_size: None,
+            description_h: None,
         }
     }
 }
@@ -1801,6 +1819,7 @@ mod tests {
             active: 1,
             sidebar: false,
             git_size: None,
+            description_h: None,
         }
     }
 
@@ -1877,6 +1896,31 @@ mod tests {
             };
             assert_eq!(read.git_size, None, "{bad}");
             assert_eq!(read.workspaces.len(), 1, "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_card_descriptions_height_reads_back_and_one_that_cant_be_used_is_none() {
+        let d = tempfile::tempdir().unwrap();
+        let mut index = two();
+        index.description_h = Some(312.5);
+        save_index(d.path(), &index).unwrap();
+        assert_eq!(load_index(d.path()), Loaded::Saved(index));
+        save_index(d.path(), &two()).unwrap();
+        let text = std::fs::read_to_string(index_path(d.path())).unwrap();
+        assert!(!text.contains("description_h"), "{text}");
+        for bad in [r#""tall""#, "null", "-40", "0", "[1]"] {
+            std::fs::write(
+                index_path(d.path()),
+                format!(
+                    r#"{{"version":1,"workspaces":[{{"id":"a","name":"A"}}],"description_h":{bad}}}"#
+                ),
+            )
+            .unwrap();
+            let Loaded::Saved(read) = load_index(d.path()) else {
+                panic!("{bad}: the list was set aside");
+            };
+            assert_eq!(read.description_h, None, "{bad}");
         }
     }
 

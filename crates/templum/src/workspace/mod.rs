@@ -1445,6 +1445,10 @@ pub struct Workspace {
     /// and written in the index; what is drawn is `git_popup_size`. Git, Requests, Agents and
     /// Automations share it (crate::popup).
     pub(crate) git_size: Option<Size>,
+    /// The card dialog's description height the person dragged its grip to, pixels (none: it
+    /// grows with its text), kept as dragged and written in the index; window chrome, like
+    /// `git_size`.
+    pub(crate) description_h: Option<f32>,
     /// What the window leaves the popups, as the last frame measured it (infinite before the
     /// first): the drag and the diff panel read it without a window.
     git_room: Size,
@@ -1988,6 +1992,7 @@ impl Workspace {
             index_frozen: false,
             sidebar: true,
             git_size: None,
+            description_h: None,
             git_room: Size::new(f32::INFINITY, f32::INFINITY),
             popup_full: false,
             cell,
