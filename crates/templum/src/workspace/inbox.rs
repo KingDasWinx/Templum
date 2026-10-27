@@ -90,8 +90,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // It is drawn over the canvas: the Home over it goes.
-        self.close_screen(window, cx);
+        // The requests are a workspace's: from the Home, the oldest one's is shown, else the one
+        // held under it.
+        if self.home_up() {
+            let oldest = self.requests_waiting().first().map(|(_, s)| s.clone());
+            let to = oldest.and_then(|s| self.order().iter().position(|o| o.id == s));
+            self.switch_to(to.unwrap_or(self.active), window, cx);
+        }
         self.inbox_open = true;
         self.git_open = false;
         self.agents_open = false;

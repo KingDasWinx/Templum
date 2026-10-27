@@ -94,8 +94,10 @@ fn open_as(
         ws.update(cx, |ws, cx| {
             ws.close_welcome(window, cx);
             ws.welcome = None;
-            ws.close_screen(window, cx);
-            ws.screen = None;
+            if ws.home_up() {
+                let held = ws.active;
+                ws.switch_to(held, window, cx);
+            }
         })
     })
     .unwrap();

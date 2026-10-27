@@ -581,10 +581,6 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   once (`tree_of`, `crates/templum/src/workspace/spaces.rs`) and two seconds later kills only what it read; a
   program that ignores the hangup and starts another meanwhile leaves that one alive. Fix: at the kill, read the
   tree again and also kill what is still in the stopped shells' sessions (Unix).
-- [ ] **The canvas under the Home still paints while the Home is up.** (`workspace/render.rs`, `area`; `home.rs`.)
-  The Home is opaque once up, but the workspace behind it keeps drawing its blocks, so an agent streaming output there
-  still costs frames nobody sees (the benches don't open the Home: they have no data folder). Fix: while the Home is
-  fully up and not fading, leave the canvas's blocks out of `area` (keep its size, so the terminals don't resize).
 - [ ] **The Home's pointer presses were checked headlessly only.** (`home.rs`: the tiles, a card's ⋯, a recent
   folder, Open folder….) On a display only its keys and looks were checked (`--dev`, keys sent to the test window
   alone): no pointer tool was at hand. Fix: click each one on a display, light and dark, beside the Git popup.

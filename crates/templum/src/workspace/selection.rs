@@ -107,7 +107,8 @@ impl Workspace {
     /// The keyboard is on the canvas, not in a field: the workspace has it (a focused terminal's
     /// keys go through it).
     pub(super) fn canvas_has_keys(&self, window: &Window) -> bool {
-        self.focus_handle.is_focused(window)
+        // On the Home its focus is the Home's.
+        !self.home_up() && self.focus_handle.is_focused(window)
     }
 
     /// Copies the selected blocks to the clipboard. False when none is selected.

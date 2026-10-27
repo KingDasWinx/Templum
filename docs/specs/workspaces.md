@@ -32,11 +32,13 @@ Terminals in the workspaces you aren't looking at keep running, so an agent keep
 ## The sidebar
 
 - **Where:** a 56 px column on the left of the window, under the title bar, next to the canvas.
-- **Home** (a house) at its top, above the tiles: opens or closes the [Home](home.md), and is pressed while it is up.
-  The sidebar stays usable beside the Home: a tile shows its workspace and closes it.
+- **Home** (a house) at its top, above the tiles: shows the [Home](home.md), Templum's first screen, in the canvas's
+  place. While the Home is shown this item is marked as the active tile is (below), and no tile is; a tile shows its
+  workspace in the Home's place.
 - **Tiles:** one per workspace, in order, 40 px square with a 10 px radius, showing the first letter of its name
   (two for a two-word name: "Side project" is "SP").
-  - The active tile has the `hover` fill, a hairline border and a 3 px accent bar on its left.
+  - The active tile (the workspace shown; none on the Home) has the `hover` fill, a hairline border and a 3 px accent
+    bar on its left.
   - Hovering any tile fills it with `hover`, and shows its full name in a tooltip.
   - A tile gets a small accent dot when the last snapshot of its workspace found Claude Code or Codex running.
   - A tile of a workspace another Templum mirrors now (a share's event stream is open) wears a small Lucide `cast`
@@ -75,20 +77,21 @@ Terminals in the workspaces you aren't looking at keep running, so an agent keep
 - **Switching:**
   - shows the other canvas at once, with its camera, blocks and focus;
   - the keyboard goes to its focused terminal;
-  - a drag in progress ends, and a block still fading out of the old canvas is dropped.
+  - a drag in progress ends, and a block still fading out of the old canvas is dropped;
+  - from the Home it is the same plain swap, to the workspace held under it too ([home.md](home.md#when-it-shows)).
 - **Hidden workspaces keep running.** Their terminals stay alive, their output is still read, and agents keep
   working. Their blocks aren't drawn, and their output doesn't wake the UI.
 - **A theme, font or terminal setting change** applies to every workspace's terminals, hidden or not.
 - **Deleting** closes the workspace's terminals and keeps its file as `<id>.json.bak`. If it was active, the one
-  before it becomes active.
-- **The title bar** shows the active workspace's name where it said "Templum".
+  before it becomes active (on the Home, the one held under it: the Home stays).
+- **The title bar** shows the active workspace's name where it said "Templum"; on the Home, a house and "Home".
 
 ## Shortcuts
 
 | Command | Linux, Windows | macOS | What it does |
 |---|---|---|---|
-| `next_workspace` | Ctrl+Tab | Ctrl+Tab | The next workspace, wrapping around |
-| `previous_workspace` | Ctrl+Shift+Tab | Ctrl+Shift+Tab | The previous one, wrapping around |
+| `next_workspace` | Ctrl+Tab | Ctrl+Tab | The next workspace, wrapping around; from the Home, the first |
+| `previous_workspace` | Ctrl+Shift+Tab | Ctrl+Shift+Tab | The previous one, wrapping around; from the Home, the last |
 | `new_workspace` | Ctrl+Shift+N | Cmd+Shift+N | Creates a workspace and switches to it |
 | `toggle_sidebar` | none | none | Hides or shows the sidebar |
 

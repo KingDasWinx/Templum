@@ -806,7 +806,7 @@ impl Workspace {
             Command::NewWorkspace => self.add_space(window, cx),
             Command::ConnectTemplum => self.connect_templum(window, cx),
             Command::ToggleSidebar => self.toggle_sidebar(window, cx),
-            Command::Workspaces => self.toggle_screen(window, cx),
+            Command::Workspaces => self.show_home(window, cx),
             Command::GoToWaiting => self.go_to_waiting(window, cx),
             Command::AllAgents => self.toggle_agents(window, cx),
             Command::Automations => self.toggle_automations(window, cx),
@@ -859,12 +859,6 @@ impl Workspace {
     ) {
         // The cursor shows again on any key.
         self.blink_on = true;
-        // The Home is over the canvas: no key reaches a block under it.
-        if self.home_up() {
-            self.home_key_from_canvas(e, window, cx);
-            cx.stop_propagation();
-            return;
-        }
         // Esc closes the usage popover.
         if self.usage_open && e.keystroke.key == "escape" {
             self.usage_open = false;

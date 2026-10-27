@@ -1102,7 +1102,7 @@ impl Workspace {
 
     /// `, shown`, `, stopped` or nothing.
     fn space_state(&self, space: &Space) -> &'static str {
-        if space.id == self.space.id {
+        if self.shown_space().is_some_and(|s| s.id == space.id) {
             ", shown"
         } else if space.stopped {
             ", stopped"

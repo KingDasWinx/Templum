@@ -271,7 +271,6 @@ impl Workspace {
         self.active = index.active.min(spaces.len() - 1);
         self.space = spaces.remove(self.active);
         self.others = spaces;
-        self.space.opened = Some(crate::notes::now());
         if no_index && !first_saved {
             // A first run: the welcome, whose closing opens the first terminal in the shell
             // picked there. Without a data folder (`--bench`) nothing is kept: no welcome.
@@ -281,8 +280,12 @@ impl Workspace {
                 self.open_first_terminal(window, cx);
             }
         } else if self.data_dir.is_some() {
-            // Every other start opens on the Home, the workspace shown last loaded behind it.
-            self.open_home(window, cx);
+            // Every other start opens on the Home; the workspace shown last waits under it,
+            // loaded, its terminals and agents running.
+            self.show_home(window, cx);
+        }
+        if !self.home_up() {
+            self.space.opened = Some(crate::notes::now());
         }
     }
 
@@ -298,35 +301,21 @@ impl Workspace {
         self.quiet = false;
     }
 
-    /// Shows workspace `to` (a position in the sidebar). What only makes sense on screen ends
-    /// with the one left: its fading blocks, its animations, a drag.
+    /// Shows workspace `to` (a position in the sidebar) in the place of the one shown, or of the
+    /// Home: from the Home the one held under it is shown too, and started when it was stopped.
     pub(crate) fn switch_to(&mut self, to: usize, window: &mut Window, cx: &mut Context<Self>) {
-        // The Home goes, the workspace shown asked for too: the person wants the canvas.
-        self.close_screen(window, cx);
-        if to == self.active || to > self.others.len() {
+        if to > self.others.len() || (to == self.active && !self.home_up()) {
             return;
         }
         // A menu for something on the canvas left behind. A welcome makes way: a first run's
         // terminal opens in the workspace it was for.
         self.menu = None;
         self.close_welcome(window, cx);
-        let left = &mut self.space;
-        // Their shells close now.
-        left.ghosts.clear();
-        left.appearing.clear();
-        left.hovered = None;
-        left.guides.clear();
-        left.flight = None;
-        left.view = left.canvas.camera;
-        left.selected_ink = None;
-        left.selected_wire = None;
-        self.drag = None;
-        self.press = None;
-        self.marked = None;
-        let current = std::mem::take(&mut self.space);
-        self.others.insert(self.active, current);
-        self.space = self.others.remove(to);
-        self.active = to;
+        // The Home left its workspace already.
+        if self.screen.take().is_none() {
+            self.leave_space();
+        }
+        self.hold_space(to);
         self.space.opened = Some(crate::notes::now());
         // A mirrored workspace has no drawing tool, and the Wire tool only while home can wire:
         // the one picked on the workspace left is let go.
@@ -346,10 +335,46 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The next (`step` 1) or previous (-1) workspace, wrapping around.
+    /// What only makes sense on screen ends with the workspace left: its fading blocks, its
+    /// animations, a drag.
+    pub(crate) fn leave_space(&mut self) {
+        let left = &mut self.space;
+        // Their shells close now.
+        left.ghosts.clear();
+        left.appearing.clear();
+        left.hovered = None;
+        left.guides.clear();
+        left.flight = None;
+        left.view = left.canvas.camera;
+        left.selected_ink = None;
+        left.selected_wire = None;
+        self.drag = None;
+        self.press = None;
+        self.marked = None;
+    }
+
+    /// Makes workspace `to` the one `space` holds, showing nothing: the one held goes back among
+    /// the others. Under the Home, it is the one the sidebar's Git opens in.
+    fn hold_space(&mut self, to: usize) {
+        if to == self.active {
+            return;
+        }
+        let current = std::mem::take(&mut self.space);
+        self.others.insert(self.active, current);
+        self.space = self.others.remove(to);
+        self.active = to;
+    }
+
+    /// The next (`step` 1) or previous (-1) workspace, wrapping around; from the Home, above them
+    /// in the sidebar, the first or the last.
     pub(super) fn cycle_space(&mut self, step: i32, window: &mut Window, cx: &mut Context<Self>) {
         let n = self.others.len() as i32 + 1;
-        let to = (self.active as i32 + step).rem_euclid(n) as usize;
+        let from = match (self.home_up(), step > 0) {
+            (true, true) => -1,
+            (true, false) => n,
+            (false, _) => self.active as i32,
+        };
+        let to = (from + step).rem_euclid(n) as usize;
         self.switch_to(to, window, cx);
     }
 
@@ -601,7 +626,13 @@ impl Workspace {
             self.make_space();
         }
         if at == self.active {
-            self.switch_to(if at > 0 { at - 1 } else { 1 }, window, cx);
+            let to = if at > 0 { at - 1 } else { 1 };
+            // The Home stays: the workspace under it changes.
+            if self.home_up() {
+                self.hold_space(to);
+            } else {
+                self.switch_to(to, window, cx);
+            }
         }
         let space = self
             .others
@@ -715,7 +746,13 @@ impl Workspace {
             return;
         }
         if at == self.active {
-            self.switch_to(if at > 0 { at - 1 } else { 1 }, window, cx);
+            let to = if at > 0 { at - 1 } else { 1 };
+            // The Home stays: the workspace under it changes.
+            if self.home_up() {
+                self.hold_space(to);
+            } else {
+                self.switch_to(to, window, cx);
+            }
         }
         let (known, accounts) = (self.known_agents(), self.known_accounts());
         // A snapshot still being written is older: it can't replace this one.
@@ -902,6 +939,11 @@ impl Workspace {
     /// Every workspace: the active one, then the hidden ones.
     pub(crate) fn spaces(&self) -> impl Iterator<Item = &Space> {
         std::iter::once(&self.space).chain(&self.others)
+    }
+
+    /// The workspace on screen: none on the Home.
+    pub(crate) fn shown_space(&self) -> Option<&Space> {
+        (!self.home_up()).then_some(&self.space)
     }
 
     /// The workspaces in the sidebar's order.

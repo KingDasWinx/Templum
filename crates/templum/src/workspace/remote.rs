@@ -2629,7 +2629,9 @@ impl Workspace {
         let vp = self.api.viewport;
         let font = self.cell.font_size;
         let full = templum_canvas::level(font, self.space.rest) == templum_canvas::Level::Full;
-        let shown = std::iter::once((true, &mut self.space))
+        // Under the Home, the workspace held is hidden as the others are.
+        let home = self.screen.is_some();
+        let shown = std::iter::once((!home, &mut self.space))
             .chain(self.others.iter_mut().map(|s| (false, s)));
         for (shown, space) in shown {
             let Some(mut remote) = space.remote.take() else {

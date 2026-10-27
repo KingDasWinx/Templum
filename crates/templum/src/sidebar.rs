@@ -43,25 +43,33 @@ pub(crate) fn render(
         .enumerate()
         .map(|(i, space)| tile(ws, i, space, cx))
         .collect();
+    // Shown, it is marked as the workspace shown is.
+    let at_home = ws.home_up();
     let home = div()
         .id("home-button")
+        .relative()
         .flex()
         .flex_shrink_0()
         .items_center()
         .justify_center()
         .size(px(TILE))
         .rounded(px(10.0))
+        .border_1()
         .cursor_pointer()
-        .when(ws.home_up(), move |el| el.bg(ui.pressed))
-        .hover(move |s| s.bg(ui.hover))
+        .map(|el| shown_or_not(el, at_home, ui))
         .active(move |s| s.bg(ui.pressed))
         .child(
             Icon::new(IconName::House)
                 .size(px(16.0))
-                .text_color(ui.title),
+                .text_color(if at_home {
+                    hsla(ws.theme.palette.foreground, 1.0)
+                } else {
+                    ui.title
+                }),
         )
+        .when(at_home, |el| el.child(shown_bar(ui.accent)))
         .tooltip(|window, cx| Tooltip::new("Home").build(window, cx))
-        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.toggle_screen(window, cx)))
+        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.show_home(window, cx)))
         .test_support();
     let plus = div()
         .id("new-workspace")
@@ -169,11 +177,41 @@ pub(crate) fn render(
         )
 }
 
+/// What the sidebar shows (the Home or a workspace) has the hover fill and a hairline; the others
+/// get the fill under the pointer.
+fn shown_or_not(
+    el: gpui_kit::Stateful<gpui_kit::Div>,
+    shown: bool,
+    ui: Ui,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    if shown {
+        el.bg(ui.hover).border_color(ui.hairline)
+    } else {
+        el.border_color(gpui_kit::transparent_black())
+            .hover(move |s| s.bg(ui.hover))
+    }
+}
+
+/// The bar at the left of what the sidebar shows, in `color`.
+fn shown_bar(color: Hsla) -> impl IntoElement {
+    div()
+        .id("shown-bar")
+        .absolute()
+        .left(px(-8.0))
+        .top(px(10.0))
+        .w(px(3.0))
+        .h(px(18.0))
+        .rounded_full()
+        .bg(color)
+        .test_support()
+}
+
 /// One workspace: its face, a bar when active (in its color, or the accent), a dot while an
 /// agent runs in it, and one when a terminal there has news. Its color tints it.
 fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) -> AnyElement {
     let ui = ws.ui;
-    let active = i == ws.active;
+    // On the Home no workspace is shown.
+    let active = i == ws.active && !ws.home_up();
     let name = SharedString::from(if let Some(remote) = space.remote.as_deref() {
         crate::mirror::tile_tip(&space.name, remote)
     } else if space.stopped {
@@ -196,17 +234,8 @@ fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) ->
         .text_size(px(14.0))
         .font_weight(FontWeight::SEMIBOLD)
         .cursor_pointer()
-        .map(|el| {
-            if active {
-                el.bg(ui.hover)
-                    .border_color(ui.hairline)
-                    .text_color(hsla(ws.theme.palette.foreground, 1.0))
-            } else {
-                el.border_color(gpui_kit::transparent_black())
-                    .text_color(ui.title)
-                    .hover(move |s| s.bg(ui.hover))
-            }
-        })
+        .map(|el| shown_or_not(el, active, ui))
+        .text_color(if active { fg } else { ui.title })
         .active(move |s| s.bg(ui.pressed))
         .child(face(
             &space.look,
@@ -216,18 +245,7 @@ fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) ->
             &ws.theme,
             if active { fg } else { ui.title },
         ))
-        .when(active, |el| {
-            el.child(
-                div()
-                    .absolute()
-                    .left(px(-8.0))
-                    .top(px(10.0))
-                    .w(px(3.0))
-                    .h(px(18.0))
-                    .rounded_full()
-                    .bg(color.unwrap_or(ui.accent)),
-            )
-        })
+        .when(active, |el| el.child(shown_bar(color.unwrap_or(ui.accent))))
         .when(space.has_agent(&ws.agents), |el| {
             el.child(
                 div()

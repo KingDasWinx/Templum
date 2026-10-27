@@ -267,6 +267,10 @@ impl Workspace {
     /// Review, on the pill that asks: the pill takes the keyboard and the chat opens at the
     /// approval.
     pub(crate) fn review_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The chat is drawn on a canvas: from the Home, the workspace held under it is shown.
+        if self.home_up() {
+            self.switch_to(self.active, window, cx);
+        }
         if !self.agent_has_keys(window, cx) {
             let input = self.agent_input(window, cx);
             self.templum_agent.back = self.space.focused;

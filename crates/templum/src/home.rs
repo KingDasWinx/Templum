@@ -1,19 +1,18 @@
 //! Home, Templum's starting point (docs/specs/home.md): what waits for the person across every
 //! workspace, each workspace as a card found by name or folder and opened with a click or Enter,
 //! and recent folders to start one from. A full-window screen (docs/specs/design-system.md,
-//! Screens): window chrome beside the sidebar, over the canvas.
+//! Screens): a place of its own beside the sidebar, drawn in the canvas's stead.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::Instant;
 
 use gpui_kit::assets::IconName;
+use gpui_kit::component::Icon;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{Icon, TITLE_BAR_HEIGHT};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, Entity, FocusHandle, FontWeight,
+    AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, Entity, Focusable as _, FontWeight,
     Hsla, KeyDownEvent, MouseButton, MouseDownEvent, ScrollHandle, SharedString, TestSupportExt,
     Window, div, point, px,
 };
@@ -21,7 +20,6 @@ use gpui_kit::{
 use crate::grid::hsla;
 use crate::keys::Command;
 use crate::menu::Target;
-use crate::motion;
 use crate::popup;
 use crate::sidebar;
 use crate::theme::Ui;
@@ -36,32 +34,13 @@ const GAP: f32 = 16.0;
 /// The most recent folders shown.
 const RECENT: usize = 6;
 
-/// The open Home, or the closed one still fading out.
+/// The Home, while it is shown. The workspace shown last stays loaded as `Workspace::space`,
+/// unseen, as a hidden one is: nothing of it is laid out or drawn.
 pub(crate) struct Screen {
-    pub since: Instant,
-    pub closing: bool,
     pub search: Entity<InputState>,
     /// The card the arrows moved to, among those shown; None: the first, until an arrow.
     pub highlight: Option<usize>,
-    /// What had the keyboard before: it gets it back.
-    pub before: Option<FocusHandle>,
     pub scroll: ScrollHandle,
-}
-
-impl Screen {
-    /// How much of the Home is up at `now`: 0 hidden, 1 all.
-    pub fn shown(&self, now: Instant) -> f32 {
-        motion::slid(self.since, self.closing, now)
-    }
-
-    /// The Home fading the other way, from where it is.
-    pub fn reversed(self, now: Instant) -> Screen {
-        Screen {
-            since: motion::turned(self.since, self.closing, now),
-            closing: !self.closing,
-            ..self
-        }
-    }
 }
 
 /// What a workspace holds, as its card tells it.
@@ -226,12 +205,9 @@ pub(crate) fn holds_words(workspaces: usize, at_work: usize) -> String {
     }
 }
 
-/// A card's foot: "Open now" for the workspace behind the Home, else "Opened 3 h ago"; None for
-/// one never opened since this was kept. Times are `notes::now`'s.
-pub(crate) fn opened_words(opened: Option<u64>, current: bool, now: u64) -> Option<String> {
-    if current {
-        return Some("Open now".into());
-    }
+/// A card's foot: "Opened 3 h ago"; None for one never opened since this was kept. Times are
+/// `notes::now`'s.
+pub(crate) fn opened_words(opened: Option<u64>, now: u64) -> Option<String> {
     opened.map(|at| format!("Opened {}", crate::notes::ago(at, now).to_lowercase()))
 }
 
@@ -316,9 +292,9 @@ fn card_shadow(ui: Ui) -> Vec<BoxShadow> {
 }
 
 impl Workspace {
-    /// The Home is up (not fading out).
+    /// The Home is shown, in the place of every workspace.
     pub(crate) fn home_up(&self) -> bool {
-        self.screen.as_ref().is_some_and(|s| !s.closing)
+        self.screen.is_some()
     }
 
     /// The width the Home has: the window's, less the sidebar's.
@@ -327,71 +303,38 @@ impl Workspace {
         f32::from(window.viewport_size().width) - left
     }
 
-    /// Opens the Home already up: Templum starts on it.
-    pub(crate) fn open_home(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.toggle_screen(window, cx);
-        if let Some(screen) = &mut self.screen {
-            screen.since = screen
-                .since
-                .checked_sub(motion::SLIDE)
-                .unwrap_or(screen.since);
-        }
-    }
-
-    /// Opens the Home, its search field taking the keyboard, or closes it. It never shows over
-    /// the welcome: the welcome makes way.
-    pub(crate) fn toggle_screen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let now = Instant::now();
-        match self.screen.take() {
-            Some(open) if !open.closing => {
-                self.screen = Some(open);
-                self.close_screen(window, cx);
-                return;
-            }
-            // Still fading out: it turns back from where it is.
-            Some(closing) => self.screen = Some(closing.reversed(now)),
-            None => {
-                let search = cx.new(|cx| {
-                    InputState::new(window, cx).placeholder("Find a workspace by name or folder")
-                });
-                cx.subscribe(&search, |ws, _, event: &InputEvent, cx| {
-                    if let InputEvent::Change = event {
-                        if let Some(screen) = &mut ws.screen {
-                            screen.highlight = None;
-                        }
-                        cx.notify();
-                    }
-                })
-                .detach();
-                self.screen = Some(Screen {
-                    since: now,
-                    closing: false,
-                    search,
-                    highlight: None,
-                    before: window.focused(cx),
-                    scroll: ScrollHandle::new(),
-                });
-            }
-        }
+    /// Shows the Home in the place of the workspace shown, its search field taking the keyboard;
+    /// shown already, the search takes it again. The workspace left goes on unseen, as a hidden
+    /// one, and its own popups (Git, Requests) close with it; Agents and Automations, of every
+    /// workspace, stay over the Home. It never shows over the welcome: the welcome makes way.
+    pub(crate) fn show_home(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         self.close_welcome(window, cx);
+        if self.screen.is_none() {
+            self.leave_space();
+            self.git_open = false;
+            self.inbox_open = false;
+            let search = cx.new(|cx| {
+                InputState::new(window, cx).placeholder("Find a workspace by name or folder")
+            });
+            cx.subscribe(&search, |ws, _, event: &InputEvent, cx| {
+                if let InputEvent::Change = event {
+                    if let Some(screen) = &mut ws.screen {
+                        screen.highlight = None;
+                    }
+                    cx.notify();
+                }
+            })
+            .detach();
+            self.screen = Some(Screen {
+                search,
+                highlight: None,
+                scroll: ScrollHandle::new(),
+            });
+        }
         if let Some(screen) = &self.screen {
             screen.search.update(cx, |s, cx| s.focus(window, cx));
         }
-        cx.notify();
-    }
-
-    /// Fades the Home out, and gives the keyboard back to what had it.
-    pub(crate) fn close_screen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.home_up() {
-            return;
-        }
-        let Some(open) = self.screen.take() else {
-            return;
-        };
-        let before = open.before.clone();
-        self.screen = Some(open.reversed(Instant::now()));
-        window.focus(before.as_ref().unwrap_or(&self.focus_handle), cx);
         cx.notify();
     }
 
@@ -416,16 +359,10 @@ impl Workspace {
             .collect()
     }
 
-    /// Shows the workspace at `at` (its position) and closes the Home.
-    fn open_card(&mut self, at: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.close_screen(window, cx);
-        self.switch_to(at, window, cx);
-    }
-
     /// The Home's keys, whoever has the keyboard: what the title bar opened over it first (the
-    /// theme picker its keys, the usage popover Esc); then Esc closes it, Up and Down move the
-    /// highlight a row, Enter opens it, Ctrl+digit jumps; Templum's own shortcuts run. False for
-    /// anything else, which is typing.
+    /// theme picker its keys, the usage popover Esc); then Esc empties the search, Up and Down
+    /// move the highlight a row, Enter opens it, Ctrl+digit jumps; Templum's own shortcuts run.
+    /// False for anything else, which is typing.
     pub(crate) fn home_key(
         &mut self,
         e: &KeyDownEvent,
@@ -447,7 +384,14 @@ impl Workspace {
         let cards = self.screen_cards(cx);
         let step = columns(content_width(self.home_room(window)));
         match k.key.as_str() {
-            "escape" if plain => self.close_screen(window, cx),
+            // The Home is a place, not a popup: Esc doesn't leave it.
+            "escape" if plain => {
+                if let Some(screen) = &self.screen {
+                    screen
+                        .search
+                        .update(cx, |s, cx| s.set_value("", window, cx));
+                }
+            }
             "up" | "down" if plain => {
                 if let Some(screen) = &mut self.screen
                     && !cards.is_empty()
@@ -464,14 +408,14 @@ impl Workspace {
             "enter" if plain => {
                 let at = self.screen.as_ref().and_then(|s| s.highlight).unwrap_or(0);
                 if let Some(&card) = cards.get(at) {
-                    self.open_card(card, window, cx);
+                    self.switch_to(card, window, cx);
                 }
             }
             _ => {
                 if let Some(to) = workspace_digit(k, cfg!(target_os = "macos"))
                     && to <= self.others.len()
                 {
-                    self.open_card(to, window, cx);
+                    self.switch_to(to, window, cx);
                 } else if let Some(command) = command.filter(|c| {
                     matches!(
                         c,
@@ -499,23 +443,14 @@ impl Workspace {
         true
     }
 
-    /// The Home's keys while its search field has them.
+    /// The Home's keys, from its search field or from wherever else on it the keyboard is (a
+    /// dialog that closed gave it back): there, anything but the Home's keys gives the search the
+    /// keyboard.
     fn on_screen_key(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.home_key(e, window, cx) {
             cx.stop_propagation();
-        }
-    }
-
-    /// A key that reached the canvas while the Home is up: the Home's keys run, and anything
-    /// else gives its search the keyboard (a terminal behind never gets it).
-    pub(crate) fn home_key_from_canvas(
-        &mut self,
-        e: &KeyDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.home_key(e, window, cx)
-            && let Some(screen) = &self.screen
+        } else if let Some(screen) = &self.screen
+            && !screen.search.read(cx).focus_handle(cx).is_focused(window)
         {
             screen.search.update(cx, |s, cx| s.focus(window, cx));
         }
@@ -611,7 +546,6 @@ impl Workspace {
                     .first()
                     .map(|(w, s)| (s.clone(), w.key));
                 if let Some((space, key)) = oldest {
-                    self.close_screen(window, cx);
                     self.show_request(&space, key, window, cx);
                 }
             }
@@ -685,18 +619,15 @@ impl Workspace {
     }
 }
 
+/// The Home, in the canvas's place beside the sidebar.
 pub(crate) fn render(
     ws: &Workspace,
     screen: &Screen,
-    now: Instant,
     window: &Window,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
-    let shown = screen.shown(now);
-    let left = if ws.sidebar { sidebar::WIDTH } else { 0.0 };
-    let room = f32::from(window.viewport_size().width) - left;
-    let width = content_width(room);
+    let width = content_width(ws.home_room(window));
     let fg = hsla(ws.theme.palette.foreground, 1.0);
     let rows = ws.agent_rows();
     let at_work = rows.iter().filter(|r| r.doing.works()).count();
@@ -881,8 +812,7 @@ pub(crate) fn render(
     let column = div()
         .w(px(width))
         .mx_auto()
-        // It rises into place as it fades in.
-        .pt(px(40.0 + (1.0 - shown) * 24.0))
+        .pt(px(40.0))
         .pb(px(48.0))
         .flex()
         .flex_col()
@@ -904,21 +834,18 @@ pub(crate) fn render(
         .children(recent);
     div()
         .id("screen")
-        .absolute()
-        .top(TITLE_BAR_HEIGHT)
-        .left(px(left))
-        .right_0()
-        .bottom_0()
-        // Nothing under it gets the pointer; fading out, it lets the canvas have it at once.
-        .when(!screen.closing, |el| el.occlude())
-        .bg(ui.canvas.opacity(shown))
+        .relative()
+        .flex_1()
+        .overflow_hidden()
+        // The canvas's keyboard, while the canvas isn't drawn: a key never reaches a block.
+        .track_focus(&ws.focus_handle)
+        .bg(ui.canvas)
         .text_color(fg)
         .on_key_down(cx.listener(Workspace::on_screen_key))
         .child(
             div()
                 .relative()
                 .size_full()
-                .opacity(shown)
                 .child(
                     div()
                         .id("home-scroll")
@@ -1006,7 +933,7 @@ fn waiting_tile(ws: &Workspace, wait: Wait, n: usize, cx: &mut Context<Workspace
 }
 
 /// One workspace's card: its tile, name and folder, what it holds, its agents and when it was
-/// last opened; its menu at the top right; the one behind the Home ringed.
+/// last opened; its menu at the top right.
 fn card(
     ws: &Workspace,
     space: &Space,
@@ -1016,7 +943,6 @@ fn card(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
-    let active = at == ws.active;
     let id = space.id.clone();
     let shortcut = (at < 9).then(|| {
         let key = if cfg!(target_os = "macos") {
@@ -1076,8 +1002,6 @@ fn card(
         .gap(px(10.0))
         .p(px(16.0))
         .rounded(px(12.0))
-        // Opaque: the active card's ring is a shadow, which a see-through fill would show
-        // through, blue behind the text.
         .bg(ui.surface)
         .border_1()
         .cursor_pointer()
@@ -1088,15 +1012,7 @@ fn card(
             |el| el.opacity(0.45),
         )
         .map(|el| {
-            if active {
-                el.border_color(ui.accent).shadow(vec![BoxShadow {
-                    color: ui.ring,
-                    offset: point(px(0.0), px(0.0)),
-                    blur_radius: px(0.0),
-                    spread_radius: px(2.0),
-                    inset: false,
-                }])
-            } else if highlighted {
+            if highlighted {
                 el.border_color(ui.hover_border)
                     .bg(ui.surface.blend(ui.hover))
                     .shadow(card_shadow(ui))
@@ -1175,7 +1091,7 @@ fn card(
                 .test_support(),
         )
         .children(agents)
-        .children(opened_words(space.opened, active, wall).map(|words| {
+        .children(opened_words(space.opened, wall).map(|words| {
             div()
                 .id(ElementId::Name(
                     format!("space-card-opened-{}", space.id).into(),
@@ -1189,7 +1105,7 @@ fn card(
         .when_some(shortcut, |el, tip| {
             el.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         })
-        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| ws.open_card(at, window, cx)))
+        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| ws.switch_to(at, window, cx)))
         .on_mouse_down(
             MouseButton::Right,
             cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
@@ -1284,21 +1200,17 @@ mod tests {
     #[test]
     fn a_card_says_when_it_was_opened() {
         let now = 1_000_000;
+        assert_eq!(opened_words(None, now), None);
         assert_eq!(
-            opened_words(Some(now - 10), true, now).as_deref(),
-            Some("Open now")
-        );
-        assert_eq!(opened_words(None, false, now), None);
-        assert_eq!(
-            opened_words(Some(now - 3 * 3600), false, now).as_deref(),
+            opened_words(Some(now - 3 * 3600), now).as_deref(),
             Some("Opened 3 h ago")
         );
         assert_eq!(
-            opened_words(Some(now - 100_000), false, now).as_deref(),
+            opened_words(Some(now - 100_000), now).as_deref(),
             Some("Opened yesterday")
         );
         assert_eq!(
-            opened_words(Some(now - 10), false, now).as_deref(),
+            opened_words(Some(now - 10), now).as_deref(),
             Some("Opened just now")
         );
     }

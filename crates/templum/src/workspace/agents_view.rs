@@ -557,8 +557,6 @@ impl Workspace {
 
     /// Opens the popup with the keyboard in its search; the Git popup and the inbox close.
     pub(crate) fn open_agents(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // It is drawn over the canvas: the Home over it goes.
-        self.close_screen(window, cx);
         self.agents_open = true;
         self.inbox_open = false;
         self.git_open = false;

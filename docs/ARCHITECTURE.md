@@ -235,10 +235,10 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   canvas's bottom center, never scaled by the zoom
   ([specs/templum-agent.md](specs/templum-agent.md#what-a-person-sees), its look:
   [specs/templum-agent-look.md](specs/templum-agent-look.md)).
-- `sidebar.rs`: the Home button, the workspaces' tiles, a workspace's face (its image, icon or initials, in its
+- `sidebar.rs`: the Home item (marked while the Home is shown), the workspaces' tiles, a workspace's face (its image, icon or initials, in its
   color) and the Git and inbox buttons at its foot;
-  `home.rs`: the Home, where Templum starts (what waits for the person, the workspaces' cards, search, keys,
-  dragging to reorder, recent folders; [specs/home.md](specs/home.md)); `space_dialog.rs`: a workspace's look and its
+  `home.rs`: the Home, where Templum starts, a screen in the canvas's place (what waits for the person, the
+  workspaces' cards, search, keys, dragging to reorder, recent folders; [specs/home.md](specs/home.md)); `space_dialog.rs`: a workspace's look and its
   Edit… dialog ([specs/cockpit.md](specs/cockpit.md#6-the-workspaces-screen)).
 - `welcome.rs`: the welcome a first run opens over a frosted canvas (each block a soft shadow of its shape: GPUI has
   no backdrop blur), five pages whose settings are the panel's rows (`settings/welcome.rs`); the first terminal
@@ -317,7 +317,11 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   file. A write that fails keeps its edits for the next try; the poll saves them before reloading a file changed by
   hand.
 - The workspace on screen is `Workspace::space`; the hidden ones (`others`) keep their terminals running, unarmed so
-  their output never wakes the UI. The sidebar (`sidebar.rs`) switches them by swapping. `session.rs` keeps their
+  their output never wakes the UI. The sidebar (`sidebar.rs`) switches them by swapping. The Home (`home.rs`,
+  `Workspace::screen`) is shown in the canvas's place: `space` then holds the workspace shown last, unseen like a
+  hidden one (`render.rs` doesn't build `canvas_area`, the Home's root holds the canvas's focus), and `shown_space`
+  is none; `switch_to` leaves the Home, and `hold_space` changes the one held while the Home stays (a delete or a
+  stop from the Home). `session.rs` keeps their
   order, names and looks in `workspaces/index.json` ([specs/workspaces.md](specs/workspaces.md)). A stopped one
   (`Space::stopped`) has no blocks: its canvas waits in `Space::saved`, which the snapshots never write over, and
   `switch_to` restores it as a start does. Its processes end through `templum_terminal::tree` (read before the

@@ -25,6 +25,11 @@ impl Workspace {
     /// or closes. A workspace without one yet gets one on the folder it works in; with no folder
     /// known, the folder dialog asks.
     pub(crate) fn toggle_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Git is a workspace's: from the Home, the one held under it is shown (started if it was
+        // stopped).
+        if self.home_up() {
+            self.switch_to(self.active, window, cx);
+        }
         if self.why_not(Deed::Git("look")).is_some() {
             return;
         }
@@ -61,8 +66,6 @@ impl Workspace {
         if self.why_not(Deed::Git("look")).is_some() || self.space.git.is_none() {
             return;
         }
-        // It is drawn over the canvas: the Home over it goes.
-        self.close_screen(window, cx);
         let Some(git) = self.space.git_mut() else {
             return;
         };

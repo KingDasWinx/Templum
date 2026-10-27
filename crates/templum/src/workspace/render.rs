@@ -265,154 +265,17 @@ fn paint_guides(
     }
 }
 
-impl Render for Workspace {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(mut hook) = self.on_frame.take()
-            && hook(self, window, cx)
-        {
-            self.on_frame = Some(hook);
-        }
-        // Settings changes apply here, where the window is at hand; the save waits for them to settle.
-        if let Some(config) = self.pending.take() {
-            self.apply_config(config, window, cx);
-            self._save = cx.spawn_in(window, async move |ws, cx| {
-                cx.background_executor().timer(SAVE_DELAY).await;
-                ws.update_in(cx, |ws, window, cx| ws.save_or_notify(window, cx))
-                    .ok();
-            });
-        }
-        let fade = transition_with_status(
-            "theme-ui",
-            self.theme.ui,
-            Transition::new(motion::THEME),
-            window,
-            cx,
-        );
-        // Blending ends a rounding error away from the theme: take the theme's own colors.
-        self.ui = match fade.status {
-            MotionStatus::Running | MotionStatus::Delayed => fade.value,
-            MotionStatus::Idle | MotionStatus::Finished => self.theme.ui,
-        };
-        // The focused terminal's painting sets it again this frame, if its cursor blinks.
-        self.cursor_blinks = false;
-        if self.keep_dead_starts() {
-            super::persist::say_unstarted(window, cx);
-        }
-        let exited: Vec<(BlockId, Option<String>)> = self
-            .space
-            .terminals()
-            .filter(|(_, pane)| pane.term.exited() && !pane.died_starting())
-            .map(|(id, pane)| (id, pane.term.killed().then(|| pane.term.title())))
-            .collect();
-        // Nothing left to lose: no question.
-        for (id, killed) in exited {
-            // Its block closes: say why it went (docs/specs/shells.md#a-scope-for-each-terminal).
-            if let Some(title) = killed {
-                let message = format!(
-                    "The terminal “{title}” was stopped by the system, most likely for \
-                     using too much memory"
-                );
-                eprintln!("templum: {message}");
-                super::show_notification(
-                    window,
-                    cx,
-                    gpui_kit::component::notification::Notification::warning(message),
-                );
-            }
-            self.remove_block(id, window, cx);
-        }
-        self.hear(window, cx);
-        self.watch_agents(window.is_window_active(), cx.background_executor().now());
-        // A tool call whose block is gone is withdrawn (docs/specs/connections.md).
-        self.drop_orphans(cx);
-
-        let vp = self.viewport(window);
-        self.api.viewport = vp;
-        // Grid mode's tiles fill the area as it is now: the window or the sidebar may have changed.
-        if let Some(grid) = &mut self.space.grid {
-            grid.area = super::tiling::grid_area(vp);
-            self.retile();
-        }
-        let tiled = self.space.grid.is_some();
-        if self.space.pristine
-            && let Some(b) = self.space.canvas.bounds()
-        {
-            let z = self.space.canvas.camera.zoom();
-            self.space.canvas.camera.origin = Point::new(
-                b.x + b.w / 2.0 - vp.w / 2.0 / z,
-                b.y + b.h / 2.0 - vp.h / 2.0 / z,
-            );
-        }
-        // Animations: drop the finished ones, and keep frames coming while any runs.
-        let now = Instant::now();
-        if self.drag_edge(vp, now) {
-            window.request_animation_frame();
-        }
-        self.space
-            .appearing
-            .retain(|_, since| motion::progress(*since, now, motion::OPEN) < 1.0);
-        self.space
-            .ghosts
-            .retain(|g| motion::progress(g.since, now, motion::CLOSE) < 1.0);
-        if let Some(panel) = &self.settings {
-            let t = motion::progress(panel.since, now, motion::SLIDE);
-            if t < 1.0 {
-                window.request_animation_frame();
-            } else if panel.closing {
-                self.settings = None;
-            }
-        }
-        if let Some(screen) = &self.screen {
-            let t = motion::progress(screen.since, now, motion::SLIDE);
-            if t < 1.0 {
-                window.request_animation_frame();
-            } else if screen.closing {
-                self.screen = None;
-            }
-        }
-        if let Some(welcome) = &self.welcome {
-            let t = motion::progress(welcome.since, now, motion::SLIDE);
-            if t < 1.0 {
-                window.request_animation_frame();
-            } else if welcome.closing {
-                self.welcome = None;
-            }
-        }
-        if !self.space.appearing.is_empty() || !self.space.ghosts.is_empty() {
-            window.request_animation_frame();
-        }
-        // The view glides to the camera. Anything that moved the camera itself (a drag, the
-        // startup centering) ends the flight: the view is then the camera.
-        self.space.view = match self.space.flight {
-            Some((flight, since)) if flight.to == self.space.canvas.camera => {
-                let t = motion::progress(since, now, motion::FLIGHT);
-                if t < 1.0 {
-                    window.request_animation_frame();
-                    flight.at(motion::slide(t))
-                } else {
-                    self.space.flight = None;
-                    self.space.canvas.camera
-                }
-            }
-            _ => {
-                self.space.flight = None;
-                self.space.canvas.camera
-            }
-        };
-        // The level of detail changes only at rest (docs/specs/level-of-detail.md, section 1).
-        if self.space.flight.is_none() {
-            self.space.rest = self.space.view.zoom();
-        }
-        // The remote workspaces' terminals to stream follow what is in view.
-        let now = Instant::now();
-        let held = self.expire_holds(now);
-        if let Some(due) = [self.stream_terminals(now), held]
-            .into_iter()
-            .flatten()
-            .min()
-        {
-            self.stream_at(due, window, cx);
-        }
+impl Workspace {
+    /// The canvas of the workspace shown: its blocks in view, its wires and drawings, the layers
+    /// the tools put over them, and the toolbar.
+    fn canvas_area(
+        &mut self,
+        vp: Size,
+        now: Instant,
+        tiled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let visible: Vec<_> = self
             .space
             .canvas
@@ -569,7 +432,7 @@ impl Render for Workspace {
             .filter(|_| !tiled)
             .map(|b| self.space.view.rect_to_screen(b));
         let swapping = self.swap_overlay(cx);
-        let area = div()
+        div()
             .id("workspace")
             .relative()
             .flex_1()
@@ -724,7 +587,157 @@ impl Render for Workspace {
             // Not live: the blocks keep their last frames under a veil.
             .children(crate::mirror::veil(self))
             .when(!tiled, |el| el.child(toolbar::render(self, cx)))
-            .children(crate::mirror::banner(self, cx));
+            .children(crate::mirror::banner(self, cx))
+            .test_support()
+            .into_any_element()
+    }
+}
+
+impl Render for Workspace {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(mut hook) = self.on_frame.take()
+            && hook(self, window, cx)
+        {
+            self.on_frame = Some(hook);
+        }
+        // Settings changes apply here, where the window is at hand; the save waits for them to settle.
+        if let Some(config) = self.pending.take() {
+            self.apply_config(config, window, cx);
+            self._save = cx.spawn_in(window, async move |ws, cx| {
+                cx.background_executor().timer(SAVE_DELAY).await;
+                ws.update_in(cx, |ws, window, cx| ws.save_or_notify(window, cx))
+                    .ok();
+            });
+        }
+        let fade = transition_with_status(
+            "theme-ui",
+            self.theme.ui,
+            Transition::new(motion::THEME),
+            window,
+            cx,
+        );
+        // Blending ends a rounding error away from the theme: take the theme's own colors.
+        self.ui = match fade.status {
+            MotionStatus::Running | MotionStatus::Delayed => fade.value,
+            MotionStatus::Idle | MotionStatus::Finished => self.theme.ui,
+        };
+        // The focused terminal's painting sets it again this frame, if its cursor blinks.
+        self.cursor_blinks = false;
+        if self.keep_dead_starts() {
+            super::persist::say_unstarted(window, cx);
+        }
+        let exited: Vec<(BlockId, Option<String>)> = self
+            .space
+            .terminals()
+            .filter(|(_, pane)| pane.term.exited() && !pane.died_starting())
+            .map(|(id, pane)| (id, pane.term.killed().then(|| pane.term.title())))
+            .collect();
+        // Nothing left to lose: no question.
+        for (id, killed) in exited {
+            // Its block closes: say why it went (docs/specs/shells.md#a-scope-for-each-terminal).
+            if let Some(title) = killed {
+                let message = format!(
+                    "The terminal “{title}” was stopped by the system, most likely for \
+                     using too much memory"
+                );
+                eprintln!("templum: {message}");
+                super::show_notification(
+                    window,
+                    cx,
+                    gpui_kit::component::notification::Notification::warning(message),
+                );
+            }
+            self.remove_block(id, window, cx);
+        }
+        self.hear(window, cx);
+        self.watch_agents(window.is_window_active(), cx.background_executor().now());
+        // A tool call whose block is gone is withdrawn (docs/specs/connections.md).
+        self.drop_orphans(cx);
+
+        let vp = self.viewport(window);
+        self.api.viewport = vp;
+        // Grid mode's tiles fill the area as it is now: the window or the sidebar may have changed.
+        if let Some(grid) = &mut self.space.grid {
+            grid.area = super::tiling::grid_area(vp);
+            self.retile();
+        }
+        let tiled = self.space.grid.is_some();
+        if self.space.pristine
+            && let Some(b) = self.space.canvas.bounds()
+        {
+            let z = self.space.canvas.camera.zoom();
+            self.space.canvas.camera.origin = Point::new(
+                b.x + b.w / 2.0 - vp.w / 2.0 / z,
+                b.y + b.h / 2.0 - vp.h / 2.0 / z,
+            );
+        }
+        // Animations: drop the finished ones, and keep frames coming while any runs.
+        let now = Instant::now();
+        if self.drag_edge(vp, now) {
+            window.request_animation_frame();
+        }
+        self.space
+            .appearing
+            .retain(|_, since| motion::progress(*since, now, motion::OPEN) < 1.0);
+        self.space
+            .ghosts
+            .retain(|g| motion::progress(g.since, now, motion::CLOSE) < 1.0);
+        if let Some(panel) = &self.settings {
+            let t = motion::progress(panel.since, now, motion::SLIDE);
+            if t < 1.0 {
+                window.request_animation_frame();
+            } else if panel.closing {
+                self.settings = None;
+            }
+        }
+        if let Some(welcome) = &self.welcome {
+            let t = motion::progress(welcome.since, now, motion::SLIDE);
+            if t < 1.0 {
+                window.request_animation_frame();
+            } else if welcome.closing {
+                self.welcome = None;
+            }
+        }
+        if !self.space.appearing.is_empty() || !self.space.ghosts.is_empty() {
+            window.request_animation_frame();
+        }
+        // The view glides to the camera. Anything that moved the camera itself (a drag, the
+        // startup centering) ends the flight: the view is then the camera.
+        self.space.view = match self.space.flight {
+            Some((flight, since)) if flight.to == self.space.canvas.camera => {
+                let t = motion::progress(since, now, motion::FLIGHT);
+                if t < 1.0 {
+                    window.request_animation_frame();
+                    flight.at(motion::slide(t))
+                } else {
+                    self.space.flight = None;
+                    self.space.canvas.camera
+                }
+            }
+            _ => {
+                self.space.flight = None;
+                self.space.canvas.camera
+            }
+        };
+        // The level of detail changes only at rest (docs/specs/level-of-detail.md, section 1).
+        if self.space.flight.is_none() {
+            self.space.rest = self.space.view.zoom();
+        }
+        // The remote workspaces' terminals to stream follow what is in view.
+        let now = Instant::now();
+        let held = self.expire_holds(now);
+        if let Some(due) = [self.stream_terminals(now), held]
+            .into_iter()
+            .flatten()
+            .min()
+        {
+            self.stream_at(due, window, cx);
+        }
+        // The Home in the canvas's place: no block of the workspace under it is laid out or drawn.
+        let area = match &self.screen {
+            Some(screen) => crate::home::render(self, screen, window, cx),
+            None => self.canvas_area(vp, now, tiled, window, cx),
+        };
         let picker = self
             .picker
             .as_ref()
@@ -768,15 +781,23 @@ impl Render for Workspace {
         }
         let full = open && self.templum_agent.full;
         let waiting = self.templum_agent.approvals.len();
-        let approval = self.templum_agent.approvals.first().map(|a| {
-            let width = if open {
-                crate::chat::panel::approval_width(vp.w, full)
-            } else {
-                640.0_f32.min(vp.w - 32.0)
-            };
-            crate::chat::approval::render(self, a, (1, waiting), width, window, cx)
-        });
-        let pill = (!tiled || open)
+        // The Templum Agent works on the canvas: not on the Home, where a notification says what
+        // it asks (`tell_approval`).
+        let home = self.home_up();
+        let approval = self
+            .templum_agent
+            .approvals
+            .first()
+            .filter(|_| !home)
+            .map(|a| {
+                let width = if open {
+                    crate::chat::panel::approval_width(vp.w, full)
+                } else {
+                    640.0_f32.min(vp.w - 32.0)
+                };
+                crate::chat::approval::render(self, a, (1, waiting), width, window, cx)
+            });
+        let pill = (!home && (!tiled || open))
             .then(|| crate::chat::pill::render(self, vp.w, open, window, cx))
             .flatten();
         let agent = match (open, pill) {
@@ -808,10 +829,6 @@ impl Render for Workspace {
                 .justify_center()
                 .child(pill)
         });
-        let screen = self
-            .screen
-            .as_ref()
-            .map(|s| crate::home::render(self, s, now, window, cx));
         let welcome = self
             .welcome
             .as_ref()
@@ -850,7 +867,6 @@ impl Render for Workspace {
             .children(popup)
             // Under what the title bar opens: the settings, the theme picker, the usage popover.
             .children(welcome)
-            .children(screen)
             .children(panel)
             .children(picker)
             .children(usage)

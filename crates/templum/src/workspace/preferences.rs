@@ -941,8 +941,7 @@ impl Workspace {
             .ok();
         })
         .detach();
-        // The panel would open under the screen; it has everything the welcome has.
-        self.close_screen(window, cx);
+        // The panel has everything the welcome has.
         self.close_welcome(window, cx);
         // Closing the welcome may have started a change, which is the reading then.
         self.load_autostart(cx);

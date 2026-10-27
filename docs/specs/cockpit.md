@@ -176,7 +176,7 @@ separated by hairlines:
   | `new_editor` | Ctrl+Shift+E | Cmd+Shift+E | The editor's folder dialog |
   | `new_git` | Ctrl+Shift+G | Cmd+Shift+G | The workspace's Git popup, or closes it |
   | `new_docker` | Ctrl+Shift+D | Cmd+Shift+D | A Docker block |
-  | `workspaces` | Ctrl+Shift+O | Cmd+Shift+O | Home ([home.md](home.md)), or closes it |
+  | `workspaces` | Ctrl+Shift+O | Cmd+Shift+O | Home ([home.md](home.md)) |
 
 - The toolbar is hidden while the settings panel is open on a window narrower than 900 px, so they don't overlap.
 - With a drawing tool or the hand on, a layer over the blocks takes the pointer, as the Alt layer does; Ctrl+wheel
@@ -338,21 +338,21 @@ still holds there.
 ### Opening it
 
 The sidebar's **Home** button (`house`) at its top, above the tiles; the workspace's name in the title bar; and the
-`workspaces` command. Where it is drawn and how it moves: [home.md](home.md#when-it-shows) and
+`workspaces` command. Where it is drawn and how it is left: [home.md](home.md#when-it-shows) and
 [design-system.md](design-system.md#screens).
 
 ### The screen
 
 - **Header, cards, tiles and recent folders:** [home.md](home.md#what-it-holds). The cards keep this section's order,
-  look and live words ("3 terminals · 1 note", the agents running found by the last snapshot), with the active card's
-  `accent` border and ring.
+  look and live words ("3 terminals · 1 note", the agents running found by the last snapshot); no card is marked
+  active, as on the Home no workspace is shown.
 - **A remote workspace's card** (a mirror of another computer's workspace) says "Mirror of winx-desktop · live · 3
   terminals" and "1 Claude Code working", and the header has **Connect to a Templum…** (the keymap's
   `connect_templum`, no default key). On its canvas a banner tells the state of the connection (live, reconnecting, or
   why it stopped) and a veil dims its frozen blocks while it isn't live
   ([templum-to-templum.md](templum-to-templum.md)).
 - **A mirrored workspace's card** wears the sidebar tile's cast mark and tooltip.
-- **Click a card:** switches to it and closes the Home. **Right-click, or its ⋯:** Open, Edit…, Stop (see
+- **Click a card:** shows its workspace in the Home's place. **Right-click, or its ⋯:** Open, Edit…, Stop (see
   [Stopping a workspace](#stopping-a-workspace)), Delete… (disabled for the last one, with the same confirmation as
   the sidebar). A sidebar tile's right-click menu is the same.
 - **The keyboard:** the search field has it. Typing filters; Up and Down move the highlight a row (Left and Right

@@ -213,7 +213,9 @@ are Unix seconds.
 **Workspaces and the Home.** A workspace has `opened`, when it was last opened (shown) in Templum, in Unix seconds:
 null for one not opened since Templum kept it. It is what the Home's cards say ("Opened 3 h ago"); the Home's other
 counts are the state's too: the blocks' `agent.state` (`needs_you`, `done`), `requests` and `automations[].last`. The
-Home itself is window chrome, like the popups: it isn't in the state and no tool opens it; `show` closes it.
+Home is a screen in place of a workspace's canvas, where Templum starts: while it is shown, `app.shown` is null, no
+workspace has `shown: true` and `view` is null (`event: view` sends `null`). No tool opens it; `show` leaves it for the
+workspace (or the block's), a stopped one started.
 
 **Agents and schedules.** An agent's block has `agent.task`, the task it works on:
 `{"id":"t7","text":"…","by":"b7k2m","since":1761560000}` (`text` at most 2,000 characters; `by` the block that handed
@@ -428,7 +430,7 @@ or flown), only while a stream is open.
 `GET /v1/events?view=true` also sends `event: view` each time the shown workspace's camera changes: `data` is
 `{"workspace":"w3","x":120,"y":40,"w":1280,"h":720,"zoom":1.0}`, the world rectangle its canvas shows (its camera, and
 the canvas's size at the last paint) and its zoom (one of the zoom steps, from 0.01 to 3), or `null` when the shown workspace isn't one the token sees. The
-state has the same `view` (null before the first paint, and in grid mode, where the canvas shows tiles). `view=false` or none leaves it out; any other value is `400`.
+state has the same `view` (null before the first paint, in grid mode, where the canvas shows tiles, and on the Home). `view=false` or none leaves it out; any other value is `400`.
 
 - **Ids** are `<run>-<n>`; `run` is random at each start of the server. `Last-Event-ID` (EventSource sends it by itself)
   of this run gets a fresh `snapshot`, then the notices after it that Templum still keeps (the last 256, at most an hour

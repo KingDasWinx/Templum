@@ -65,12 +65,14 @@ one to switch, drag one to reorder, **+** to add one. The button at the left of 
 sidebar. Terminals in the workspaces you aren't looking at keep running, so an agent keeps working while you look
 elsewhere; a green dot on a tile means Claude Code or Codex is running in it.
 
-- **Home** is where Templum starts, with the workspace you left loaded behind it (Esc goes back to it). It shows
+- **Home** is where Templum starts: a screen of its own, in place of a workspace's canvas (the workspaces keep
+  running unseen). Choose a workspace to go to it: its card, its tile, Ctrl+1–9 or Ctrl+Tab. It shows
   what waits for you across every workspace (agents that need you or finished, requests, automations that went
   wrong: press one to open it where it is), a card per workspace with what it holds ("3 terminals · 1 note", "2
   Claude Code running", "Opened 3 h ago"), and recent folders to start a workspace from. Type to find a workspace by
-  name or folder, Up/Down and Enter to open it, drag cards to reorder. The house atop the sidebar, the workspace's
-  name in the title bar and Ctrl+Shift+O open it again.
+  name or folder (Esc empties the search), Up/Down and Enter to open it, drag cards to reorder. The house atop the
+  sidebar, the workspace's name in the title bar and Ctrl+Shift+O show it again. Agents, Automations and Settings
+  open over it; Requests and Git take you to a workspace.
 - **Edit…** (right-click a tile or a card) names a workspace and gives it a color, a Lucide icon or an image, and a
   folder: new terminals start there. Its **Share…** lets another computer's Templum mirror the workspace live and work in it.
 - **Connect to a Templum…** (the plug under **+**) pastes a share's code and opens another computer's workspace here:

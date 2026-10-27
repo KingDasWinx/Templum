@@ -1,6 +1,7 @@
 //! The integrated title bar: on the left the sidebar's button, the workspace's name in the
-//! middle, and on the right the zoom level (click: back to 100%), the theme picker and the
-//! settings. Blocks are added from the toolbar at the bottom of the canvas.
+//! middle ("Home" on the Home), and on the right the zoom level (click: back to 100%; not on the
+//! Home, which has no canvas), the theme picker and the settings. Blocks are added from the
+//! toolbar at the bottom of the canvas.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{Icon, TitleBar};
@@ -16,6 +17,7 @@ use crate::workspace::Workspace;
 
 pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
     let ui = ws.ui;
+    let home = ws.home_up();
     let zoom = zoom_label(ws.space.canvas.camera.zoom());
     let closing = cx.entity();
     TitleBar::new()
@@ -56,23 +58,32 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
             button("workspace-name", ui)
                 .gap(px(6.0))
                 .font_weight(FontWeight::MEDIUM)
-                .when(
-                    ws.space.look.icon.is_some() || ws.space.look.image.is_some(),
-                    |el| {
-                        el.child(sidebar::face(
-                            &ws.space.look,
-                            &ws.space.name,
-                            14.0,
-                            14.0,
-                            &ws.theme,
-                            ui.title,
-                        ))
-                    },
-                )
-                .child(ws.space.name.clone())
-                .on_click(
-                    cx.listener(|ws, _: &ClickEvent, window, cx| ws.toggle_screen(window, cx)),
-                )
+                .map(|el| {
+                    if home {
+                        return el
+                            .child(
+                                Icon::new(IconName::House)
+                                    .size(px(14.0))
+                                    .text_color(ui.title),
+                            )
+                            .child(div().id("title-home").child("Home").test_support());
+                    }
+                    el.when(
+                        ws.space.look.icon.is_some() || ws.space.look.image.is_some(),
+                        |el| {
+                            el.child(sidebar::face(
+                                &ws.space.look,
+                                &ws.space.name,
+                                14.0,
+                                14.0,
+                                &ws.theme,
+                                ui.title,
+                            ))
+                        },
+                    )
+                    .child(ws.space.name.clone())
+                })
+                .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.show_home(window, cx)))
                 .test_support(),
         )
         .child(
@@ -86,14 +97,14 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
                 .children(crate::update::pill(ws, cx))
                 .children(api_pill(ws, cx))
                 .children(crate::usage::meter(ws, cx))
-                .child(
+                .children((!home).then(|| {
                     button("zoom-level", ui)
                         .child(zoom)
                         .on_click(
                             cx.listener(|ws, _: &ClickEvent, window, cx| ws.zoom_reset(window, cx)),
                         )
-                        .test_support(),
-                )
+                        .test_support()
+                }))
                 .child(
                     button("theme-button", ui)
                         .child(

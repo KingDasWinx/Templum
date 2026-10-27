@@ -56,7 +56,8 @@ impl Workspace {
             app: AppView {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 api: 1,
-                shown: Some(self.space.id.clone()),
+                // None on the Home: no workspace is.
+                shown: self.shown_space().map(|s| s.id.clone()),
             },
             workspaces: spaces
                 .iter()
@@ -65,7 +66,7 @@ impl Workspace {
                     name: space.name.clone(),
                     folder: space.folder.as_ref().map(|f| f.display().to_string()),
                     color: space.look.color.clone(),
-                    shown: space.id == self.space.id,
+                    shown: self.shown_space().is_some_and(|s| s.id == space.id),
                     stopped: space.stopped,
                     icon: space
                         .look
@@ -292,10 +293,11 @@ impl Workspace {
     }
 
     /// What the shown workspace's canvas shows: the world rectangle at its camera and the canvas's
-    /// size at the last paint; None before the first, and in grid mode (tiles, not the canvas).
+    /// size at the last paint; None before the first, in grid mode (tiles, not the canvas) and on
+    /// the Home.
     fn view_of_shown(&self) -> Option<ViewView> {
         let (viewport, camera) = (self.api.viewport, &self.space.canvas.camera);
-        if viewport.w <= 0.0 || viewport.h <= 0.0 || self.space.grid.is_some() {
+        if viewport.w <= 0.0 || viewport.h <= 0.0 || self.space.grid.is_some() || self.home_up() {
             return None;
         }
         let zoom = camera.zoom();
