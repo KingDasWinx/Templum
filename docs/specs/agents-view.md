@@ -185,6 +185,11 @@ Two lines (*the orchestrator's call*):
 
 *The designer's call:* the state's words take the color of their dot (Done the accent, as the badge).
 
+*(Card 222.)* A row lays its parts out side by side, as Automations' rows do (design-system.md, Popups): on the first
+line the block's title gives way first, cut with an ellipsis, then the agent's name (at most 110 px, cut too), the
+context at the right; on the second what it works on is cut before the state and its age. Nothing is drawn over a
+row: its actions are the details' foot.
+
 ### The details
 
 *(Card 222: drawn as the Requests detail and the Automations editor are, design-system.md, Popups.)* The selected

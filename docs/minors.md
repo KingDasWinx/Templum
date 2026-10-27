@@ -2162,6 +2162,11 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   `scrollbar_over` (`crates/templum/src/agents_view.rs`, `detail`): a tall details column (many subagents, a long
   task) gives no hint that it goes on. Fix: keep a `ScrollHandle` for it in the Workspace and draw `scrollbar_over`.
 
+- [ ] **A group's header stands 28 px under the row above it.** The list is a `uniform_list`, whose items share one
+  height, so a header is a row's 48 px with its name at the bottom (`crates/templum/src/agents_view.rs`, `list`):
+  twice the 14 px Automations leaves over a group's name. Fix: gpui's variable-height `list` (`ListState`), or a
+  header drawn in the first row of its group.
+
 ## Popups
 
 - [ ] **Git stays "open" across a workspace switch.** The sidebar is out of the popups' backdrop

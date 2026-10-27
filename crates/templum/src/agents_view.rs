@@ -35,6 +35,8 @@ const SMALL: f32 = 11.5;
 const TASK_LINES: usize = 3;
 /// The details' sides, as the Automations editor's.
 const PAD: f32 = 16.0;
+/// The most pixels of a row's agent name: the block's title gives way first.
+const AGENT_W: f32 = 110.0;
 
 /// The popup, `w` by `h` pixels: the list of every agent at the left, the selected one at the
 /// right.
@@ -123,8 +125,8 @@ fn list(
                 format!("agents-chip-{}", show.name()).into(),
             ))
             .flex()
-            .gap(px(5.0))
-            .px(px(8.0))
+            .gap(px(4.0))
+            .px(px(6.0))
             .py(px(3.0))
             .rounded(px(6.0))
             .text_size(px(SMALL))
@@ -230,7 +232,7 @@ fn list(
             div()
                 .flex()
                 .flex_wrap()
-                .gap(px(4.0))
+                .gap(px(2.0))
                 .px(px(12.0))
                 .pb(px(8.0))
                 .children(chips),
@@ -351,18 +353,21 @@ fn agent_row(ws: &Workspace, row: &AgentRow, now: Instant) -> gpui_kit::Stateful
                 .child(dot)
                 .child(
                     div()
+                        .min_w(px(0.0))
                         .truncate()
                         .font_weight(FontWeight::MEDIUM)
                         .child(row.title.clone()),
                 )
                 .child(
                     div()
-                        .flex_1()
+                        .flex_shrink_0()
+                        .max_w(px(AGENT_W))
                         .truncate()
                         .text_size(px(SMALL))
                         .text_color(ui.title_dim)
                         .child(row.agent.clone()),
                 )
+                .child(div().flex_1())
                 .children(row.context.clone().map(|context| {
                     div()
                         .flex_shrink_0()
@@ -377,7 +382,7 @@ fn agent_row(ws: &Workspace, row: &AgentRow, now: Instant) -> gpui_kit::Stateful
                 .gap(px(6.0))
                 .text_size(px(SMALL))
                 .text_color(ui.title_dim)
-                .child(div().flex_1().truncate().child(about))
+                .child(div().flex_1().min_w(px(0.0)).truncate().child(about))
                 .child(
                     div()
                         .flex_shrink_0()

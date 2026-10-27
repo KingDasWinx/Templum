@@ -155,6 +155,8 @@ them and never redraws its own frame.
   a card the content's width under its section's name, with no label. An action with words on the item shown (Go to
   terminal) is a button of the foot, the one Enter does solid. Its content and its foot share their sides: 16 px, as
   the Automations editor's (Requests keeps its request balloon's 18).
+- **Filter chips** (Agents): over a list, 12 px from its sides as its rows' words; a chip is its name and its count, 6
+  px at its sides, 2 px from the next; the chosen one on `ui.pressed`. They wrap when the list is narrow.
 - **Colors:** the theme's tokens only (`ui.surface`, `hairline`, `hover`, `card`, `accent`, `title_dim`, `shadow`) and
   the palette's yellow and red for what waits or failed: a popup adds no color.
 
