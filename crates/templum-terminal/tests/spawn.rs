@@ -438,7 +438,9 @@ fn inspect_reads_the_session_an_agent_was_started_on() {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let found = inspect(&[term.processes()], &known()).pop().unwrap();
-        if found.agent.as_deref() == Some("pi") {
+        // macOS can name the process before its arguments can be read, just after its exec: a
+        // later pass reads them, as Templum's own inspections, which run again, do.
+        if found.agent.as_deref() == Some("pi") && found.session.is_some() {
             assert_eq!(found.session.as_deref(), Some(id));
             break;
         }
