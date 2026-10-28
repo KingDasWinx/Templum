@@ -245,16 +245,6 @@ fn next_and_previous_go_from_the_home_to_the_first_and_the_last(cx: &mut TestApp
 fn the_search_finds_a_workspace_by_name_or_folder(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     three(handle, &ws, cx);
-    let folder = tempfile::tempdir().unwrap();
-    let web = folder.path().join("storefront");
-    std::fs::create_dir(&web).unwrap();
-    cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| {
-            ws.edit_space("w3", "Web", Look::default(), Some(web.clone()), window, cx)
-        })
-    })
-    .unwrap()
-    .unwrap();
     open_home(handle, cx);
     act(handle, cx, |w, cx| {
         assert!(w.try_find("space-card-default").is_some());
@@ -266,6 +256,18 @@ fn the_search_finds_a_workspace_by_name_or_folder(cx: &mut TestAppContext) {
         assert!(w.try_find("space-card-w3").is_none());
         w.press("escape", cx);
     });
+    // Its folder comes after the search by name: a temporary folder's path can hold "ap"
+    // (Windows' AppData, a random name).
+    let folder = tempfile::tempdir().unwrap();
+    let web = folder.path().join("storefront");
+    std::fs::create_dir(&web).unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.edit_space("w3", "Web", Look::default(), Some(web.clone()), window, cx)
+        })
+    })
+    .unwrap()
+    .unwrap();
     act(handle, cx, |w, cx| {
         assert!(
             w.try_find("space-card-w3").is_some(),
