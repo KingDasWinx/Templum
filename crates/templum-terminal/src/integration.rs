@@ -362,6 +362,7 @@ mod tests {
     /// and it moves the shell to a folder. Skipped when the shell isn't installed.
     #[cfg(unix)]
     mod shells {
+        use std::cell::Cell;
         use std::time::{Duration, Instant};
 
         use super::*;
@@ -371,6 +372,9 @@ mod tests {
             dir: tempfile::TempDir,
             /// Where the startup file moves the shell.
             start: tempfile::TempDir,
+            /// Whether the shell spawned here tells when each command ends (OSC 133 C and D):
+            /// bash before 4.4 has no PS0, so no C.
+            tells_ends: Cell<bool>,
         }
 
         impl Home {
@@ -378,6 +382,7 @@ mod tests {
                 Self {
                     dir: tempfile::tempdir().unwrap(),
                     start: tempfile::tempdir().unwrap(),
+                    tells_ends: Cell::new(true),
                 }
             }
 
@@ -427,6 +432,7 @@ mod tests {
                     return None;
                 };
                 let path = path.to_string_lossy().into_owned();
+                self.tells_ends.set(program != "bash" || bash_has_ps0());
                 let home = self.dir.path();
                 let injection = inject(&path, &args(a), &install(home).unwrap(), None).unwrap();
                 let mut command = vec![
@@ -613,23 +619,24 @@ mod tests {
                         .replace("{name}", name)
                 };
                 let finished = term.status().finished;
-                term.write(&b"echo ready\r"[..]);
+                type_line(term, home, "echo ready");
                 wait(term, "echo to end", |t| {
                     t.status().finished > finished
                         && t.status().last.map(|o| o.code) == Some(Some(0))
                 });
-                term.write(format!("{name} run 'a b'\r").into_bytes());
+                type_line(term, home, &format!("{name} run 'a b'"));
                 wait_var(term, home, name, OPENCODE_CONFIG, &["run", "a b"]);
                 wait(term, &format!("{name}'s exit code"), |t| {
                     t.status().last.map(|o| o.code) == Some(Some(3))
                 });
                 // The shell itself never had it.
-                term.write(format!("{}\r", fill(syntax.bare, "")).into_bytes());
+                type_line(term, home, &fill(syntax.bare, ""));
                 wait_var(term, home, name, "unset", &[]);
                 // The person's own wins.
-                term.write(format!("{}\r{name} x\r", fill(syntax.set, "mine")).into_bytes());
+                type_line(term, home, &fill(syntax.set, "mine"));
+                type_line(term, home, &format!("{name} x"));
                 wait_var(term, home, name, "mine", &["x"]);
-                term.write(format!("{}\r", fill(syntax.unset, "")).into_bytes());
+                type_line(term, home, &fill(syntax.unset, ""));
             }
         }
 
@@ -654,13 +661,14 @@ mod tests {
                 ),
             ];
             for (line, want) in lines {
-                term.write(format!("{line}\r").into_bytes());
+                type_line(term, home, line);
                 wait_var(term, home, "qwen", QWEN_SETTINGS, &want);
             }
             let set = syntax.set.replace("{var}", var).replace("{value}", "mine");
-            term.write(format!("{set}\rqwen\r").into_bytes());
+            type_line(term, home, &set);
+            type_line(term, home, "qwen");
             wait_var(term, home, "qwen", "mine", &[QWEN_WORDS]);
-            term.write(format!("{}\r", syntax.unset.replace("{var}", var)).into_bytes());
+            type_line(term, home, &syntax.unset.replace("{var}", var));
         }
 
         /// Waits until the fake `name` ran, and checks it got `want`, then deletes what it wrote.
@@ -678,16 +686,30 @@ mod tests {
         }
 
         /// Once the startup file's folder is reported, types `line`, which runs the fake `name`,
-        /// pressing Enter again until it ran: PowerShell can drop the first Enter.
+        /// pressing Enter again until it ran: PowerShell can drop the first Enter. Where the
+        /// shell tells, waits for it to end too (`type_line`).
         fn type_first(term: &Terminal, home: &Home, line: &str, name: &str) {
             wait(term, "the startup file's folder", |t| {
                 same(t.processes().reported, home.start.path())
             });
+            let ended = term.status().finished;
             term.write(format!("{line}\r").into_bytes());
             let file = home.dir.path().join(format!("{name}.args"));
-            wait_pressing(term, "the first line to run", Some(b"\r"), |_| {
-                file.exists()
+            wait_pressing(term, "the first line to run", Some(b"\r"), |t| {
+                file.exists() && (!home.tells_ends.get() || t.status().finished > ended)
             });
+        }
+
+        /// Types `line` at the prompt and, where the shell tells, waits for it to end, as a person
+        /// does before typing the next one: typed while a command runs, a line's Enter reaches
+        /// the shell as a line feed, which PowerShell's line editor drops, running the line into
+        /// the next (`Remove-Item Env:Xqwen`). Enter is pressed again until it ended.
+        fn type_line(term: &Terminal, home: &Home, line: &str) {
+            let ended = term.status().finished;
+            term.write(format!("{line}\r").into_bytes());
+            if home.tells_ends.get() {
+                wait_pressing(term, line, Some(b"\r"), |t| t.status().finished > ended);
+            }
         }
 
         /// An account's command (`claudinho`) typed at the prompt of a shell started `with_agents`,
@@ -704,7 +726,7 @@ mod tests {
                 &home.account_folder(),
                 &[&claude[..], &["hi"]].concat(),
             );
-            term.write(&b"claude\r"[..]);
+            type_line(term, home, "claude");
             wait_var(term, home, "claude", "unset", &claude);
         }
 
@@ -768,10 +790,11 @@ mod tests {
                 ),
             ];
             for (line, name, want) in lines {
-                term.write(format!("{line}\r").into_bytes());
+                type_line(term, home, line);
                 wait_args(term, home, name, &want);
             }
-            term.write(format!("{unset}\rclaude hi\r").into_bytes());
+            type_line(term, home, unset);
+            type_line(term, home, "claude hi");
             wait_args(term, home, "claude", &["hi"]);
         }
 
@@ -785,13 +808,13 @@ mod tests {
             if status {
                 // The last command (an agent's) exited 3 too: one that exits 0 first.
                 let finished = term.status().finished;
-                term.write(&b"echo ready\r"[..]);
+                type_line(term, home, "echo ready");
                 wait(term, "echo to end", |t| {
                     t.status().finished > finished
                         && t.status().last.map(|o| o.code) == Some(Some(0))
                 });
             }
-            term.write(&b"copilot\r"[..]);
+            type_line(term, home, "copilot");
             wait_args(term, home, "copilot", &words);
             if status {
                 wait(term, "copilot's exit code", |t| {
@@ -824,10 +847,11 @@ mod tests {
                 ),
             ];
             for (line, want) in lines {
-                term.write(format!("{line}\r").into_bytes());
+                type_line(term, home, &line);
                 wait_args(term, home, "copilot", &want);
             }
-            term.write(format!("{unset}\rcopilot x\r").into_bytes());
+            type_line(term, home, unset);
+            type_line(term, home, "copilot x");
             wait_args(term, home, "copilot", &["x"]);
         }
 
@@ -852,10 +876,11 @@ mod tests {
                 ("pi install npm:x".to_string(), vec!["install", "npm:x"]),
             ];
             for (line, want) in lines {
-                term.write(format!("{line}\r").into_bytes());
+                type_line(term, home, &line);
                 wait_args(term, home, "pi", &want);
             }
-            term.write(format!("{unset}\rpi x\r").into_bytes());
+            type_line(term, home, unset);
+            type_line(term, home, "pi x");
             wait_args(term, home, "pi", &["x"]);
         }
 
@@ -1384,7 +1409,7 @@ mod tests {
             };
             type_first(&term, &home, "codex hi", "codex");
             wait_args(&term, &home, "codex", &["mine", "hi"]);
-            term.write(&b"claude hi\r"[..]);
+            type_line(&term, &home, "claude hi");
             wait_args(&term, &home, "claude", &["hi"]);
         }
 
