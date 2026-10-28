@@ -782,7 +782,8 @@ fn a_quick_call_is_answered_while_a_slow_one_runs() {
 #[test]
 fn calls_waiting_when_the_attempt_drops_are_refused_once() {
     let (text, token) = share_token(Scope::Full, "w3");
-    let fake = fake(vec![token], |_| {});
+    // Home's name is the computer's own unless set: set, it is the same on every machine.
+    let fake = fake(vec![token], |options| options.computer = "winx".into());
     let mirror = live_on(&fake, &text);
     fake.hold_tool("show");
     let calls: Vec<_> = (0..3)
