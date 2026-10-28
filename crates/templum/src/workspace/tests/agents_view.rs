@@ -870,13 +870,19 @@ fn the_selection_follows_the_agent(cx: &mut TestAppContext) {
 fn arrows_enter_and_esc(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     set_active(handle, true, cx);
-    agent(handle, &ws, cx, 0);
+    let first = agent(handle, &ws, cx, 0);
     agent(handle, &ws, cx, 1);
     hidden_agent(handle, &ws, cx);
+    // Ordered by their states, not by their titles: a Windows terminal gets its title (the
+    // program's path) whenever ConPTY sends it, which moved one above the other mid-test.
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(first.0).unwrap().state = Some(AgentState::Working)
+    });
     frame(handle, cx);
     open_agents(handle, &ws, cx);
     let rows = ws.read_with(cx, |ws, _| ws.listed_agents());
     assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].terminal, first.1);
     let at = |cx: &mut TestAppContext| selected(&ws, cx);
     assert_eq!(at(cx), Some(rows[0].terminal.clone()));
     press(handle, cx, "down");
