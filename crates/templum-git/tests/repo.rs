@@ -2369,6 +2369,7 @@ fn set_author_writes_the_repository_s_own_config_when_not_global() {
 
 /// Runs `f` on a thread and fails, rather than hangs, when it doesn't return: a read of a
 /// device never ends.
+#[cfg(unix)]
 fn within<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
