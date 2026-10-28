@@ -7127,7 +7127,7 @@ dependencies = [
 
 [[package]]
 name = "templum"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "dunce",
@@ -7157,7 +7157,7 @@ dependencies = [
 
 [[package]]
 name = "templum-agent"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "futures",
  "serde",
@@ -7167,7 +7167,7 @@ dependencies = [
 
 [[package]]
 name = "templum-api"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "apple-native-keyring-store",
  "base64 0.22.1",
@@ -7198,11 +7198,11 @@ dependencies = [
 
 [[package]]
 name = "templum-canvas"
-version = "0.1.4"
+version = "0.2.0"
 
 [[package]]
 name = "templum-git"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -7211,7 +7211,7 @@ dependencies = [
 
 [[package]]
 name = "templum-mcp"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "futures",
  "serde",
@@ -7222,7 +7222,7 @@ dependencies = [
 
 [[package]]
 name = "templum-terminal"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "alacritty_terminal",
  "async-io",
@@ -7238,7 +7238,7 @@ dependencies = [
 
 [[package]]
 name = "templum-update"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "semver",
@@ -7252,7 +7252,7 @@ dependencies = [
 
 [[package]]
 name = "templum-usage"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "junction",

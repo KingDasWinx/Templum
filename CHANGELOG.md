@@ -1,5 +1,95 @@
 # Changelog
 
+## 0.2.0
+
+### Features
+
+- Far away, a block's name reads past its card and hides only where names collide
+- A workspace's menu lists Edit, Stop and Delete without icons
+- A clearer Connect to a Templum dialog, where Enter connects and Cancel stops a connection
+- A calm search beside the workspaces it finds
+- Stopping the workspace you're in shows the nearest running one, or the Home when none runs
+- The Home is a screen of its own, in place of a workspace's canvas, and Templum opens on it
+- A card's description grows with what you write, and its grip gives it the height you like
+- Templum starts on a Home: what waits for you in every workspace, your workspaces and recent folders
+- A scrollbar over a terminal's history, and "N lines below" to jump back to the live screen
+- Zoom out past 25%, down to 1%, with titles still readable
+- Zoom out down to 1%, where blocks show their title, then only their shape and status dot
+- Drop the line of keys under the Templum Agent's field; Enter, Shift+Enter and Esc work as before
+- Drop the Screen section from an agent's details; Go to terminal shows its screen
+- Lay an agent's details out as the other popups: a summary card, then Work, Cost and Screen, each label beside its words
+- Show where a request comes from and why in a card, labels beside the words
+- Lay the editor out in sections, each label beside its field
+- Draw every popup alike, resizable, full screen and closed by a press outside
+- Make, edit, rename, color, reopen, close and delete notes on a mirrored workspace
+- The Git popup's folder menu on a mirrored workspace lists home's recent folders
+- Rename a checklist, reorder its items and show another one from a mirrored workspace
+- Choose any of home's shells in Add ▸ Terminal on a mirrored workspace
+- Home's agents, automations, schedules and requests on a mirror, with home's automations running only at home
+- The Git popup works on a workspace mirrored from another computer, reading and acting on home's repositories
+- Drive Git at home through the API with a scoped git tool that shares the Git popup's jobs
+- Checklists, notes and drawings of a workspace mirrored from another computer show live, and its checklists are checked and edited from the mirror
+- Boards of a workspace mirrored from another computer show live and are acted on from the mirror
+- Scroll back, find and use the mouse in a terminal mirrored from another computer
+- Add, close and wire blocks, open home's agents and hand them a task from a mirrored workspace
+- A mirrored workspace calls home through one bounded queue that says what happened to each call, shows home's notices, and dims what home or the share can't do yet
+- Type into, move and answer for a workspace mirrored from another computer, and paste a new code when its share changes
+- A workspace shared from another computer shows live on this canvas, view-only, after pasting its code in Connect to a Templum…
+- The client a Templum uses to mirror another one's workspace, over a pinned or public HTTPS link
+- Share a workspace with another computer from its Edit… dialog, with a code shown once
+- Watch a terminal live and type into it from another computer, through the Templum API
+- Reach every part of Templum from another computer or your phone, over HTTPS with tokens
+- Give the Templum Agent a new look: a quiet chat with bubbles, tool rows that open and a growing composer
+- Run them when an agent finishes or needs you, or when a command ends
+- Run a prompt, a command, an agent or a notification at the times you choose
+- See every agent of every workspace in one list: who needs you, who finished, who works
+- Write standing instructions for your agents
+- Attach files and images to a card
+- Answers from other agents wait for your unsent text and arrive in one message
+- A sidebar button counts what agents ask and pulses when a request arrives, and notifications open the inbox
+- An inbox answers what agents ask, and terminals show a notice instead of a balloon
+- An agent's question can say why it asks
+- The Templum Agent's chat goes full screen, and its model is picked from its header or Settings
+- Selected blocks move from anywhere on them, inside a box drawn around the selection, like Figma
+- The title bar's limits refresh when they're shown, the popover opens or an answer ends, and every Claude account shows by its own name
+- A long checklist shows a scrollbar, and keeps its scroll through zooms
+- A card is created only on Done, and leaving a card with changes asks to discard, save a draft or save
+- Limits say how long until they reset, "in 3 days 4 hours", and the title bar's meter shows it too
+- A Claude Code subagent opens in its own block beside its parent
+- A quiet "Copied" shows where an automatic copy was made
+- Show an agent's questions one at a time, under a tab each
+- Copy a terminal selection to the clipboard as the mouse is let go, on by default
+- A click outside an open card closes it, keeping what was typed
+
+### Fixes
+
+- Read a body of the wrong type before refusing it, as an oversize one
+- On macOS, show that a shell ended when something was typed into it as it ended
+- On macOS, mount the new version's disk image again while macOS says it's busy
+- A mirror's banner shows its words on the line of its buttons, a slow round trip too
+- Restart Templum by itself when its window freezes after the computer sleeps
+- Hide crowded far labels instead of piling them up
+- New workspace opens its dialog, and only Create makes the workspace
+- When every workspace was stopped, the one shown last stays stopped after a restart
+- An agent's row in the Agents view shows its folder in your home as ~/…
+- The Agents and Requests details show a folder in your home as ~/…
+- The first wheel step or Shift+PageUp back over a mirrored shell goes back once home's history has come
+- Keep an agent's name beside a long block title in its row, and the filter chips on one line
+- Put Run now, Duplicate and Delete on the selected automation's card, never over a row's words
+- Fullscreen works on a mirrored workspace from its button, its menu item and its shortcut, and keeps home's blocks where they belong
+- A terminal that runs out of memory is stopped alone, not the whole of Templum
+- The Templum Agent stops showing it works once a turn took the messages sent during it
+- An agent reading another's screen no longer takes its input's faint suggestion for text its person typed
+- A dead key cancelled with Backspace no longer freezes the terminal's typing
+- Custom's items keep their words whole when one says why it can't be shared
+- A Claude Code stays busy while its subagents work, and its task ends with its real answer
+- A task handed to an agent still starting waits until it is ready
+- Delegate presses Enter again when Codex or Copilot CLI left the task in their input
+
+### Performance
+
+- Settings ▸ Agents stays smooth: agents are looked for when it opens, not every frame
+
 ## 0.1.4
 
 ### Features
