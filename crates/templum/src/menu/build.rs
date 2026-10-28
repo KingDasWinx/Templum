@@ -1666,27 +1666,19 @@ impl Items {
                     })
                     .disabled(active),
                 )
-                .item(item(
-                    ws,
-                    "Edit…",
-                    Some(IconName::Pencil),
-                    move |ws, window, cx| crate::space_dialog::open(ws, &edit_id, window, cx),
-                ))
+                .item(item(ws, "Edit…", None, move |ws, window, cx| {
+                    crate::space_dialog::open(ws, &edit_id, window, cx)
+                }))
                 .item(item(
                     ws,
                     if live { "Disconnect" } else { "Connect" },
-                    Some(IconName::Plug),
+                    None,
                     move |ws, window, cx| ws.toggle_remote(&toggle_id, window, cx),
                 ))
                 .separator()
-                .item(item(
-                    ws,
-                    "Forget…",
-                    Some(IconName::Delete),
-                    move |ws, window, cx| {
-                        crate::mirror::forget_dialog(ws, &forget_id, window, cx);
-                    },
-                ))
+                .item(item(ws, "Forget…", None, move |ws, window, cx| {
+                    crate::mirror::forget_dialog(ws, &forget_id, window, cx);
+                }))
             }
             Items::Space {
                 id,
@@ -1714,62 +1706,54 @@ impl Items {
                     })
                     .disabled(active),
                 )
-                .item(item(
-                    ws,
-                    "Edit…",
-                    Some(IconName::Pencil),
-                    move |ws, window, cx| crate::space_dialog::open(ws, &id, window, cx),
-                ))
+                .item(item(ws, "Edit…", None, move |ws, window, cx| {
+                    crate::space_dialog::open(ws, &id, window, cx)
+                }))
                 .separator()
                 .item(
-                    item(ws, "Stop", Some(IconName::Power), move |ws, window, cx| {
+                    item(ws, "Stop", None, move |ws, window, cx| {
                         ws.stop_space(&stop_id, window, cx)
                     })
                     .disabled(!stoppable),
                 )
                 .item(
-                    item(
-                        ws,
-                        "Delete…",
-                        Some(IconName::Delete),
-                        move |_, window, cx| {
-                            let ws = cx.entity();
-                            let id = delete_id.clone();
-                            if unsaved.is_empty() {
-                                prompt::confirm(
-                                    format!("Delete {delete_name}?"),
-                                    why.clone(),
-                                    "Delete",
-                                    move |window, cx| {
-                                        ws.update(cx, |ws, cx| ws.delete_space(&id, window, cx))
-                                    },
-                                    window,
-                                    cx,
-                                );
-                                return;
-                            }
-                            // Its editors have changed files: save them, or not, first.
-                            let (saver, save_id) = (ws.clone(), id.clone());
-                            prompt::save_or_discard(
+                    item(ws, "Delete…", None, move |_, window, cx| {
+                        let ws = cx.entity();
+                        let id = delete_id.clone();
+                        if unsaved.is_empty() {
+                            prompt::confirm(
                                 format!("Delete {delete_name}?"),
-                                format!("{why} Unsaved: {}", unsaved.join(", ")),
-                                move |window, cx| {
-                                    saver.update(cx, |ws, cx| {
-                                        let saved = ws.save_spaces(Some(&save_id), window, cx);
-                                        if saved {
-                                            ws.delete_space(&save_id, window, cx);
-                                        }
-                                        saved
-                                    })
-                                },
+                                why.clone(),
+                                "Delete",
                                 move |window, cx| {
                                     ws.update(cx, |ws, cx| ws.delete_space(&id, window, cx))
                                 },
                                 window,
                                 cx,
                             );
-                        },
-                    )
+                            return;
+                        }
+                        // Its editors have changed files: save them, or not, first.
+                        let (saver, save_id) = (ws.clone(), id.clone());
+                        prompt::save_or_discard(
+                            format!("Delete {delete_name}?"),
+                            format!("{why} Unsaved: {}", unsaved.join(", ")),
+                            move |window, cx| {
+                                saver.update(cx, |ws, cx| {
+                                    let saved = ws.save_spaces(Some(&save_id), window, cx);
+                                    if saved {
+                                        ws.delete_space(&save_id, window, cx);
+                                    }
+                                    saved
+                                })
+                            },
+                            move |window, cx| {
+                                ws.update(cx, |ws, cx| ws.delete_space(&id, window, cx))
+                            },
+                            window,
+                            cx,
+                        );
+                    })
                     .disabled(only_one),
                 )
             }
