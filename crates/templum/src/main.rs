@@ -52,6 +52,8 @@ mod title_bar;
 mod toolbar;
 mod update;
 mod usage;
+#[cfg(target_os = "linux")]
+mod watchdog;
 mod welcome;
 mod wires;
 mod workspace;
@@ -93,6 +95,11 @@ fn main() {
         mixed || far || zoom.is_some() || git || mirror || std::env::args().any(|a| a == "--bench");
     // A build being worked on, beside the installed Templum: its own workspaces, settings and bus.
     let dev = std::env::args().any(|a| a == "--dev");
+    // Started by the watchdog, whose window had stopped answering.
+    #[cfg(target_os = "linux")]
+    let after_stall = std::env::args().any(|a| a == watchdog::AFTER_STALL);
+    #[cfg(not(target_os = "linux"))]
+    let after_stall = false;
     // The agents installed where only .bashrc or .zshrc put them.
     #[cfg(unix)]
     if !bench {
@@ -168,6 +175,12 @@ fn main() {
                                    empty and keeps nothing, so the other's canvas stays as it is";
                     workspace::show_notification(window, cx, Notification::warning(message));
                 }
+                if after_stall {
+                    let message = "Templum restarted: its window had stopped answering, as the \
+                                   graphics driver can after the computer sleeps. The canvas is \
+                                   back from its last save, and its agents resume";
+                    workspace::show_notification(window, cx, Notification::warning(message));
+                }
                 cx.new(|cx| {
                     let mut ws = Workspace::new(autostart, config_dir, data_dir, window, cx);
                     if let Some(keys) = dev_keys {
@@ -189,8 +202,15 @@ fn main() {
                 bench::run(window, ws, mixed, cx);
             }
             cx.on_window_closed(|cx, _| cx.quit()).detach();
+            // A UI thread stuck in a GPU wait (after a sleep) restarts Templum.
+            #[cfg(target_os = "linux")]
+            if !bench {
+                watchdog::start(after_stall, cx);
+            }
             cx.activate(true);
         });
+    #[cfg(target_os = "linux")]
+    watchdog::quitting();
     // Free before an installer starts the next Templum.
     drop(lock);
     if mirror {

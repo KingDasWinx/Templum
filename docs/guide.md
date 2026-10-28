@@ -409,3 +409,21 @@ from the AUR ([`templum-bin`](https://aur.archlinux.org/packages/templum-bin)), 
 your AUR helper (`yay`, `paru`) updates it. Run from the disk image on macOS, it is only told too; a build from source
 checks only on demand. **Settings ▸ Updates** checks on demand and turns the automatic check off
 ([specs/updates.md](specs/updates.md)).
+
+## Sleep and NVIDIA
+
+On Linux, an NVIDIA graphics driver can wake from a sleep without finishing the frame Templum had asked it to draw.
+Templum's window then stops answering: it keeps the same picture, keys and Close do nothing, and agents wait. After
+30 seconds Templum restarts by itself: the canvas comes back from its last save (at most 5 seconds before it
+stopped), its agents resume as when you reopen Templum, and a notice says what happened. Commands that were running
+in its terminals end, as on any restart. If the new Templum stops answering too, it quits instead of restarting
+again: reopen it once the computer is awake, or restart the computer if nothing that uses the graphics card draws.
+
+The driver should keep the graphics card's memory through a sleep. Check with
+`grep -E 'PreserveVideoMemoryAllocations|UseKernelSuspendNotifiers' /proc/driver/nvidia/params`:
+
+- With NVIDIA's open kernel modules (`nvidia-open`), `UseKernelSuspendNotifiers: 1` keeps it, with nothing else to
+  do. Arch's `nvidia-utils` sets it; the `nvidia-suspend`, `nvidia-hibernate` and `nvidia-resume` services then do
+  nothing, enabled or not.
+- With the proprietary modules, or `UseKernelSuspendNotifiers: 0`, `PreserveVideoMemoryAllocations: 1` needs those
+  services: `sudo systemctl enable nvidia-suspend.service nvidia-hibernate.service nvidia-resume.service`.

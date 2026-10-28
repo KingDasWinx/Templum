@@ -7136,6 +7136,7 @@ dependencies = [
  "gpui-kit",
  "ignore",
  "keyring-core",
+ "libc",
  "lyon_tessellation",
  "serde",
  "serde_json",

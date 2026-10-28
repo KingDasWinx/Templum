@@ -710,6 +710,18 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## GPUI engine (gpui-fast)
 
+- [ ] **A GPU that never finishes a frame stops the UI thread for good; the watchdog restarts Templum instead of
+  recovering in place** (kanban card 291). gpui-fast-wgpu 0.1.8's `surface.configure` (`wgpu_renderer.rs:1052`,
+  `1177`, `1181`), its resize wait (`device.poll` with no timeout, `wgpu_renderer.rs:1031`) and `destroy` (`2183`, on
+  close) reach wgpu-core 29.0.4's `configure_surface` (`maintain(PollType::wait_indefinitely())`,
+  `device/resource.rs:5137`) and wgpu-hal's `vkDeviceWaitIdle` (`vulkan/swapchain/native.rs:350`), none with a
+  timeout. A person sees the window frozen for 30 seconds after a sleep, then Templum restarting: the agents resume,
+  but commands running in terminals end. Fix: upstream, bounded waits there that report the device lost, so
+  gpui-fast's own recovery (`renderer.recover`, `linux/wayland/window.rs:2032`) recreates the renderer in place.
+- [ ] **Windows has no watchdog.** wgpu waits the same way there (`crates/templum/src/watchdog.rs` is Linux only),
+  so a GPU that never answers would freeze the window until Templum is ended in the Task Manager. Fix: the same
+  watchdog, ending the process with `TerminateProcess` instead of `_exit`.
+
 - [ ] **A note tab's text is saved without telling the window.** The editor subscription in `note_tab`
   (`crates/templum/src/workspace/note_tabs.rs`) writes `ws.notes` without `cx.notify()`. Today the tab still follows
   typing because `Workspace`'s render reads the note's editor; if that read goes away, gpui-fast reuses the old frame

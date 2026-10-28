@@ -54,6 +54,10 @@ sha1_smol = { version = "1", features = ["std"] }
 # Already in the tree, with its random source: the id of a session an agent is started on.
 uuid = { version = "1", features = ["v4"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Already in the tree (alacritty's): `_exit`, which the watchdog ends a stuck Templum with.
+libc = "0.2"
+
 [dev-dependencies]
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile = "3"

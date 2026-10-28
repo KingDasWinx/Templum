@@ -60,6 +60,17 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   off screen are never re-armed, so their output can't drive frames; a shell's exit wakes the UI anyway.
   Blocking here doubled frame times in the spike.
 - Only blocks inside the viewport are drawn.
+- **The UI thread's watchdog (Linux)** (`watchdog.rs`, kanban card 291): GPUI draws on the UI thread, and wgpu
+  waits there for the GPU without a timeout: reconfiguring the window's surface (wgpu-core's `configure_surface`,
+  `PollType::wait_indefinitely`) and releasing its swapchain when the window resizes or closes
+  (`vkDeviceWaitIdle`). A GPU driver that never finishes a frame after a sleep keeps the UI thread there for good:
+  no frame, no key, no close, and agents wait forever on Templum's tools, while the PTY threads go on reading. A
+  timer on the UI thread's executor beats every second; a thread of its own looks every second and, after 30 looks
+  without a beat (looks, not time: the thread sleeps with the computer), starts the same Templum again with
+  `--after-stall` and ends this one with `_exit`, not `exit`, whose exit handlers (the GPU driver's) could wait on
+  the stuck thread. The new one restores the canvas from the 5-second snapshot, resumes the agents as any restart
+  does, and says why. Once Templum quits, 10 looks without a beat end it; one started with `--after-stall` quits at
+  its next stall instead of restarting again. See [specs/persistence.md](specs/persistence.md#when-it-saves).
 - **The bus** (`templum-mcp`'s `bus.rs`, [specs/connections.md](specs/connections.md)): a local socket (Unix) or
   loopback TCP with a token (Windows) in the data folder. A thread accepts connections; each has a reader thread and a
   writer thread, and its lines reach the UI thread through a channel that `workspace/bus.rs` drains: the UI thread
