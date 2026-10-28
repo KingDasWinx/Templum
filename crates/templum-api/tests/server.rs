@@ -565,6 +565,46 @@ fn connected(port: u16, token: &str) -> TcpStream {
     stream
 }
 
+/// A body of the wrong type is read before it is refused: answered as its head came, the client
+/// still writing it met a reset (Windows CI), and the connection closed under the next request.
+#[test]
+fn a_body_of_the_wrong_type_is_read_before_its_answer_and_the_connection_stays() {
+    use std::io::{Read, Write};
+    let (fake, text) = control_fake();
+    let mut stream = connected(fake.server.addr().port(), &text);
+    let body = "workspace=w3";
+    write!(
+        stream,
+        "POST /v1/show HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {text}\r\n\
+         Content-Type: text/plain\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_millis(300)))
+        .unwrap();
+    assert!(
+        stream.read(&mut [0u8; 1]).is_err(),
+        "no answer before the body"
+    );
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    write!(
+        stream,
+        "{body}GET /v1/nope HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {text}\r\n\r\n"
+    )
+    .unwrap();
+    let mut answers = Vec::new();
+    let mut chunk = [0u8; 4096];
+    while !String::from_utf8_lossy(&answers).contains("HTTP/1.1 404") {
+        let n = stream.read(&mut chunk).unwrap();
+        assert!(n > 0, "closed: {}", String::from_utf8_lossy(&answers));
+        answers.extend_from_slice(&chunk[..n]);
+    }
+    assert!(String::from_utf8_lossy(&answers).starts_with("HTTP/1.1 415"));
+}
+
 #[test]
 fn the_oldest_stranger_makes_room_and_a_full_table_of_tokens_is_busy() {
     let (text, token) = token(Scope::Read, None);

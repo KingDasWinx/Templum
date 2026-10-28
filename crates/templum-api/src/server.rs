@@ -1395,13 +1395,6 @@ async fn json_body(request: Request<RequestBody>) -> Result<Option<Value>, Respo
         .and_then(|v| v.split(';').next())
         .is_some_and(|v| v.trim().eq_ignore_ascii_case("application/json"));
     let typed = request.headers().contains_key(header::CONTENT_TYPE);
-    if typed && !json {
-        return Err(error(
-            415,
-            "json",
-            "A POST, PUT or PATCH must be application/json.",
-        ));
-    }
     let length = request
         .headers()
         .get(header::CONTENT_LENGTH)
@@ -1443,6 +1436,15 @@ async fn json_body(request: Request<RequestBody>) -> Result<Option<Value>, Respo
     }
     if total > BODY_MAX {
         return Err(too_large());
+    }
+    // Refused once read, as an oversize body: answered before, a client still writing it met a
+    // reset (Windows), and one that kept the connection found it closed.
+    if typed && !json {
+        return Err(error(
+            415,
+            "json",
+            "A POST, PUT or PATCH must be application/json.",
+        ));
     }
     // No type is fine for no body (a button pressed); a body says what it is.
     if !typed && total > 0 {

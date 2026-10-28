@@ -703,7 +703,8 @@ What the builder chose where the design left it open, and what differs:
 - **A POST, PUT or PATCH with a body must say `application/json`;** with no body, no type is needed (the review's
   finding: a body-less `curl -X POST` was `415`).
 - **Body limits:** an oversize body is read on to 1 MiB more and dropped so the client can read the `413`; past that
-  the connection closes. A body must arrive within 30 seconds.
+  the connection closes. A body of another type is read too before its `415`, and the connection stays. A body must
+  arrive within 30 seconds.
 - **Connections past 64** are answered `503 busy` in plain HTTP (64 more at once, then dropped); over TLS they are
   closed. A handshake takes at most 10 seconds.
 - **Workspace limits** also cover what the spec lists only by argument name: `save_automation`'s `id`, its
