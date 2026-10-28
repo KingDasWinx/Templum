@@ -840,6 +840,7 @@ pub(super) fn shown(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId
     })
 }
 
+#[cfg(unix)]
 fn streams(home: &Entity<Workspace>, cx: &mut TestAppContext) -> usize {
     home.read_with(cx, |ws, _| {
         ws.api.server.as_ref().unwrap().terminal_streams()

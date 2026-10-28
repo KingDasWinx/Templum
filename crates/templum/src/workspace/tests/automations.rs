@@ -21,6 +21,7 @@ use super::subagents::hook;
 use super::*;
 use crate::automations::{Automation, Automations, COOLDOWN, Do, FIRED, Heard, Went, When, Who};
 use crate::session::Loaded;
+#[cfg(unix)]
 use crate::workspace::agents_view::Doing;
 use crate::workspace::automations::{AUTOMATION_LOOK, unix};
 
@@ -2109,6 +2110,7 @@ fn turn(
     finishes(handle, ws, cx, id, terminal);
 }
 
+#[cfg(unix)]
 fn runs_of(ws: &Entity<Workspace>, cx: &mut TestAppContext, rule: u64) -> u32 {
     ws.read_with(cx, |ws, _| ws.automations.get(rule).unwrap().runs)
 }
@@ -2155,6 +2157,7 @@ fn confirmed(
 }
 
 /// A rule that types `text` into the agent that fired it, on `event` from `who`, named `name`.
+#[cfg(unix)]
 fn reply_to_firer(name: &str, event: Heard, who: Who) -> Automation {
     let act = Do::Prompt {
         block: FIRED.into(),

@@ -216,6 +216,7 @@ pub(super) fn answer_soon(
 }
 
 /// The line that came on `answers`, whatever it is (a result or an error), waiting for it.
+#[cfg(unix)]
 pub(super) fn answer_line_soon(
     cx: &mut TestAppContext,
     answers: &std::sync::mpsc::Receiver<String>,

@@ -649,14 +649,14 @@ fn recent_folders_are_confined_to_a_limited_token_s_folders(cx: &mut TestAppCont
     let away = dunce::canonicalize(elsewhere.path()).unwrap();
     let sub = root.join("sub");
     std::fs::create_dir(&sub).unwrap();
-    let mut recent = vec![away.clone(), sub.clone(), root.join("gone"), root.clone()];
+    let recent = vec![away.clone(), sub.clone(), root.join("gone"), root.clone()];
     // A link inside the folder that leads out of it, and one outside that leads into it.
     #[cfg(unix)]
-    {
+    let recent = {
         std::os::unix::fs::symlink(&away, root.join("out")).unwrap();
         std::os::unix::fs::symlink(&sub, away.join("in")).unwrap();
-        recent.extend([root.join("out"), away.join("in")]);
-    }
+        [recent, vec![root.join("out"), away.join("in")]].concat()
+    };
     let id = ws.update(cx, |ws, _| {
         ws.space.folder = Some(root.clone());
         ws.space.recent = recent.clone();

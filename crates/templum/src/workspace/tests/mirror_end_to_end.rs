@@ -11,7 +11,9 @@ use templum_api::client::{Keys, SERVICE_DEV, Status, Why};
 use templum_api::code;
 use templum_api::store::{Scope, Way};
 
-use super::api::{port, state, tool, turn_on, with_data, with_token};
+#[cfg(unix)]
+use super::api::tool;
+use super::api::{port, state, turn_on, with_data, with_token};
 use super::bus::{call_later, me};
 use super::remote::{pump_home, remote_of};
 use super::templum_agent::control;
