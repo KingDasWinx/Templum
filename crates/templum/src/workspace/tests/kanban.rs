@@ -1132,6 +1132,11 @@ fn a_card_shows_its_id_always_and_its_priority_and_checklist_when_it_has_them(
         })
     });
     assert!(shown(cx, "priority") && shown(cx, "checklist"));
+    // An agent's block: its title is its agent's, not the one ConPTY gives a Windows terminal
+    // whenever it comes (it came between the label and the title once).
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(terminal).unwrap().seen.agent = Some("claude".into())
+    });
     ws.read_with(cx, |ws, cx| {
         let uid = ws.space.uids[&terminal].clone();
         let label = |a: Assignee| crate::kanban::assignee_label(ws, &ws.space.id, &a, cx);
