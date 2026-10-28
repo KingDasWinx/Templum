@@ -664,7 +664,15 @@ fn strays_are_the_program_what_it_left_in_a_session_of_its_own_and_never_the_she
         .env("TEMPLUM_TERMINAL", &id)
         .spawn()
         .unwrap();
-    std::thread::sleep(Duration::from_millis(2800));
+    // Until the program and the orphan's `sleep` run: a fixed 2.8 s missed them on a slow runner.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while carriers(&id, "33").is_empty() || carriers(&id, "2").is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "the program and the orphan never ran"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let program = child_running(shell.id(), "33");
     let person = child_running(shell.id(), "31");
     let daemon = carriers(&id, "37");
