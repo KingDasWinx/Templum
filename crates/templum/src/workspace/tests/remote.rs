@@ -2663,6 +2663,14 @@ fn scrolled_back(ws: &Entity<Workspace>, cx: &mut TestAppContext, viewer: BlockI
 fn the_wheel_over_a_remote_shell_reads_home_s_history_and_scrolls_in_it(cx: &mut TestAppContext) {
     let ((home_handle, home), (handle, ws), (_, _, terminal), _keep) = shown_mirror(cx);
     let viewer = focus_viewer(handle, &ws, cx);
+    // Home's terminal at its size, its shell started: ConPTY (Windows) repaints the whole screen
+    // as `cmd` starts and as it resizes, which can clear a history fed before.
+    draw(home_handle, cx);
+    #[cfg(windows)]
+    pump_home(&home, cx, "cmd's prompt at home", |cx| {
+        draw(home_handle, cx);
+        shown(&home, cx, terminal).contains('>')
+    });
     home_printed(&home, cx, terminal, 60);
     pump_home(&home, cx, "home's output on the mirror", |cx| {
         draw(handle, cx);
@@ -2686,7 +2694,8 @@ fn the_wheel_over_a_remote_shell_reads_home_s_history_and_scrolls_in_it(cx: &mut
         draw(handle, cx);
         scrolled_back(&ws, cx, viewer)
     });
-    assert!(viewer_lines(&ws, cx, viewer).iter().any(|l| l == "row 1."));
+    let lines = viewer_lines(&ws, cx, viewer);
+    assert!(lines.iter().any(|l| l == "row 1."), "{lines:?}");
     up(cx);
     assert!(scrolled_back(&ws, cx, viewer), "the history scrolls");
     assert!(said(&ws, cx).is_empty(), "{:?}", said(&ws, cx));
