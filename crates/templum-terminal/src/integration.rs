@@ -435,9 +435,12 @@ mod tests {
                 self.tells_ends.set(program != "bash" || bash_has_ps0());
                 let home = self.dir.path();
                 let injection = inject(&path, &args(a), &install(home).unwrap(), None).unwrap();
+                // A runtime folder that exists: PowerShell 7.6 (.NET 10) keeps its named mutexes
+                // there, and PSReadLine fails without it (CI's runner names one it never made).
                 let mut command = vec![
                     format!("HOME={}", home.display()),
                     format!("XDG_CONFIG_HOME={}", home.join(".config").display()),
+                    format!("XDG_RUNTIME_DIR={}", home.display()),
                 ];
                 for key in [
                     "TEMPLUM_CLAUDE_ARGS",
