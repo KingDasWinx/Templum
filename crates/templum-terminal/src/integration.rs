@@ -507,7 +507,10 @@ mod tests {
                     std::fs::set_permissions(bin.join(name), mode).unwrap();
                 }
                 let path = std::env::var_os("PATH").unwrap_or_default();
-                let dirs = std::iter::once(bin).chain(std::env::split_paths(&path));
+                // Not a folder with the person's own `claudinho` (Templum's command for an account
+                // of that name): the test's account deleted, it would run the fake `claude`.
+                let theirs = std::env::split_paths(&path).filter(|d| !d.join("claudinho").exists());
+                let dirs = std::iter::once(bin).chain(theirs);
                 std::env::join_paths(dirs).unwrap().into_string().unwrap()
             }
         }
