@@ -2640,9 +2640,10 @@ fn a_control_share_s_press_says_once_and_selects_text(cx: &mut TestAppContext) {
     );
 }
 
-/// Home's terminal shows `n` lines `row 1.` … as a program's output (fed into its grid).
+/// Home's terminal shows `n` lines `row 1.` … as a program's output (fed into its grid), from a
+/// line of their own: on Windows the cursor is after `cmd`'s prompt.
 fn home_printed(home: &Entity<Workspace>, cx: &mut TestAppContext, terminal: BlockId, n: usize) {
-    let text: String = (1..=n).map(|i| format!("row {i}.\r\n")).collect();
+    let text: String = (1..=n).map(|i| format!("\r\nrow {i}.")).collect();
     home_prints(home, cx, terminal, text.as_bytes());
 }
 
@@ -2663,14 +2664,6 @@ fn scrolled_back(ws: &Entity<Workspace>, cx: &mut TestAppContext, viewer: BlockI
 fn the_wheel_over_a_remote_shell_reads_home_s_history_and_scrolls_in_it(cx: &mut TestAppContext) {
     let ((home_handle, home), (handle, ws), (_, _, terminal), _keep) = shown_mirror(cx);
     let viewer = focus_viewer(handle, &ws, cx);
-    // Home's terminal at its size, its shell started: ConPTY (Windows) repaints the whole screen
-    // as `cmd` starts and as it resizes, which can clear a history fed before.
-    draw(home_handle, cx);
-    #[cfg(windows)]
-    pump_home(&home, cx, "cmd's prompt at home", |cx| {
-        draw(home_handle, cx);
-        shown(&home, cx, terminal).contains('>')
-    });
     home_printed(&home, cx, terminal, 60);
     pump_home(&home, cx, "home's output on the mirror", |cx| {
         draw(handle, cx);
