@@ -1,7 +1,8 @@
 # Level of detail at far zoom
 
 - **Date:** 2026-10-13
-- **Status:** Implemented. Extended on 2026-10-26 (kanban card 227): zoom steps down to 1%, and the Shape level.
+- **Status:** Implemented. Extended on 2026-10-26 (kanban card 227): zoom steps down to 1%, and the Shape level; on
+  2026-10-27 (kanban card 287) with floating labels under 25%, from Felipe Silva Navarro's PR #54.
 - **Builds on:** [ARCHITECTURE.md](../ARCHITECTURE.md) (Zoom), [ADR-0002](../adr/0002-ui-framework.md),
   [navigation.md](navigation.md), [walking-skeleton.md](walking-skeleton.md) (which lists this under "Later")
 
@@ -24,9 +25,9 @@ zoom itself, like InDesign's "Greek Type Below":
    red error, a green success, the shape of Claude Code's screen.
 3. **Card**: further still, the block's card with its title and status, nothing inside.
 4. **Shape**: a block too small on screen to hold its title's label (under 25%, down to 1%): its card alone, with a
-   terminal's status dot in the middle.
+   terminal's status dot in the middle, and its label over the card's corner.
 
-Keeping an eye on agents from afar is the main use, so a block's title stays readable wherever its card holds it,
+Keeping an eye on agents from afar is the main use, so a block's title stays readable wherever there is room for it,
 and a terminal's status dot at every zoom.
 
 **Success criteria**
@@ -38,7 +39,7 @@ and a terminal's status dot at every zoom.
    comes to rest, never during a glide.
 3. At 33% and 25%, titles are 12 px and status dots 8 px on screen.
 4. Under 25% (default fonts) no block lays out text but its fixed-size label: every block is its card or its shape,
-   the focused one too, and labels never pile up: a card too small for its label has none.
+   the focused one too, and labels never pile up: one that would meets another's shortens, or hides.
 5. The new `--bench-far` stays at p95 ≤ 16.7 ms. `--bench`, `--bench-mixed`, `--bench-zoom=<kind>` (every kind) and
    `--bench-git` are no worse than before (within run-to-run noise), and stay ≤ 16.7 ms where they were.
 6. Nothing that works today breaks: every existing test passes, and so do the checks in
@@ -98,7 +99,8 @@ default size 0.26 px or more from it.
   checklist block too, which are drawn in full only down to the Card level. Rendered Markdown is left empty at the
   Silhouette level (see [section 2](#2-what-each-block-draws)).
 - **The block's size on screen: the Shape level.** A block whose card is under 40 × 24 px at the rest zoom
-  (`LABEL_FITS`) can't hold its label, the 12 px title 4 px in from its corner: it is its shape, whatever its text.
+  (`LABEL_FITS`) can't hold its label, the 12 px title 4 px in from its corner: it is its shape, whatever its text, and
+  its label sits over the card instead (section 2).
   Every block of its kind's smallest size holds the label at 25% (the smallest, a 200 × 140 note, is 50 × 35 px;
   its title is cut by its card like any text in it; a smallest terminal about 45 × 30 px), so with the default font the
   Shape level is reached only under 25%. With the default sizes:
@@ -114,7 +116,8 @@ default size 0.26 px or more from it.
 
 **Where:** `templum-canvas/src/lod.rs`: `enum Level { Full, Silhouette, Card, Shape }` (ordered, most drawn first),
 `GREEK_BELOW: f32 = 5.5`, `CARD_BELOW: f32 = 2.5`, `LABEL_FITS` (40 × 24 px), `fn level(text: f32, zoom: f32) ->
-Level` and `fn block_level(text, size, zoom) -> Level` (Shape when the block can't hold its label, else `level`).
+Level`, `fn block_level(text, size, zoom) -> Level` (Shape when the block can't hold its label, else `level`) and
+`fn label_widths(starts, most, least, high) -> Vec<f32>` (section 2).
 Pure, no UI types: the crate boundary holds and it is unit-tested headlessly. `block::render` asks `block_level` for
 each block every frame (a few multiplications).
 
@@ -144,8 +147,8 @@ each block every frame (a few multiplications).
   **label**: a tag at the card's top-left corner, 4 px in from its border, with the status dot (8 px, terminals
   only) and the title in 12 px text, on the card's own background (a note's tint included) with a hairline border.
   It is as wide as the title, at most the card's width less 8 px, cut with an ellipsis, and never scaled. It covers
-  the header and the top of the body: about three terminal rows at 25%, two at 33%. The card clips it
-  (`block.rs:454`), so it never spills onto another block.
+  the header and the top of the body: about three terminal rows at 25%, two at 33%. The card clips it, so it never
+  spills onto another block.
 - The label **is** the title: the same `("title", n)` element with its handlers (press to move, double-click to
   frame, `block.rs:137-149`), and the dot keeps its id and tooltip (`("status", n)`, `block.rs:176-185`).
 - The header's small buttons at the top left (a kanban block's boards, a note's notebook, an editor's tree toggle,
@@ -154,10 +157,32 @@ each block every frame (a few multiplications).
   strips (`block.rs:291-312`).
 - The card itself (border, radius, shadow, background, focus ring) is the same at every level.
 
-- **Shape:** no label and no header. The title is the whole card (the same `("title", n)` element, so a press
-  anywhere on it moves the block and a double-click frames it), with a terminal's status dot in its middle: 8 px, or
-  as big as the card's shorter side within its border; hovering it names the block in a tooltip. On hover no
-  buttons, resize strips nor grip: a shape is only moved; zoom in to resize it.
+- **Under 25% the label floats** (the title's own level is Card; from PR #54). A card there is 41 to 109 px wide, a
+  shape a few pixels: the label isn't clipped by its card. It is drawn over the card in a frame that doesn't clip
+  (`block.rs`, the end of `render`), and reads up to 240 px wide (`LABEL_FAR_W`) past the card's right edge, as
+  Figma's frame names do.
+  - **Where:** on a card, where it is at 25% (4 px in from the border, its status dot in it). On a shape, over the
+    card's top-left corner: its left edge on the card's, 4 px above it, without the dot, which stays in the middle of
+    the card: a label in the card would cover it, the card being smaller than the label.
+  - **Crowded labels don't pile up** (`lod.rs`'s `label_widths`, pure and tested there; `block::label_widths` feeds
+    it where each label starts on screen, in paint order). They are placed from the top block down, each in a band
+    32 px high (`LABEL_BAND`: the card's top band, or a shape's band over its card). One reads up to the next placed
+    label on its right, and hides when that leaves it under 48 px (`LABEL_FAR_LEAST`: a dot and a few letters) or its
+    corner is under a label already placed. A dense row at 1% shows the names that fit, the top block's first.
+  - A card whose label hides keeps its status dot, in the card's middle, as a shape does.
+  - **Held anywhere.** Under 25% a card, like a shape, has nothing inside that takes a press: a cover over it
+    (`("cover", n)`) moves the block and frames it on a double-click, as the label does, so a card whose label hid is
+    still moved; hovering it names the block in a tooltip. The floating label, the same `("title", n)` element, keeps
+    its press (move, Shift+click to select, double-click to frame) outside the card too, and opens the block's menu on
+    a right-click, as the card does.
+  - A label is drawn with its block: a block painted later covers the part of an earlier block's label under it,
+    and a label covers the blocks painted before it. In a dense grid at 4% (shapes 38 × 30 px apart) every other
+    row and column shows its name, and those names sit over the cards of the row above: the price of names in a
+    crowd, as in PR #54, where a label in its card covered its own dot and its right neighbour instead.
+- **Shape:** no header. The card is held anywhere (the cover above), with a terminal's status dot in its middle:
+  8 px, or as big as the card's shorter side within its border; hovering it names the block in a tooltip, and its
+  label floats over its corner. On hover no buttons, resize strips nor grip: a shape is only moved; zoom in to resize
+  it.
 
 ### Every block at the Card and Shape levels
 
@@ -356,7 +381,9 @@ What a frame builds for one block:
 - **Editor or note, Silhouette:** one quad per word on screen: about 28 rows and 150 to 250 quads for a 900 × 600
   editor, about 80 for a 360 × 280 note. No `EditorState` update and no notify.
 - **Any block at the Card level:** the card and one label, a single short line shaped.
-- **Any block at the Shape level:** the card, and a terminal's dot: no text at all.
+- **Any block at the Shape level:** the card, a terminal's dot, and its label unless a neighbour's hid it.
+- **Placing the labels under 25%:** each visible block against the labels already placed, a few comparisons each:
+  at most a few hundred labels fit on a screen.
 
 At 25% a 1280 × 800 window shows about 20 blocks of the default sizes: today 20 full bodies, after this a few
 thousand quads and 20 labels. At 1% it shows 10,000 times the area of 100%: every block is a few pixels, its shape.
@@ -365,11 +392,12 @@ thousand quads and 20 labels. At 1% it shows 10,000 times the area of 100%: ever
 
 | File | Change |
 |---|---|
-| `templum-canvas/src/lod.rs` (new), `lib.rs` | `Level`, `level`, `block_level`, `GREEK_BELOW`, `CARD_BELOW`, `LABEL_FITS`, with their tests. |
+| `templum-canvas/src/lod.rs` (new), `lib.rs` | `Level`, `level`, `block_level`, `label_widths`, `GREEK_BELOW`, `CARD_BELOW`, `LABEL_FITS`, with their tests. |
 | `templum-canvas/src/camera.rs`, `flight.rs` | The steps under 25%; a glide's zooms on multiples of 0.02 from 16% up, as before, and under it of a step that halves as the zoom does (0.00125 under 2%): 0.02 would round 1% to nothing. |
 | `templum-terminal/src/snapshot.rs` | `Row::bars()`, with its tests. |
 | `templum/src/workspace/mod.rs`, `render.rs` | `Space::rest`, set where the view is decided. |
-| `templum/src/block.rs` | The level of each block (and the focus rule); the label; the header's buttons hidden; no wheel handlers below Full; Card bodies; the level passed to the bodies. |
+| `templum/src/block.rs` | The level of each block (and the focus rule); the label, floating under 25% (`label_widths`); the header's buttons hidden; no wheel handlers below Full; Card bodies; the level passed to the bodies. |
+| `templum/src/workspace/render.rs` | Each visible block's floating label width, before the blocks are drawn. |
 | `templum/src/grid.rs` | Bars painted in place of shaped rows. |
 | `templum/src/silhouette.rs` (new) | The word map: taken from an `EditorState`, its staleness, its bars at a zoom (the math is pure and unit-tested here). |
 | `templum/src/editor.rs`, `note.rs` | The word map and the last-drawn zoom on each tab and note; the bodies below Full; `Tab::reload` drops the map. |
@@ -408,7 +436,9 @@ Tests are written first, as always.
 - no zoom step puts a default size within 0.25 px of a threshold, so float error can't flip a level;
 - 9-pt text is Card at 25% and 10-pt is Silhouette; 17-pt is Full at 33%;
 - every default size is Card at every step under 25%;
-- a block under 40 × 24 px on screen is its Shape whatever its text; the smallest note holds its label at 25%.
+- a block under 40 × 24 px on screen is its Shape whatever its text; the smallest note holds its label at 25%;
+- labels shorten to their right neighbour's, hide when that leaves them under the least width, and hide when their
+  corner is under a label placed before (`labels_shorten_to_their_neighbour_and_hide_when_crowded`, PR #54).
 
 **Unit, `templum-canvas` (`camera.rs`, `flight.rs`, `dots.rs`):** the steps reach 1%, 1.33 or 1.5 times apart under
 25%, and Fit and a saved zoom reach them; a glide between 1% and 1.5% draws zooms between its ends, on multiples of 0.00125
@@ -435,10 +465,14 @@ top, the text area's origin for a note and for an editor tab with 3 and 4 line-n
   word's `range_to_bounds` with the block focused (letters): within 1 px.
 - A terminal's bars sit on its cells: colored output at 25%, each bar the cell rectangle of its run.
 - At 25% the label's text is 12 px and the dot 8 px on screen; at 100% the header is as today.
-- Under 25%: a terminal at 8% has its label; at 4% and 1% it is its shape (no label, the title covering the card,
-  the dot in its middle, no buttons, strips nor grip on hover); a press on a shape at 1% moves the block and a
-  double-click frames it; a focused terminal at 16% is a card and takes the keys; a kanban block and an editor at
-  16% draw nothing inside; a canvas saved at 6% comes back at 6%.
+- Under 25%: a terminal at 8% has its label in its card; at 4% and 1% it is its shape (the cover over the card, the
+  dot in its middle, its label over the card's corner, no buttons, strips nor grip on hover); a press on a shape at
+  1% moves the block and a double-click frames it; a focused terminal at 16% is a card and takes the keys; a kanban
+  block and an editor at 16% draw nothing inside; a canvas saved at 6% comes back at 6%.
+- Floating labels (PR #54): at 6% and 1% the label is the whole 12 px title and reads past the card's right edge,
+  where a press moves the block, a right-click opens its menu and a double-click frames it; two blocks 2,000 units
+  apart show both labels at 6% and only the top one at 1%; a card whose label a neighbour hides keeps its dot in its
+  middle and is moved by a press on it.
 - State survives Full → Silhouette → Full: an editor's rows shown, cursor, selection, undo and tabs; a note's rows;
   a terminal's scrollback position.
 - The word map follows the text: a far editor whose file changes on disk shows the new text's bars a frame later;
@@ -489,6 +523,13 @@ The code couldn't settle these; the maintainer chose on 2026-10-13:
 4. **Under 25% (card 227, 2026-10-26).** The person asked for zoom steps down to 1%. *Decided while implementing:*
    the focused block is lifted from bars to letters but not from a card (its letters would be specks, and every
    step under 25% would rasterize text); a block too small for its label is its shape, its title in a tooltip.
+5. **Floating labels (card 287, 2026-10-27).** Felipe Silva Navarro's PR #54 built zooming out to 1% in parallel
+   with card 227. The person kept card 227's zoom (its steps, the Shape level, the glide) and brought in his label
+   rule: under 25% a label isn't clipped by its card, reads up to 240 px past its edge, and shortens or hides where
+   it meets another (`label_widths`, his code and test). *Decided while porting:* a shape's label sits over the
+   card's corner, not in it, so the shape keeps its status dot in the middle; a card whose label hides gets its dot
+   there too; under 25% a card is held anywhere, as a shape is, so hiding a label never leaves a block that can't be
+   moved; the floating label opens the block's menu on a right-click.
 
 ## Documentation
 

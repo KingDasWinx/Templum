@@ -150,7 +150,8 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   (`silhouette.rs`), and a kanban or checklist block is drawn in full; Card under 2.5 px, nothing inside (every default
   size under 25%); Shape for a block too small on screen for its label (under 40 × 24 px): its card and a terminal's
   status dot. The block worked in (focused, or holding the keyboard) has its letters where it would have bars, and
-  below Full a title is a fixed-size label (specs/level-of-detail.md).
+  below Full a title is a fixed-size label; under 25% it floats past its card's edge, shortened or hidden where it
+  meets another (`lod.rs`'s `label_widths`, specs/level-of-detail.md).
   A zoom glides to its step over 150 ms through
   zooms snapped to 0.02, and under 16% to a step that halves as the zoom does (`templum-canvas`'s `CameraFlight`); the camera holds the target, the workspace's `view`
   is what is drawn. Terminals and kanban blocks glide with the view. Editor and note bodies glide too, but

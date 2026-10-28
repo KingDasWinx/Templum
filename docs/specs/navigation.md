@@ -97,8 +97,9 @@ use the middle button (no paste of the primary selection yet).
 From 1% to 300%, on fixed steps: 1%, 1.5%, 2%, 3%, 4%, 6%, 8%, 12%, 16%, 25%, 33%, 50%, 67%, 75%, 90%, 100%, 110%, 125%,
 150%, 175%, 200%, 250% and 300%. The wheel, a pinch, Ctrl+= and Ctrl+-, Fit all blocks, a framing and a restored
 canvas all land on them; the title bar reads tenths under 10% ("1.5%"). Under 25% a block is its card with its title's
-label, and too small for the label it is its shape with a terminal's status dot, which a press moves and a
-double-click frames ([level-of-detail.md](level-of-detail.md)). The dots, wires, drawings, selection, the selection
+label, and too small for the label it is its shape with a terminal's status dot; the label reads past the card's edge
+(over a shape's corner) and hides where it would pile on another's. A press on the card or its label moves the block
+and a double-click frames it ([level-of-detail.md](level-of-detail.md)). The dots, wires, drawings, selection, the selection
 rectangle and the scroll at the window's edges work the same at every step.
 
 ## Framing a block

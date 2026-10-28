@@ -14,9 +14,9 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Animation, AnimationExt as _, AnyElement, App, BoxShadow, ClickEvent, Context, ElementId,
-    FontWeight, Hsla, MouseButton, MouseDownEvent, ScrollWheelEvent, SharedString, TestSupportExt,
-    Window, div, point, px,
+    Animation, AnimationExt as _, AnyElement, App, BoxShadow, ClickEvent, Context, Div, ElementId,
+    FontWeight, Hsla, MouseButton, MouseDownEvent, ScrollWheelEvent, SharedString, Stateful,
+    TestSupportExt, Window, div, point, px,
 };
 use templum_canvas::{Block, BlockId, Edges, Level, Point, Rect, chrome};
 
@@ -50,6 +50,11 @@ const LABEL_IN: f32 = 4.0;
 /// How far below a block's top its far-zoom label reaches, screen pixels: its inset, border,
 /// padding and a line of text, with room to spare.
 const LABEL_BAND: f32 = 32.0;
+/// Under 25% a label isn't clipped by its card, a few pixels wide there: it reads up to this wide,
+/// screen pixels, past the card's right edge (as Figma's frame names). From PR #54.
+pub(crate) const LABEL_FAR_W: f32 = 240.0;
+/// A floating label left narrower than this by its neighbours (a dot and a few letters) hides.
+const LABEL_FAR_LEAST: f32 = 48.0;
 const DOT: f32 = 8.0;
 /// The Templum Agent's mark before a title, world units.
 const MARK: f32 = 10.0;
@@ -77,6 +82,7 @@ impl Gates {
 
 /// `look` scales the block around its center (it is drawn at zoom × scale) and fades it.
 /// A block that isn't `live` is a ghost fading out: no controls, and clicks go through it.
+/// `label_w` is how wide its label floats under 25% ([`label_widths`]; 0 hides it).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render(
     ws: &Workspace,
@@ -84,6 +90,7 @@ pub(crate) fn render(
     body: &Body,
     look: Look,
     live: bool,
+    label_w: f32,
     gates: &Gates,
     window: &mut Window,
     cx: &mut Context<Workspace>,
@@ -189,6 +196,11 @@ pub(crate) fn render(
     // Below Full the title is a label: never scaled, at the card's top-left corner, over the
     // header and the top of the body (docs/specs/level-of-detail.md, section 2).
     let labeled = shape || templum_canvas::level(TITLE_FONT, ws.space.rest) != Level::Full;
+    // Under 25% the label floats: not clipped by the card, it reads past its right edge, as wide
+    // as its neighbours' labels leave it. A shape's sits over the card, clear of its dot.
+    let floating = templum_canvas::level(TITLE_FONT, ws.space.rest) == Level::Card;
+    // Its status dot is in the label, unless there is none: then in the middle of the card.
+    let in_label = labeled && !shape && (!floating || label_w > 0.0);
     // The Templum Agent's blocks wear its mark before their title, at the Full level.
     let uid = ws.space.uids.get(&id).map_or("", String::as_str);
     let mark = match body {
@@ -254,11 +266,9 @@ pub(crate) fn render(
             div()
                 .id(("status", n))
                 .flex_shrink_0()
-                .size(px(if shape {
+                .size(px(if labeled {
                     // As big as the label's, or as the card is within its border.
                     DOT.min(r.w.min(r.h) - 2.0 * BORDER).max(0.0)
-                } else if labeled {
-                    DOT
                 } else {
                     7.0 * z
                 }))
@@ -274,7 +284,13 @@ pub(crate) fn render(
         }),
         _ => None,
     };
-    let (label_dot, header_dot) = if labeled { (dot, None) } else { (None, dot) };
+    let (cover_dot, label_dot, header_dot) = if !labeled {
+        (None, None, dot)
+    } else if in_label {
+        (None, dot, None)
+    } else {
+        (dot, None, None)
+    };
     // After the dot, over the title, which moves the block as before: who pressed keys in it for
     // a few seconds (docs/specs/connections.md), else its agent's session (docs/specs/usage.md).
     let chip = |id: &'static str, text: String, tip: String| {
@@ -343,24 +359,64 @@ pub(crate) fn render(
         }
         _ => None,
     };
-    let title = if shape {
-        // The whole card, its dot in the middle; hovering it names the block.
+    // The title is where the block is held to move it: an open hand over it, a closed one while
+    // it moves (CSS's grab and grabbing).
+    let held = |el: Stateful<Div>| {
+        el.when(live, |el| {
+            if ws.moving(id) {
+                el.cursor_grabbing()
+            } else {
+                el.cursor_grab()
+            }
+        })
+        .when(live, |el| {
+            el.on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                    // Shift+click selects the block, or deselects it; it neither moves nor focuses.
+                    if e.modifiers.shift {
+                        ws.toggle_selected(id, window, cx);
+                        cx.stop_propagation();
+                        return;
+                    }
+                    // A double-click frames the block; the camera flies, so nothing moves.
+                    if e.click_count == 2 {
+                        ws.frame_block(id, window, cx);
+                    } else if ws.space.selected.contains(&id) {
+                        // A selected block's title moves every selected block, still selected.
+                        ws.begin_group_move(e.position, None);
+                        cx.stop_propagation();
+                        return;
+                    } else {
+                        ws.begin_move(id, e.position);
+                    }
+                    // A label lies over the body: it takes the press itself, so a terminal under
+                    // it starts no selection, and it focuses the block as the card would.
+                    if labeled {
+                        ws.focus_block(id, window, cx);
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+        })
+        .test_support()
+    };
+    let title = if labeled {
         div()
             .id(("title", n))
             .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .children(label_dot)
-            .tooltip(move |window, cx| Tooltip::new(words.clone()).build(window, cx))
-    } else if labeled {
-        div()
-            .id(("title", n))
-            .absolute()
-            .top(px(LABEL_IN))
-            .left(px(LABEL_IN))
-            .max_w(px((r.w - 2.0 * BORDER - 2.0 * LABEL_IN).max(0.0)))
+            .map(|el| match (shape, floating) {
+                // Over the shape's top-left corner, clear of its dot.
+                (true, _) => el.left(px(0.0)).bottom(px(r.h + LABEL_IN)),
+                // Where the card's border would put it.
+                (false, true) => el.top(px(BORDER + LABEL_IN)).left(px(BORDER + LABEL_IN)),
+                (false, false) => el.top(px(LABEL_IN)).left(px(LABEL_IN)),
+            })
+            .max_w(px(if floating {
+                label_w
+            } else {
+                (r.w - 2.0 * BORDER - 2.0 * LABEL_IN).max(0.0)
+            }))
             .flex()
             .items_center()
             .gap(px(6.0))
@@ -374,6 +430,16 @@ pub(crate) fn render(
             .children(label_dot)
             .child(title_text)
             .children(name)
+            // Outside the card, the label opens the block's menu as the card would.
+            .when(live && floating, |el| {
+                el.on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                        ws.open_block_menu(id, e.position, window, cx);
+                        cx.stop_propagation();
+                    }),
+                )
+            })
     } else {
         div()
             .id(("title", n))
@@ -392,47 +458,29 @@ pub(crate) fn render(
             .child(title_text)
             .children(name)
             .children(clock)
-    }
-    // The title is where the block is held to move it: an open hand over it, a closed one
-    // while it moves (CSS's grab and grabbing).
-    .when(live, |el| {
-        if ws.moving(id) {
-            el.cursor_grabbing()
-        } else {
-            el.cursor_grab()
-        }
-    })
-    .when(live, |el| {
-        el.on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
-                // Shift+click selects the block, or deselects it; it neither moves nor focuses.
-                if e.modifiers.shift {
-                    ws.toggle_selected(id, window, cx);
-                    cx.stop_propagation();
-                    return;
-                }
-                // A double-click frames the block; the camera flies, so nothing moves.
-                if e.click_count == 2 {
-                    ws.frame_block(id, window, cx);
-                } else if ws.space.selected.contains(&id) {
-                    // A selected block's title moves every selected block, still selected.
-                    ws.begin_group_move(e.position, None);
-                    cx.stop_propagation();
-                    return;
-                } else {
-                    ws.begin_move(id, e.position);
-                }
-                // A label lies over the body: it takes the press itself, so a terminal under it
-                // starts no selection, and it focuses the block as the card would.
-                if labeled {
-                    ws.focus_block(id, window, cx);
-                    cx.stop_propagation();
-                }
-            }),
+    };
+    let title = held(title);
+    // A shape, and under 25% any card (nothing inside takes a press, and its label may hide), is
+    // held anywhere; a dot without a label is in its middle, and hovering it names the block.
+    let cover = (shape || floating).then(|| {
+        held(
+            div()
+                .id(("cover", n))
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .children(cover_dot)
+                .tooltip(move |window, cx| Tooltip::new(words.clone()).build(window, cx)),
         )
-    })
-    .test_support();
+    });
+    // In the header, floating over the card, or none: a shape's label shows only when it floats.
+    let (title, far_title) = if floating {
+        (None, (label_w > 0.0).then_some(title))
+    } else {
+        ((!shape).then_some(title), None)
+    };
 
     // On a mirror, what home can't do from here is dimmed, its tooltip the rule's words.
     let no_close = gates.close.clone();
@@ -634,14 +682,12 @@ pub(crate) fn render(
     } else {
         (Vec::new(), Vec::new())
     };
-    let header = if shape {
-        title.into_any_element()
-    } else {
+    let header = (!shape).then(|| {
         div()
             .relative()
             .w_full()
             .h(px(chrome::TITLE_H * z))
-            .child(title)
+            .children(title)
             .children(top_zones)
             .children(header_dot)
             .children(chip)
@@ -654,8 +700,7 @@ pub(crate) fn render(
                     .child(fade_in(fullscreen, ("fullscreen-fade", n)))
                     .child(fade_in(close, ("close-fade", n)))
             })
-            .into_any_element()
-    };
+    });
 
     // Drawn at the Full level only.
     let covered = match body {
@@ -892,14 +937,16 @@ pub(crate) fn render(
     } else {
         ("ghost", n).into()
     };
-    div()
+    // A floating label is drawn over the card, in a frame that doesn't clip it.
+    let (x, y) = if floating { (0.0, 0.0) } else { (r.x, r.y) };
+    let card = div()
         .id(root)
         .absolute()
-        .left(px(r.x))
-        .top(px(r.y))
+        .left(px(x))
+        .top(px(y))
         .w(px(r.w))
         .h(px(r.h))
-        .opacity(look.opacity)
+        .when(!floating, |el| el.opacity(look.opacity))
         .rounded(px(RADIUS * z))
         // Always 1 px, so focusing never moves the grid.
         .border_1()
@@ -946,12 +993,13 @@ pub(crate) fn render(
                     }),
                 )
         })
+        .children(cover)
         .map(|el| {
             // A label lies over the top of the body: the header is drawn after it then.
             if labeled {
-                el.child(content).child(header)
+                el.child(content).children(header)
             } else {
-                el.child(header).child(content)
+                el.children(header).child(content)
             }
         })
         .children(other_zones)
@@ -971,8 +1019,44 @@ pub(crate) fn render(
             .into_iter()
             .flatten(),
         )
-        .test_support()
+        .test_support();
+    if !floating {
+        return card.into_any_element();
+    }
+    // The frame fades both.
+    div()
+        .absolute()
+        .left(px(r.x))
+        .top(px(r.y))
+        .w(px(r.w))
+        .h(px(r.h))
+        .opacity(look.opacity)
+        .child(card)
+        .children(far_title)
         .into_any_element()
+}
+
+/// How wide each of `blocks`' labels floats under 25% (0: hidden), in paint order
+/// ([`templum_canvas::label_widths`] over where each label starts); [`LABEL_FAR_W`] each above,
+/// where labels sit inside their cards.
+pub(crate) fn label_widths(ws: &Workspace, blocks: &[Block]) -> Vec<f32> {
+    let rest = ws.space.rest;
+    if templum_canvas::level(TITLE_FONT, rest) != Level::Card {
+        return vec![LABEL_FAR_W; blocks.len()];
+    }
+    let starts: Vec<_> = blocks
+        .iter()
+        .map(|b| {
+            let r = ws.space.view.rect_to_screen(b.rect);
+            // A shape's label is in the band over its card; a card's, in its top band.
+            if templum_canvas::block_level(TITLE_FONT, b.rect.size(), rest) == Level::Shape {
+                Rect::new(r.x, r.y - LABEL_BAND, r.w, r.h)
+            } else {
+                Rect::new(r.x + BORDER + LABEL_IN, r.y, r.w, r.h)
+            }
+        })
+        .collect();
+    templum_canvas::label_widths(&starts, LABEL_FAR_W, LABEL_FAR_LEAST, LABEL_BAND)
 }
 
 /// The footer of a remote terminal that takes no input (a subagent's transcript).

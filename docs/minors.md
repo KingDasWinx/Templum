@@ -287,6 +287,13 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## Far zoom (level of detail)
 
+- [ ] **A floating label lets the pointer's hover through to the block under it.** Under 25% a label reads past its
+  card's edge over its neighbours (`crates/templum/src/block.rs`, the frame at the end of `render`), but it doesn't
+  block the mouse: the person who points at the part of a label over an earlier block sees that block lift and, at
+  the Card level, its close button and resize strips appear under the label. Presses are right (the label takes the
+  left and right ones, a middle one pans as anywhere). Fix: `block_mouse_except_scroll` on the floating label, with
+  the card's middle-press pan and pinch on it too.
+
 - [ ] **A soft-wrapped editor tab's bars keep the wrap of the zoom they were taken at.** An editor tab's wrap width
   keeps gpui-kit's fixed padding and line-number margin (`crates/templum/src/editor.rs`, `code` in `files`), so with
   Soft wrap on its words wrap a little differently at each zoom; far away its bars show the rows of its last Full
