@@ -2322,9 +2322,11 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   closes the tab of a note the person made longer than 256 KiB and the block stays: the new note block (`note::SIZE`)
   covers the old block's top-left corner, on the mirror and at home. Fix: when the block is alive, send
   `near: <its id>` instead of `x`/`y` (`room_near` finds free room).
-- [ ] **The banner, the remote tile and the Forget… dialog were checked headlessly only.** (`mirror.rs`,
-  `connect_dialog.rs`.) Their spacing, the veil's strength and the Connect dialog's added-authority choice were not
-  looked at on a display. Fix: look at them with two `--dev` instances (stop, revoke and delete at home).
+- [ ] **The banner while not live and the Forget… dialog were checked headlessly only.** (`mirror.rs`,
+  `connect_dialog.rs`.) The banner live and slow and the remote tile were looked at with `--bench-mirror`; the
+  banner's buttons while reconnecting, cut or stopped (their center line is tested), the Forget… dialog, the veil's
+  strength and the Connect dialog's added-authority choice were not looked at on a display. Fix: look at them with two
+  `--dev` instances (stop, revoke and delete at home).
 - [ ] **The banner's words carry no bold.** (`workspace/remote.rs`, `banner_words`.) The spec bolds "Try again",
   "Paste a new code…" and the names; the text is plain and the buttons carry the actions. Fix: spans in `Banner`.
 - [ ] **Connect anyway keeps the choice in the key only after the client saved it.** (`client/remote.rs`,

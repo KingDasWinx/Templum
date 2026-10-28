@@ -13,7 +13,10 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Disableable as _, WindowExt as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, ElementId, TestSupportExt, Window, div, px};
+use gpui_kit::{
+    AnyElement, Context, ElementId, HighlightStyle, InteractiveText, StyledText, TestSupportExt,
+    Window, div, px,
+};
 use templum_api::client::Status;
 
 use crate::grid::hsla;
@@ -112,13 +115,26 @@ pub(crate) fn banner(ws: &Workspace, cx: &mut Context<Workspace>) -> Option<AnyE
             })
             .test_support()
     };
-    // The round trip, in yellow when each key waits long for it.
-    let ms = slow.map(|l| format!("{} ms", l.as_millis()));
-    let (before, slow_ms, after) = match ms.as_deref().and_then(|ms| text.split_once(ms)) {
-        Some((before, after)) => (before.to_string(), ms.clone(), after.to_string()),
-        None => (text.clone(), None, String::new()),
-    };
-    let slow_tip = slow.map(|l| slow_tip(l, &computer));
+    // The round trip, in yellow when each key waits long for it: a range of the words' one line,
+    // since each child of the words would be a line of its own.
+    let slow_ms = slow.and_then(|l| {
+        let ms = format!("{} ms", l.as_millis());
+        let at = text.find(&ms)?;
+        Some((at..at + ms.len(), slow_tip(l, &computer)))
+    });
+    let line = StyledText::new(text).with_highlights(
+        slow_ms
+            .iter()
+            .map(|(range, _)| (range.clone(), HighlightStyle::from(yellow))),
+    );
+    let mut line = InteractiveText::new("remote-banner-line", line);
+    if let Some((range, tip)) = slow_ms {
+        line = line.tooltip(move |ix, window, cx| {
+            range
+                .contains(&ix)
+                .then(|| Tooltip::new(tip.clone()).build(window, cx))
+        });
+    }
     let info_tip = not_mirrored_tip();
     let chain_tip = matches!(
         status,
@@ -133,15 +149,7 @@ pub(crate) fn banner(ws: &Workspace, cx: &mut Context<Workspace>) -> Option<AnyE
         .text_color(ui.title)
         .whitespace_nowrap()
         .truncate()
-        .child(before)
-        .children(slow_ms.zip(slow_tip).map(|(ms, tip)| {
-            div()
-                .id("remote-banner-slow")
-                .text_color(yellow)
-                .child(ms)
-                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-        }))
-        .child(after)
+        .child(line)
         .when(chain_tip, |el| {
             el.tooltip(|window, cx| {
                 Tooltip::new("or the server doesn't send its whole chain").build(window, cx)

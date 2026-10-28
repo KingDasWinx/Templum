@@ -1068,6 +1068,55 @@ fn a_stopped_home_workspace_offers_start(cx: &mut TestAppContext) {
     });
 }
 
+/// The banner's words are one line on the ⓘ's and the buttons' center line in every state: the
+/// slow round trip was a block of its own, which pushed the words off that line.
+#[gpui_kit::test]
+fn the_banner_s_words_sit_on_one_line_with_its_icon_and_buttons(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = offline(cx);
+    let reconnecting = Status::Reconnecting {
+        attempt: 2,
+        next: Duration::from_secs(8),
+        live_at: None,
+    };
+    for (status, ms) in [
+        (Status::Live, 84),
+        (Status::Live, 400),
+        (reconnecting, 0),
+        (Status::Cut(Why::Revoked), 0),
+    ] {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let at = ws.order().iter().position(|s| s.id == "r1").unwrap();
+                ws.switch_to(at, window, cx);
+                let remote = ws.remote_mut("r1").unwrap();
+                remote.status = status.clone();
+                remote.latency = (ms > 0).then(|| Duration::from_millis(ms));
+            });
+            window.render_frame(cx);
+            let words = window.find("remote-banner-text").bounds();
+            assert!(
+                words.size.height <= px(20.0),
+                "{status:?} {ms} ms: the words are one line, {words:?}"
+            );
+            let mut marks = vec!["remote-banner-info".to_string()];
+            marks.extend(
+                (0..3)
+                    .map(|n| format!("remote-act-{n}"))
+                    .chain(["remote-disconnect".into()])
+                    .filter(|id| window.try_find(id.clone()).is_some()),
+            );
+            for mark in marks {
+                let at = window.find(mark.clone()).bounds();
+                assert!(
+                    (words.center().y - at.center().y).abs() <= px(1.0),
+                    "{status:?} {ms} ms: {mark} {at:?} beside the words {words:?}"
+                );
+            }
+        })
+        .unwrap();
+    }
+}
+
 fn home_name(home: &Entity<Workspace>, cx: &mut TestAppContext, id: &str) -> String {
     home.read_with(cx, |ws, _| {
         ws.spaces().find(|s| s.id == id).unwrap().name.clone()
