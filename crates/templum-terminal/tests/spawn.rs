@@ -967,3 +967,36 @@ fn a_killed_shell_says_so() {
         assert_eq!(term.killed(), killed, "{script}");
     }
 }
+
+/// A program's output is read with nothing painting: the PTY thread never waits on the UI, so an
+/// agent can't stall on a full PTY while the UI thread is stuck (kanban card 291).
+#[cfg(unix)]
+#[test]
+fn output_is_read_while_nothing_paints() {
+    // Megabytes: far past what a PTY holds unread.
+    let script = "head -c 4000000 /dev/zero | tr '\\0' a";
+    let term = Terminal::spawn(
+        SpawnOptions {
+            cols: 80,
+            rows: 24,
+            cell_px: (8, 16),
+            command: Some(("sh".into(), vec!["-c".into(), script.into()])),
+            palette: Palette::default(),
+            options: TermOptions::default(),
+            working_directory: None,
+            integration: None,
+            env: Vec::new(),
+        },
+        // No UI: the wake-up goes nowhere, and nothing is ever re-armed or copied.
+        Arc::new(|| {}),
+    )
+    .expect("spawn");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !term.exited() {
+        assert!(
+            Instant::now() < deadline,
+            "the program blocked on its output"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
