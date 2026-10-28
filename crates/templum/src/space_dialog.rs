@@ -1,5 +1,6 @@
 //! A workspace's look (its icon, color and image) and the Edit… dialog that chooses it, with
-//! its name and folder. See docs/specs/cockpit.md#6-the-workspaces-screen.
+//! its name and folder; the New workspace dialog is the same one, making the workspace. See
+//! docs/specs/cockpit.md#6-the-workspaces-screen.
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -19,9 +20,10 @@ use gpui_kit::{
 use crate::board::Label;
 use crate::grid::hsla;
 use crate::session;
+use crate::share_dialog;
 use crate::sidebar;
 use crate::theme::{Theme, Ui};
-use crate::workspace::{Workspace, show_notification};
+use crate::workspace::{Space, Workspace, show_notification};
 
 /// The colors a workspace can take, by name: the cards' labels, and the accent.
 pub(crate) const COLORS: [&str; 7] = [
@@ -117,9 +119,14 @@ fn find_icons(query: &str) -> Vec<IconName> {
         .collect()
 }
 
-/// The Edit… dialog's state: what Save applies. Cancel drops it.
+/// The Edit… dialog's state: what Save (Create, for a new workspace) applies. Cancel drops it.
 pub(crate) struct SpaceDialog {
+    /// The workspace edited; empty for the one Create makes.
     id: String,
+    /// The New workspace dialog: Create makes the workspace, which has no sharing yet.
+    creating: bool,
+    /// Where Sharing reads who mirrors, and what it revokes.
+    workspace: Entity<Workspace>,
     name: Entity<InputState>,
     search: Entity<InputState>,
     look: Look,
@@ -128,6 +135,9 @@ pub(crate) struct SpaceDialog {
     note: Option<String>,
     /// The icons found, and the search they are for.
     found: (String, Vec<IconName>),
+    /// A mirror of another computer's workspace: its name is home's, and it has a connection
+    /// instead of a folder and sharing.
+    remote: bool,
     theme: Rc<Theme>,
     ui: Ui,
 }
@@ -198,6 +208,226 @@ impl SpaceDialog {
             .font_weight(FontWeight::MEDIUM)
             .text_color(self.ui.title)
             .child(text)
+    }
+
+    /// A remote's connection: what it reaches and how, what the share can do, when it ends and
+    /// how far it is; and Paste a new code….
+    fn connection(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use templum_api::store::Scope;
+        let ui = self.ui;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let ws = self.workspace.read(cx);
+        let remote = ws
+            .spaces()
+            .find(|s| s.id == self.id)
+            .and_then(|s| s.remote.as_deref());
+        let mut rows: Vec<(&'static str, String)> = Vec::new();
+        if let Some(remote) = remote {
+            let entry = &remote.entry;
+            let code = templum_api::code::Code {
+                url: entry.url.clone(),
+                key: templum_api::code::Key::new(String::new()),
+                trust: entry.trust(),
+            };
+            rows.push(("Address", entry.url.clone()));
+            rows.push(("Way in", code.said()));
+            if entry.trust_added_authority {
+                rows.push(("Trust", "Trusts an authority this computer added".into()));
+            }
+            if let Some(id) = &entry.access_id {
+                rows.push(("Access Client ID", id.clone()));
+            }
+            if let Some(proxy) = &entry.proxy {
+                rows.push(("Proxy", proxy.clone()));
+            }
+            if let Some(me) = &remote.me {
+                rows.push((
+                    "The share can",
+                    match me.scope {
+                        Scope::Full => {
+                            "Full: also type and click into terminals, discard Git changes, \
+                             delete branches, stashes and automations"
+                        }
+                        _ => {
+                            "Control: watch and work with blocks, cards, checklists, Git and \
+                             automations, open agents and hand them tasks, answer requests"
+                        }
+                    }
+                    .into(),
+                ));
+                rows.push((
+                    "Expires",
+                    crate::settings::api::expiry_words(me.expires, now),
+                ));
+            }
+            if let Some(latency) = remote.latency {
+                rows.push(("Round trip", format!("{} ms", latency.as_millis())));
+            }
+        }
+        let (workspace, id) = (self.workspace.clone(), self.id.clone());
+        div()
+            .id("space-connection")
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .children(rows.into_iter().map(|(name, value)| {
+                div()
+                    .id(ElementId::Name(format!("space-connection-{name}").into()))
+                    .flex()
+                    .gap(px(8.0))
+                    .text_size(px(12.0))
+                    .child(
+                        div()
+                            .w(px(110.0))
+                            .flex_shrink_0()
+                            .text_color(ui.title_dim)
+                            .child(name),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .text_color(ui.title)
+                            .child(value),
+                    )
+                    .test_support()
+            }))
+            .child(
+                div().flex().mt(px(4.0)).child(
+                    Button::new("space-paste-code")
+                        .label("Paste a new code…")
+                        .small()
+                        .on_click(move |_: &ClickEvent, window, cx| {
+                            workspace.update(cx, |ws, cx| {
+                                crate::connect_dialog::open_for(ws, &id, window, cx)
+                            })
+                        }),
+                ),
+            )
+            .test_support()
+    }
+
+    /// Sharing: applied at once, not on Save. With no share, what sharing does and Share…; else a
+    /// row per share with Revoke, and Share… for one more.
+    fn sharing(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (ui, theme) = (self.ui, self.theme.clone());
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let ws = self.workspace.read(cx);
+        let rows: Vec<_> = ws
+            .share_rows(&self.id)
+            .into_iter()
+            .map(|row| {
+                let from = ws.mirrored_from(&row.id).unwrap_or_default();
+                (row, from)
+            })
+            .collect();
+        let space = self.id.clone();
+        let share = {
+            let workspace = self.workspace.clone();
+            move |window: &mut Window, cx: &mut App| {
+                let space = space.clone();
+                workspace.update(cx, |ws, cx| {
+                    share_dialog::open(ws, &space, window, cx);
+                })
+            }
+        };
+        let yellow = hsla(theme.palette.ansi[3], 1.0);
+        let none = rows.is_empty();
+        let list = rows.into_iter().map(|(row, from)| {
+            let (first, second) = share_dialog::sharing_words(&row, &from, at);
+            let expired = row.expires.is_some_and(|end| end <= at);
+            let token = row.id[1..].parse::<u64>().unwrap_or(0);
+            let workspace = self.workspace.clone();
+            div()
+                .id(ElementId::Name(format!("space-share-{}", row.id).into()))
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .w_full()
+                                .overflow_hidden()
+                                .truncate()
+                                .text_size(px(12.0))
+                                .text_color(ui.title)
+                                .child(row.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .id(ElementId::Name(
+                                    format!("space-share-{}-first", row.id).into(),
+                                ))
+                                .w_full()
+                                .overflow_hidden()
+                                .truncate()
+                                .text_size(px(11.0))
+                                .text_color(if expired { yellow } else { ui.title_dim })
+                                .child(first)
+                                .test_support(),
+                        )
+                        .child(
+                            div()
+                                .id(ElementId::Name(
+                                    format!("space-share-{}-last", row.id).into(),
+                                ))
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .gap(px(5.0))
+                                .overflow_hidden()
+                                .text_size(px(11.0))
+                                .text_color(ui.title_dim)
+                                .when(row.mirrored, |el| {
+                                    el.child(div().size(px(6.0)).rounded_full().bg(ui.accent))
+                                })
+                                .child(div().truncate().child(second))
+                                .test_support(),
+                        ),
+                )
+                .child(
+                    Button::new(ElementId::Name(format!("space-revoke-{}", row.id).into()))
+                        .label("Revoke")
+                        .small()
+                        .on_click(move |_: &ClickEvent, _, cx| {
+                            workspace.update(cx, |ws, cx| ws.revoke_token(token, cx))
+                        }),
+                )
+                .test_support()
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .when(none, |el| {
+                el.child(
+                    div()
+                        .id("space-share-invite")
+                        .text_size(px(12.0))
+                        .text_color(ui.title_dim)
+                        .child(share_dialog::INVITE)
+                        .test_support(),
+                )
+            })
+            .children(list)
+            .child(
+                div().flex().child(
+                    Button::new("space-share")
+                        .label("Share…")
+                        .small()
+                        .on_click(move |_: &ClickEvent, window, cx| share(window, cx)),
+                ),
+            )
     }
 
     fn swatches(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -384,6 +614,14 @@ impl Render for SpaceDialog {
                         })),
                 )
             });
+        let remote = self.remote;
+        let computer = self
+            .workspace
+            .read(cx)
+            .spaces()
+            .find(|s| s.id == self.id)
+            .and_then(|s| s.remote.as_deref())
+            .map(crate::mirror::computer_of);
         div()
             .id("space-dialog")
             .flex()
@@ -391,16 +629,38 @@ impl Render for SpaceDialog {
             .gap(px(10.0))
             .child(preview)
             .child(self.label("Name"))
-            .child(Input::new(&self.name))
+            .child(if remote {
+                div()
+                    .id("space-named-at-home")
+                    .text_size(px(12.0))
+                    .text_color(ui.title_dim)
+                    .child(format!(
+                        "named on {}",
+                        computer.clone().unwrap_or_else(|| "home".into())
+                    ))
+                    .test_support()
+                    .into_any_element()
+            } else {
+                Input::new(&self.name).into_any_element()
+            })
             .child(self.label("Color"))
             .child(self.swatches(cx))
             .child(self.label("Icon"))
             .child(Input::new(&self.search))
             .child(self.icons(cx))
-            .child(self.label("Image"))
-            .child(image)
-            .child(self.label("Folder"))
-            .child(folder)
+            .when(!remote, |el| {
+                el.child(self.label("Image"))
+                    .child(image)
+                    .child(self.label("Folder"))
+                    .child(folder)
+            })
+            .when(!remote && !self.creating, |el| {
+                el.child(self.label("Sharing")).child(self.sharing(cx))
+            })
+            .when(remote, |el| {
+                el.child(self.label("Connection"))
+                    .child(self.connection(cx))
+            })
             .children(self.note.clone().map(|note| {
                 div()
                     .id("space-note")
@@ -416,22 +676,56 @@ impl Render for SpaceDialog {
 /// Opens the Edit… dialog of workspace `id`: its name selected, every change shown in the
 /// preview, applied by Save (or Enter), dropped by Cancel.
 pub(crate) fn open(ws: &Workspace, id: &str, window: &mut Window, cx: &mut Context<Workspace>) {
-    let Some(space) = ws.spaces().find(|s| s.id == id) else {
-        return;
+    if let Some(space) = ws.spaces().find(|s| s.id == id) {
+        show(ws, Some(space), window, cx);
+    }
+}
+
+/// Opens the New workspace dialog: a new workspace's name ("Workspace 3") selected, no look and
+/// no folder. Create (or Enter) makes the workspace and shows it; Cancel and Esc make nothing.
+pub(crate) fn open_new(ws: &Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    show(ws, None, window, cx);
+}
+
+/// The dialog, for `space` as it is (none: the one Create makes).
+fn show(ws: &Workspace, space: Option<&Space>, window: &mut Window, cx: &mut Context<Workspace>) {
+    let creating = space.is_none();
+    let (id, initial, look, folder, remote) = match space {
+        Some(s) => (
+            s.id.clone(),
+            s.name.clone(),
+            s.look.clone(),
+            s.folder.clone(),
+            s.is_remote(),
+        ),
+        None => (
+            String::new(),
+            ws.next_space_name(),
+            Look::default(),
+            None,
+            false,
+        ),
     };
-    let initial = space.name.clone();
     let name = cx.new(|cx| InputState::new(window, cx).default_value(initial));
     let search = cx.new(|cx| InputState::new(window, cx).placeholder("Find an icon"));
-    let view = cx.new(|_| SpaceDialog {
-        id: id.to_string(),
-        name: name.clone(),
-        search: search.clone(),
-        look: space.look.clone(),
-        folder: space.folder.clone(),
-        note: None,
-        found: (String::new(), find_icons("")),
-        theme: ws.theme.clone(),
-        ui: ws.ui,
+    let workspace = cx.entity();
+    let view = cx.new(|cx| {
+        // Who mirrors, and the API's state, change under the dialog: it draws what is now.
+        cx.observe(&workspace, |_, _, cx| cx.notify()).detach();
+        SpaceDialog {
+            id,
+            creating,
+            workspace: workspace.clone(),
+            name: name.clone(),
+            search: search.clone(),
+            look,
+            folder,
+            note: None,
+            found: (String::new(), find_icons("")),
+            remote,
+            theme: ws.theme.clone(),
+            ui: ws.ui,
+        }
     });
     for field in [&name, &search] {
         // Weak: the view owns the fields, and the dialog's end drops them all.
@@ -443,15 +737,19 @@ pub(crate) fn open(ws: &Workspace, id: &str, window: &mut Window, cx: &mut Conte
         })
         .detach();
     }
-    let workspace = cx.entity();
     let shown = view.clone();
     window.open_alert_dialog(cx, move |alert, _, _| {
         let (view, workspace) = (view.clone(), workspace.clone());
+        let (title, ok) = if creating {
+            ("New workspace", "Create")
+        } else {
+            ("Edit workspace", "Save")
+        };
         alert
             .confirm()
-            .title("Edit workspace")
+            .title(title)
             .w(px(480.0))
-            .button_props(DialogButtonProps::default().ok_text("Save"))
+            .button_props(DialogButtonProps::default().ok_text(ok))
             .child(shown.clone())
             .on_ok(move |_, window, cx| save(&view, &workspace, window, cx))
     });
@@ -476,8 +774,18 @@ fn save(
         d.look.clone(),
         d.folder.clone(),
     );
+    // A mirror keeps only the look: its name is home's, and it has no folder.
+    if d.remote {
+        workspace.update(cx, |ws, cx| ws.edit_remote_look(&id, look, window, cx));
+        return true;
+    }
+    let creating = d.creating;
     match workspace.update(cx, |ws, cx| {
-        ws.edit_space(&id, &name, look, folder, window, cx)
+        if creating {
+            ws.create_space(&name, look, folder, window, cx)
+        } else {
+            ws.edit_space(&id, &name, look, folder, window, cx)
+        }
     }) {
         Ok(()) => true,
         Err(why) => {

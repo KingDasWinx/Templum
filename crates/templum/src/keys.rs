@@ -38,9 +38,12 @@ pub(crate) enum Command {
     NextWorkspace,
     PreviousWorkspace,
     NewWorkspace,
+    ConnectTemplum,
     ToggleSidebar,
     Workspaces,
     GoToWaiting,
+    AllAgents,
+    Automations,
     Find,
     OpenFile,
     Quit,
@@ -48,7 +51,7 @@ pub(crate) enum Command {
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 39] = [
+    pub const ALL: [Command; 42] = [
         Command::NewTerminal,
         Command::NewKanban,
         Command::NewNote,
@@ -82,9 +85,12 @@ impl Command {
         Command::NextWorkspace,
         Command::PreviousWorkspace,
         Command::NewWorkspace,
+        Command::ConnectTemplum,
         Command::ToggleSidebar,
         Command::Workspaces,
         Command::GoToWaiting,
+        Command::AllAgents,
+        Command::Automations,
         Command::Find,
         Command::OpenFile,
         Command::Quit,
@@ -126,9 +132,12 @@ impl Command {
             Command::NextWorkspace => "next_workspace",
             Command::PreviousWorkspace => "previous_workspace",
             Command::NewWorkspace => "new_workspace",
+            Command::ConnectTemplum => "connect_templum",
             Command::ToggleSidebar => "toggle_sidebar",
             Command::Workspaces => "workspaces",
             Command::GoToWaiting => "go_to_waiting",
+            Command::AllAgents => "all_agents",
+            Command::Automations => "automations",
             Command::Find => "find",
             Command::OpenFile => "open_file",
             Command::Quit => "quit",
@@ -171,9 +180,12 @@ impl Command {
             Command::NextWorkspace => "Next workspace",
             Command::PreviousWorkspace => "Previous workspace",
             Command::NewWorkspace => "New workspace",
+            Command::ConnectTemplum => "Connect to a Templum…",
             Command::ToggleSidebar => "Show or hide the sidebar",
-            Command::Workspaces => "The workspaces screen",
+            Command::Workspaces => "Home: your workspaces and what waits for you",
             Command::GoToWaiting => "Go to the terminal waiting for you",
+            Command::AllAgents => "Show all agents",
+            Command::Automations => "Show automations",
             Command::Find => "Find in the terminal",
             Command::OpenFile => "Open a file by name (in an editor)",
             Command::Quit => "Quit Templum",
@@ -278,11 +290,16 @@ impl Command {
             (Command::PreviousWorkspace, _) => &["ctrl-shift-tab"],
             (Command::NewWorkspace, false) => &["ctrl-shift-n"],
             (Command::NewWorkspace, true) => &["cmd-shift-n"],
+            (Command::ConnectTemplum, _) => &[],
             (Command::ToggleSidebar, _) => &[],
             (Command::Workspaces, false) => &["ctrl-shift-o"],
             (Command::Workspaces, true) => &["cmd-shift-o"],
             (Command::GoToWaiting, false) => &["ctrl-shift-a"],
             (Command::GoToWaiting, true) => &["cmd-shift-a"],
+            (Command::AllAgents, false) => &["ctrl-shift-l"],
+            (Command::AllAgents, true) => &["cmd-shift-l"],
+            (Command::Automations, false) => &["ctrl-shift-j"],
+            (Command::Automations, true) => &["cmd-shift-j"],
             (Command::Find, false) => &["ctrl-shift-f"],
             (Command::Find, true) => &["cmd-f"],
             (Command::OpenFile, false) => &["ctrl-p"],
@@ -338,9 +355,12 @@ pub(crate) struct KeysConfig {
     pub next_workspace: Option<Keys>,
     pub previous_workspace: Option<Keys>,
     pub new_workspace: Option<Keys>,
+    pub connect_templum: Option<Keys>,
     pub toggle_sidebar: Option<Keys>,
     pub workspaces: Option<Keys>,
     pub go_to_waiting: Option<Keys>,
+    pub all_agents: Option<Keys>,
+    pub automations: Option<Keys>,
     pub find: Option<Keys>,
     pub open_file: Option<Keys>,
     pub quit: Option<Keys>,
@@ -382,9 +402,12 @@ impl KeysConfig {
             Command::NextWorkspace => self.next_workspace.as_ref(),
             Command::PreviousWorkspace => self.previous_workspace.as_ref(),
             Command::NewWorkspace => self.new_workspace.as_ref(),
+            Command::ConnectTemplum => self.connect_templum.as_ref(),
             Command::ToggleSidebar => self.toggle_sidebar.as_ref(),
             Command::Workspaces => self.workspaces.as_ref(),
             Command::GoToWaiting => self.go_to_waiting.as_ref(),
+            Command::AllAgents => self.all_agents.as_ref(),
+            Command::Automations => self.automations.as_ref(),
             Command::Find => self.find.as_ref(),
             Command::OpenFile => self.open_file.as_ref(),
             Command::Quit => self.quit.as_ref(),
@@ -426,9 +449,12 @@ impl KeysConfig {
             Command::NextWorkspace => &mut self.next_workspace,
             Command::PreviousWorkspace => &mut self.previous_workspace,
             Command::NewWorkspace => &mut self.new_workspace,
+            Command::ConnectTemplum => &mut self.connect_templum,
             Command::ToggleSidebar => &mut self.toggle_sidebar,
             Command::Workspaces => &mut self.workspaces,
             Command::GoToWaiting => &mut self.go_to_waiting,
+            Command::AllAgents => &mut self.all_agents,
+            Command::Automations => &mut self.automations,
             Command::Find => &mut self.find,
             Command::OpenFile => &mut self.open_file,
             Command::Quit => &mut self.quit,
@@ -560,6 +586,38 @@ mod tests {
         assert_eq!(keys.get(Command::NewGit), Some(&Keys::One("ctrl-g".into())));
     }
 
+    #[test]
+    fn all_agents_is_ctrl_shift_l() {
+        assert_eq!(Command::AllAgents.defaults(false), ["ctrl-shift-l"]);
+        assert_eq!(Command::AllAgents.defaults(true), ["cmd-shift-l"]);
+        assert_eq!(Command::AllAgents.name(), "all_agents");
+        assert_eq!(Command::AllAgents.title(), "Show all agents");
+        assert_eq!(
+            defaults(false).command(&typed("ctrl-shift-l")),
+            Some(Command::AllAgents)
+        );
+        assert_eq!(
+            defaults(true).command(&typed("cmd-shift-l")),
+            Some(Command::AllAgents)
+        );
+    }
+
+    #[test]
+    fn automations_is_ctrl_shift_j() {
+        assert_eq!(Command::Automations.defaults(false), ["ctrl-shift-j"]);
+        assert_eq!(Command::Automations.defaults(true), ["cmd-shift-j"]);
+        assert_eq!(Command::Automations.name(), "automations");
+        assert_eq!(Command::Automations.title(), "Show automations");
+        assert_eq!(
+            defaults(false).command(&typed("ctrl-shift-j")),
+            Some(Command::Automations)
+        );
+        assert_eq!(
+            defaults(true).command(&typed("cmd-shift-j")),
+            Some(Command::Automations)
+        );
+    }
+
     fn typed(s: &str) -> Keystroke {
         Keystroke::parse(s).unwrap()
     }
@@ -610,6 +668,15 @@ mod tests {
             Some(Command::Agent)
         );
         assert_eq!(mac.command(&typed("cmd-shift-space")), Some(Command::Agent));
+    }
+
+    #[test]
+    fn connect_templum_is_a_command_without_a_default_key() {
+        let command = Command::ConnectTemplum;
+        assert_eq!(command.name(), "connect_templum");
+        assert_eq!(command.title(), "Connect to a Templum…");
+        assert!(command.defaults(false).is_empty() && command.defaults(true).is_empty());
+        assert_eq!(defaults(false).first(command), None);
     }
 
     #[test]

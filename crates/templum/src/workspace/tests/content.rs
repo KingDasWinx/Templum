@@ -58,6 +58,62 @@ fn list_cards_shows_the_wired_board_and_a_card_whole(cx: &mut TestAppContext) {
     assert!(whole.contains("you") && whole.contains("Please"), "{whole}");
 }
 
+#[gpui_kit::test]
+fn list_cards_lists_a_cards_attachments_with_their_paths(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let (me, _, _, board, card) = wired_board(handle, &ws, cx);
+    let src = tempfile::tempdir().unwrap();
+    let from = src.path().join("shot.png");
+    std::fs::write(&from, vec![0u8; 48213]).unwrap();
+    let shot = crate::attachments::copy_in(data.path(), card, &from).unwrap();
+    let log = crate::attachments::copy_in(data.path(), card, &src.path().join("shot.png")).unwrap();
+    ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| b.edit_card(board, card, |c| c.attachments = vec![shot.clone()]))
+    });
+    let (_, text) = call(handle, &ws, cx, &me, "list_cards", json!({}));
+    assert!(text.contains("  1 attachment"), "{text}");
+    assert!(!text.contains("1 attachments"), "{text}");
+    let (failed, whole) = call(handle, &ws, cx, &me, "list_cards", json!({ "card": card }));
+    assert!(!failed, "{whole}");
+    let path = crate::attachments::dir(data.path(), card).join("shot.png");
+    assert!(path.exists());
+    assert!(
+        whole.contains(&format!(
+            "\nattachments:\n  shot.png  47 KB  {}",
+            path.display()
+        )),
+        "{whole}"
+    );
+    // Two: the plural; the second under the name it was given.
+    ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| b.edit_card(board, card, |c| c.attachments.push(log.clone())))
+    });
+    let (_, text) = call(handle, &ws, cx, &me, "list_cards", json!({}));
+    assert!(text.contains("  2 attachments"), "{text}");
+    let (_, whole) = call(handle, &ws, cx, &me, "list_cards", json!({ "card": card }));
+    assert!(whole.contains("  shot (2).png  47 KB  "), "{whole}");
+}
+
+#[gpui_kit::test]
+fn a_card_without_a_data_folder_lists_no_attachment_paths(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (me, _, _, board, card) = wired_board(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| {
+            b.edit_card(board, card, |c| {
+                c.attachments = vec![crate::board::Attachment {
+                    name: "shot.png".into(),
+                    size: 3,
+                }]
+            })
+        })
+    });
+    let (_, whole) = call(handle, &ws, cx, &me, "list_cards", json!({ "card": card }));
+    assert!(whole.contains("1 attachment"), "{whole}");
+    assert!(!whole.contains("attachments:"), "{whole}");
+}
+
 /// An agent that moves a card to the board's last column, or to a Review one, is asked to say on
 /// it what it did, unless the card's newest comment is its own.
 #[gpui_kit::test]
@@ -220,8 +276,7 @@ fn an_agent_edits_and_deletes_only_its_own_comments(cx: &mut TestAppContext) {
     });
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            let current = ws.boards.card(board, card).cloned().unwrap();
-            crate::kanban::open_card(board, current, false, window, cx)
+            crate::kanban::open_card(ws, board, card, window, cx)
         });
     })
     .unwrap();

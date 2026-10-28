@@ -43,6 +43,7 @@ fn the_board_button_opens_a_block_with_no_board_and_new_board_fills_it(cx: &mut 
 
 #[gpui_kit::test]
 fn two_blocks_on_one_board_show_the_same_cards(cx: &mut TestAppContext) {
+    no_motion(cx);
     let (handle, ws) = open(cx);
     let (a, b, board, todo) = cx
         .update_window(handle, |_, window, cx| {
@@ -65,6 +66,8 @@ fn two_blocks_on_one_board_show_the_same_cards(cx: &mut TestAppContext) {
         window.render_frame(cx);
         let add = gpui_kit::ElementId::Name(format!("add-card-{}-{todo}", b.0).into());
         window.click(add, cx);
+        window.render_frame(cx);
+        window.click("card-done", cx);
         window.render_frame(cx);
         let card = ws.read(cx).boards.board(board).unwrap().columns[0].cards[0].id;
         for block in [a, b] {
@@ -223,8 +226,7 @@ fn an_open_card_toggles_labels_and_can_be_deleted(cx: &mut TestAppContext) {
         let id = gpui_kit::ElementId::Name(format!("card-{}-{card}", block.0).into());
         assert!(window.try_find(id).is_some());
         ws.update(cx, |ws, cx| {
-            let current = ws.boards.card(board, card).cloned().unwrap();
-            crate::kanban::open_card(board, current, false, window, cx)
+            crate::kanban::open_card(ws, board, card, window, cx)
         });
         window.render_frame(cx);
         // The dialog slides in for 0.25 s first: presses meanwhile are lost.
@@ -237,12 +239,20 @@ fn an_open_card_toggles_labels_and_can_be_deleted(cx: &mut TestAppContext) {
     // Subscribers hear the typing once that update ends.
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        let title = ws.read(cx).boards.card(board, card).unwrap().title.clone();
-        assert!(title.contains('!'), "typing applies at once: {title:?}");
         window.click("label-green", cx);
         window.render_frame(cx);
-        let labels = ws.read(cx).boards.card(board, card).unwrap().labels.clone();
-        assert_eq!(labels, [Label::Green]);
+        let board_card = ws.read(cx).boards.card(board, card).unwrap().clone();
+        assert_eq!(board_card.title, "New card", "the board waits for Done");
+        assert!(board_card.labels.is_empty());
+        window.click("card-done", cx);
+        window.render_frame(cx);
+        let board_card = ws.read(cx).boards.card(board, card).unwrap().clone();
+        assert!(board_card.title.contains('!'), "{:?}", board_card.title);
+        assert_eq!(board_card.labels, [Label::Green]);
+        ws.update(cx, |ws, cx| {
+            crate::kanban::open_card(ws, board, card, window, cx)
+        });
+        window.render_frame(cx);
         window.click("delete-card", cx);
         window.render_frame(cx);
         assert!(ws.read(cx).boards.card(board, card).is_none());
@@ -427,11 +437,10 @@ fn ctrl_z_undoes_board_changes_in_a_focused_kanban(cx: &mut TestAppContext) {
     );
 }
 
-/// Typing in a card's dialog is one undo step of its own: Ctrl+Z undoes it, not the change
+/// Done on a card's dialog is one undo step of its own: Ctrl+Z undoes all of it, not the change
 /// before it.
 #[gpui_kit::test]
-fn a_card_dialogs_typing_is_one_undo_step(cx: &mut TestAppContext) {
-    use gpui_kit::component::WindowExt as _;
+fn a_card_dialogs_done_is_one_undo_step(cx: &mut TestAppContext) {
     no_motion(cx);
     let (handle, ws) = open(cx);
     let (block, board, first) = board_with_a_card(handle, &ws, cx);
@@ -443,23 +452,32 @@ fn a_card_dialogs_typing_is_one_undo_step(cx: &mut TestAppContext) {
     });
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            let current = ws.boards.card(board, second).cloned().unwrap();
-            crate::kanban::open_card(board, current, true, window, cx);
+            crate::kanban::open_card(ws, board, second, window, cx);
         });
         window.render_frame(cx);
     })
     .unwrap();
     cx.simulate_input(handle, "Renamed");
     cx.update_window(handle, |_, window, cx| {
-        window.close_dialog(cx);
+        window.click("label-red", cx);
         window.render_frame(cx);
+        window.click("card-done", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let card = ws.boards.card(board, second).unwrap();
+        assert!(card.title.contains("Renamed") && card.labels.len() == 1);
+    });
+    cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| ws.focus_block(block, window, cx));
         window.press(UNDO, cx);
         window.render_frame(cx);
     })
     .unwrap();
     ws.read_with(cx, |ws, _| {
-        assert_eq!(ws.boards.card(board, second).unwrap().title, "New card");
+        let card = ws.boards.card(board, second).unwrap();
+        assert_eq!((card.title.as_str(), card.labels.len()), ("New card", 0));
         assert!(
             ws.boards.card(board, first).is_none(),
             "the removal before stays"
@@ -523,8 +541,7 @@ fn the_open_card_adds_a_comment_and_frees_its_assignee(cx: &mut TestAppContext) 
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         ws.update(cx, |ws, cx| {
-            let current = ws.boards.card(board, card).cloned().unwrap();
-            crate::kanban::open_card(board, current, false, window, cx)
+            crate::kanban::open_card(ws, board, card, window, cx)
         });
         window.render_frame(cx);
     })
@@ -547,14 +564,23 @@ fn the_open_card_adds_a_comment_and_frees_its_assignee(cx: &mut TestAppContext) 
     .unwrap();
     ws.read_with(cx, |ws, _| {
         let c = ws.boards.card(board, card).unwrap();
-        assert_eq!(c.comments.len(), 1);
+        assert!(c.assignee.is_some(), "the assignee waits for Done");
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.click("card-done", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let c = ws.boards.card(board, card).unwrap();
+        assert_eq!(c.comments.len(), 1, "the comment went at once");
         assert_eq!(
             (c.comments[0].by.as_str(), c.comments[0].text.as_str()),
             ("you", "Looks good")
         );
         assert_eq!(c.assignee, None);
     });
-    // Each is a step of the kanban's Ctrl+Z: the assignee comes back first.
+    // The comment and Done are steps of the kanban's Ctrl+Z: the assignee comes back first.
     ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
     assert_eq!(
         ws.read_with(cx, |ws, _| ws
@@ -588,8 +614,7 @@ fn card_open_with_two_comments(
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         ws.update(cx, |ws, cx| {
-            let current = ws.boards.card(board, card).cloned().unwrap();
-            crate::kanban::open_card(board, current, false, window, cx)
+            crate::kanban::open_card(ws, board, card, window, cx)
         });
         window.render_frame(cx);
     })
@@ -804,8 +829,7 @@ fn a_deleted_comment_leaves_a_row_with_undo_until_the_dialog_closes(cx: &mut Tes
         window.close_dialog(cx);
         window.render_frame(cx);
         ws.update(cx, |ws, cx| {
-            let current = ws.boards.card(board, card).cloned().unwrap();
-            crate::kanban::open_card(board, current, false, window, cx)
+            crate::kanban::open_card(ws, board, card, window, cx)
         });
         window.render_frame(cx);
     })
@@ -905,6 +929,78 @@ fn a_draft_is_saved_when_another_pencil_or_done_is_pressed(cx: &mut TestAppConte
         assert!(window.try_find("card-done").is_none(), "the dialog closed")
     })
     .unwrap();
+}
+
+/// A press outside the open card with changes asks what to do with them (Save keeps them), and an
+/// edit's draft is saved. A press inside it, or a drag from inside that ends outside, keeps it.
+#[gpui_kit::test]
+fn a_press_outside_the_open_card_asks_and_save_keeps_what_was_typed(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (board, card, person, _) = card_open_with_two_comments(handle, &ws, cx);
+    // The title has the keyboard when the dialog opens.
+    cx.simulate_input(handle, " typed");
+    draft(handle, cx, person, "changed");
+    let open = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("card-done").is_some()
+        })
+        .unwrap()
+    };
+    // Outside: the window's left edge, beside the dialog, under the title bar.
+    let outside = cx
+        .update_window(handle, |_, window, _| {
+            (8.0, f32::from(window.viewport_size().height) / 2.0)
+        })
+        .unwrap();
+    let inside = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let at = window.find("card-number").bounds().center();
+            (f32::from(at.x), f32::from(at.y))
+        })
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        click(window, cx, inside, 1);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(open(cx), "a press inside keeps it");
+    hold_drag(
+        handle,
+        cx,
+        point(px(inside.0), px(inside.1)),
+        point(px(outside.0), px(outside.1)),
+    );
+    release(handle, cx, point(px(outside.0), px(outside.1)));
+    assert!(open(cx), "a drag from inside that ends outside keeps it");
+    cx.update_window(handle, |_, window, cx| {
+        click(window, cx, outside, 1);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(open(cx), "a press outside asks first");
+    cx.update_window(handle, |_, window, cx| {
+        assert!(window.try_find("leave-save").is_some());
+        window.click("leave-save", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(!open(cx), "Save closes it");
+    assert!(
+        ws.read_with(cx, |ws, _| ws
+            .boards
+            .card(board, card)
+            .unwrap()
+            .title
+            .contains("typed")),
+        "the title keeps what was typed"
+    );
+    assert_eq!(
+        thread(&ws, cx, board, card)[0].2,
+        "changed",
+        "the draft is saved"
+    );
 }
 
 /// A dialog that closes in the middle of an edit lets go of the edit's field: the field's
@@ -1036,9 +1132,14 @@ fn a_card_shows_its_id_always_and_its_priority_and_checklist_when_it_has_them(
         })
     });
     assert!(shown(cx, "priority") && shown(cx, "checklist"));
+    // An agent's block: its title is its agent's, not the one ConPTY gives a Windows terminal
+    // whenever it comes (it came between the label and the title once).
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(terminal).unwrap().seen.agent = Some("claude".into())
+    });
     ws.read_with(cx, |ws, cx| {
         let uid = ws.space.uids[&terminal].clone();
-        let label = |a: Assignee| crate::kanban::assignee_label(ws, &a, cx);
+        let label = |a: Assignee| crate::kanban::assignee_label(ws, &ws.space.id, &a, cx);
         assert_eq!(label(Assignee::Agent("codex".into())), "Any Codex");
         assert_eq!(
             label(Assignee::Block("zzzzz".into())),
@@ -1063,8 +1164,7 @@ fn the_open_card_sets_a_priority_has_delete_left_of_done_and_survives_its_card(
     let open_it = |cx: &mut TestAppContext| {
         cx.update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, cx| {
-                let current = ws.boards.card(board, card).cloned().unwrap();
-                crate::kanban::open_card(board, current, false, window, cx)
+                crate::kanban::open_card(ws, board, card, window, cx)
             });
             window.render_frame(cx);
         })
@@ -1080,9 +1180,7 @@ fn the_open_card_sets_a_priority_has_delete_left_of_done_and_survives_its_card(
         window.render_frame(cx);
     })
     .unwrap();
-    assert_eq!(priority(cx), Some(Priority::High));
-    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
-    assert_eq!(priority(cx), None, "one Ctrl+Z step");
+    assert_eq!(priority(cx), None, "the card waits for Done");
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         window.click("priority-medium", cx);
@@ -1103,6 +1201,8 @@ fn the_open_card_sets_a_priority_has_delete_left_of_done_and_survives_its_card(
     })
     .unwrap();
     assert_eq!(priority(cx), Some(Priority::Medium));
+    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
+    assert_eq!(priority(cx), None, "Done is one Ctrl+Z step");
     // Deleted meanwhile (an agent, another block): the dialog still draws and closes.
     open_it(cx);
     ws.update(cx, |ws, _| ws.edit_boards(|b| b.remove_card(board, card)));
@@ -1130,8 +1230,7 @@ fn a_long_open_card_keeps_its_footer_on_screen(cx: &mut TestAppContext) {
     });
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            let current = ws.boards.card(board, card).cloned().unwrap();
-            crate::kanban::open_card(board, current, false, window, cx)
+            crate::kanban::open_card(ws, board, card, window, cx)
         });
         window.render_frame(cx);
         let screen = window.viewport_size();
@@ -1164,8 +1263,7 @@ fn the_open_card_adds_checks_and_deletes_checklist_items(cx: &mut TestAppContext
     let el = |what: &str, id: u64| gpui_kit::ElementId::Name(format!("{what}-{id}").into());
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            let current = ws.boards.card(board, card).cloned().unwrap();
-            crate::kanban::open_card(board, current, false, window, cx)
+            crate::kanban::open_card(ws, board, card, window, cx)
         });
         window.render_frame(cx);
         window.click("card-item-field", cx);
@@ -1181,23 +1279,31 @@ fn the_open_card_adds_checks_and_deletes_checklist_items(cx: &mut TestAppContext
         assert!(window.has_active_dialog(cx), "Enter adds, it doesn't close");
     })
     .unwrap();
+    assert!(items(cx).is_empty(), "the board waits for Done");
+    cx.update_window(handle, |_, window, cx| {
+        window.click("card-done", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
     let now = items(cx);
     assert_eq!(
         now.iter()
             .map(|(_, t, d)| (t.as_str(), *d))
             .collect::<Vec<_>>(),
         [("Build", false), ("Test", false)],
-        "the field empties after each"
+        "the field emptied after each"
     );
     let (build, test) = (now[0].0, now[1].0);
     cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            crate::kanban::open_card(ws, board, card, window, cx)
+        });
+        window.render_frame(cx);
         window.click(el("card-item-box", build), cx);
         window.render_frame(cx);
     })
     .unwrap();
-    assert!(items(cx)[0].2);
-    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
-    assert!(!items(cx)[0].2, "one Ctrl+Z step");
+    assert!(!items(cx)[0].2, "ticking waits for Done");
     // An agent's item shows while the dialog is open.
     let theirs = ws.update(cx, |ws, _| {
         ws.edit_boards(|b| b.add_items(board, card, &[("Docs".into(), false)]))
@@ -1216,11 +1322,25 @@ fn the_open_card_adds_checks_and_deletes_checklist_items(cx: &mut TestAppContext
         window.render_frame(cx);
         window.click(el("card-item-delete", test), cx);
         window.render_frame(cx);
+        assert!(window.try_find(el("card-item-box", test)).is_none());
+    })
+    .unwrap();
+    assert_eq!(items(cx).len(), 3, "removing waits for Done");
+    cx.update_window(handle, |_, window, cx| {
+        window.click("card-done", cx);
+        window.render_frame(cx);
     })
     .unwrap();
     assert_eq!(
-        items(cx).iter().map(|i| i.0).collect::<Vec<_>>(),
-        [build, theirs]
+        items(cx).iter().map(|i| (i.0, i.2)).collect::<Vec<_>>(),
+        [(build, true), (theirs, false)],
+        "Done ticked and removed; the agent's item stays"
+    );
+    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
+    assert_eq!(
+        items(cx).iter().map(|i| (i.0, i.2)).collect::<Vec<_>>(),
+        [(build, false), (test, false), (theirs, false)],
+        "one Ctrl+Z step"
     );
 }
 
@@ -1282,7 +1402,9 @@ fn the_assignee_menu_offers_the_agent_sessions_wired_to_the_board(cx: &mut TestA
 }
 
 #[gpui_kit::test]
-fn a_session_chosen_in_the_assignee_menu_is_one_step_and_the_dialog_stays(cx: &mut TestAppContext) {
+fn a_session_chosen_in_the_assignee_menu_waits_for_done_and_the_dialog_stays(
+    cx: &mut TestAppContext,
+) {
     use crate::board::Assignee;
     no_motion(cx);
     let (handle, ws) = open(cx);
@@ -1295,8 +1417,7 @@ fn a_session_chosen_in_the_assignee_menu_is_one_step_and_the_dialog_stays(cx: &m
     ws.update(cx, |ws, cx| assert!(ws.connect(main, kanban, cx)));
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            let current = ws.boards.card(board, card).cloned().unwrap();
-            crate::kanban::open_card(board, current, false, window, cx)
+            crate::kanban::open_card(ws, board, card, window, cx)
         });
         window.render_frame(cx);
         window.click("card-assignee", cx);
@@ -1312,6 +1433,12 @@ fn a_session_chosen_in_the_assignee_menu_is_one_step_and_the_dialog_stays(cx: &m
             ws.boards.card(board, card).unwrap().assignee.clone()
         })
     };
+    assert_eq!(assignee(cx), None, "the card waits for Done");
+    cx.update_window(handle, |_, window, cx| {
+        window.click("card-done", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
     assert_eq!(assignee(cx), Some(Assignee::Block(uid)));
     ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
     assert_eq!(assignee(cx), None, "one Ctrl+Z step");
@@ -1645,7 +1772,7 @@ impl LongTodo {
 }
 
 /// The pointer moves to `at` and a frame is drawn: a scrollbar over its track is shown.
-fn hover_at(window: &mut Window, cx: &mut gpui_kit::App, at: (f32, f32)) {
+pub(super) fn hover_at(window: &mut Window, cx: &mut gpui_kit::App, at: (f32, f32)) {
     window.dispatch_event(
         PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
             position: point(px(at.0), px(at.1)),
@@ -1848,8 +1975,7 @@ fn lines_pasted_into_add_an_item_make_an_item_each(cx: &mut TestAppContext) {
     let (_, board, card) = board_with_a_card(handle, &ws, cx);
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            let current = ws.boards.card(board, card).cloned().unwrap();
-            crate::kanban::open_card(board, current, false, window, cx)
+            crate::kanban::open_card(ws, board, card, window, cx)
         });
         window.render_frame(cx);
         window.click("card-item-field", cx);
@@ -1863,6 +1989,8 @@ fn lines_pasted_into_add_an_item_make_an_item_each(cx: &mut TestAppContext) {
         window.press(PASTE, cx);
         window.render_frame(cx);
         assert!(window.has_active_dialog(cx));
+        window.click("card-done", cx);
+        window.render_frame(cx);
     })
     .unwrap();
     let items = ws.read_with(cx, |ws, _| {
@@ -1911,8 +2039,7 @@ fn the_assignee_menu_lists_a_gone_block_first_and_every_agent_in_its_submenu(
     let choose = |cx: &mut TestAppContext, pick: &dyn Fn(&mut Window, &mut gpui_kit::App)| {
         cx.update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, cx| {
-                let current = ws.boards.card(board, card).cloned().unwrap();
-                crate::kanban::open_card(board, current, false, window, cx)
+                crate::kanban::open_card(ws, board, card, window, cx)
             });
             window.render_frame(cx);
             window.click("card-assignee", cx);
@@ -1938,4 +2065,444 @@ fn the_assignee_menu_lists_a_gone_block_first_and_every_agent_in_its_submenu(
         window.within("submenu").click(1usize, cx);
     });
     assert_eq!(assignee(cx), Some(Assignee::Agent(second)));
+}
+
+/// Backing out of leaving doesn't commit a comment edit in the middle; Save draft does.
+#[gpui_kit::test]
+fn backing_out_of_the_question_keeps_a_comment_edit_open_and_unsaved(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (board, card, person, _) = card_open_with_two_comments(handle, &ws, cx);
+    let before = thread(&ws, cx, board, card);
+    draft(handle, cx, person, "changed");
+    cx.update_window(handle, |_, window, cx| {
+        window.click("label-red", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let outside = cx
+        .update_window(handle, |_, window, _| {
+            (8.0, f32::from(window.viewport_size().height) / 2.0)
+        })
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        click(window, cx, outside, 1);
+        window.render_frame(cx);
+        assert!(window.try_find("leave-save").is_some(), "it asks");
+        window.press("escape", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(thread(&ws, cx, board, card), before, "not committed");
+    assert!(
+        comment_part(handle, cx, "edit-field", person),
+        "still editing"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        click(window, cx, outside, 1);
+        window.render_frame(cx);
+        window.click("leave-save-draft", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(thread(&ws, cx, board, card)[0].2, "changed");
+}
+
+// Templum to Templum, part 2d: one door for every write of a kanban.
+
+use crate::board::{Card, Comment, Draft};
+use crate::workspace::BoardAct;
+
+#[gpui_kit::test]
+fn every_act_on_a_board_is_one_ctrl_z_step_through_one_door(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (block, board, card) = board_with_a_card(handle, &ws, cx);
+    let space = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let columns: Vec<u64> = ws.read_with(cx, |ws, _| {
+        ws.boards
+            .board(board)
+            .unwrap()
+            .columns
+            .iter()
+            .map(|c| c.id)
+            .collect()
+    });
+    let steps = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.boards_undo.len())
+    };
+    let act = |ws: &Entity<Workspace>, cx: &mut TestAppContext, act: BoardAct| {
+        let before = steps(ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.act_on_boards(&space, act, window, cx))
+        })
+        .unwrap();
+        assert_eq!(steps(ws, cx), before + 1, "one Ctrl+Z step");
+    };
+    let titles = |ws: &Entity<Workspace>, cx: &mut TestAppContext| -> Vec<String> {
+        ws.read_with(cx, |ws, _| {
+            ws.boards
+                .board(board)
+                .unwrap()
+                .columns
+                .iter()
+                .map(|c| c.title.clone())
+                .collect()
+        })
+    };
+    act(
+        &ws,
+        cx,
+        BoardAct::MoveCard {
+            board,
+            card,
+            column: columns[1],
+            to: None,
+        },
+    );
+    ws.read_with(cx, |ws, _| {
+        let b = ws.boards.board(board).unwrap();
+        assert!(b.columns[0].cards.is_empty() && b.columns[1].cards[0].id == card);
+    });
+    act(
+        &ws,
+        cx,
+        BoardAct::MoveColumn {
+            board,
+            column: columns[2],
+            to: columns[0],
+        },
+    );
+    assert_eq!(titles(&ws, cx), ["Done", "To do", "Doing"]);
+    act(&ws, cx, BoardAct::AddColumn { board });
+    let added = ws.read_with(cx, |ws, _| {
+        ws.boards.board(board).unwrap().columns.last().unwrap().id
+    });
+    act(
+        &ws,
+        cx,
+        BoardAct::RenameColumn {
+            board,
+            column: added,
+            title: "QA".into(),
+        },
+    );
+    assert_eq!(titles(&ws, cx), ["Done", "To do", "Doing", "QA"]);
+    act(
+        &ws,
+        cx,
+        BoardAct::DeleteColumn {
+            board,
+            column: added,
+        },
+    );
+    assert_eq!(titles(&ws, cx), ["Done", "To do", "Doing"]);
+    act(
+        &ws,
+        cx,
+        BoardAct::RenameBoard {
+            board,
+            name: "Sprint".into(),
+        },
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.boards.board(board).unwrap().name, "Sprint")
+    });
+    act(
+        &ws,
+        cx,
+        BoardAct::Comment {
+            board,
+            card,
+            text: "first".into(),
+        },
+    );
+    let comment = ws.read_with(cx, |ws, _| {
+        ws.boards.card(board, card).unwrap().comments[0].id
+    });
+    act(
+        &ws,
+        cx,
+        BoardAct::EditComment {
+            board,
+            card,
+            comment,
+            text: "second".into(),
+        },
+    );
+    ws.read_with(cx, |ws, _| {
+        let c = &ws.boards.card(board, card).unwrap().comments[0];
+        assert_eq!(
+            (c.by.as_str(), c.text.as_str(), c.edited),
+            ("you", "second", true)
+        );
+    });
+    let saved: Comment = ws.read_with(cx, |ws, _| {
+        ws.boards.card(board, card).unwrap().comments[0].clone()
+    });
+    act(
+        &ws,
+        cx,
+        BoardAct::DeleteComment {
+            board,
+            card,
+            comment,
+        },
+    );
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.boards.card(board, card).unwrap().comments.is_empty())
+    });
+    act(
+        &ws,
+        cx,
+        BoardAct::RestoreComment {
+            board,
+            card,
+            index: 0,
+            comment: saved,
+        },
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.boards.card(board, card).unwrap().comments.len(), 1)
+    });
+    act(&ws, cx, BoardAct::DeleteCard { board, card });
+    ws.read_with(cx, |ws, _| assert!(ws.boards.card(board, card).is_none()));
+    act(&ws, cx, BoardAct::Show { block, board: None });
+    ws.read_with(cx, |ws, _| {
+        let shown = ws.space.kanban(block).unwrap().board.unwrap();
+        assert_ne!(shown, board, "a new board is shown");
+    });
+    act(&ws, cx, BoardAct::DeleteBoard { board });
+    ws.read_with(cx, |ws, _| assert!(ws.boards.board(board).is_none()));
+}
+
+#[gpui_kit::test]
+fn a_remote_workspace_s_board_acts_write_nothing_here(cx: &mut TestAppContext) {
+    use super::remote::offline;
+    let (handle, ws, dir) = offline(cx);
+    let boards_json = crate::board::path(dir.path());
+    ws.update(cx, |ws, cx| ws.save_canvas_now(cx));
+    let (boards, file) = (
+        ws.read_with(cx, |ws, _| ws.boards.clone()),
+        std::fs::read(&boards_json).ok(),
+    );
+    let draft = Draft {
+        at: 7,
+        new: true,
+        base: Card::new(0),
+        work: Card::new(0),
+    };
+    let acts = vec![
+        BoardAct::MoveCard {
+            board: 12,
+            card: 40,
+            column: 31,
+            to: Some(41),
+        },
+        BoardAct::MoveColumn {
+            board: 12,
+            column: 31,
+            to: 30,
+        },
+        BoardAct::AddColumn { board: 12 },
+        BoardAct::RenameColumn {
+            board: 12,
+            column: 31,
+            title: "x".into(),
+        },
+        BoardAct::DeleteColumn {
+            board: 12,
+            column: 31,
+        },
+        BoardAct::RenameBoard {
+            board: 12,
+            name: "x".into(),
+        },
+        BoardAct::DeleteBoard { board: 12 },
+        BoardAct::Show {
+            block: BlockId(0),
+            board: None,
+        },
+        BoardAct::DeleteCard {
+            board: 12,
+            card: 40,
+        },
+        BoardAct::Finish {
+            board: 12,
+            draft: draft.clone(),
+        },
+        BoardAct::Comment {
+            board: 12,
+            card: 40,
+            text: "x".into(),
+        },
+        BoardAct::EditComment {
+            board: 12,
+            card: 40,
+            comment: 9,
+            text: "x".into(),
+        },
+        BoardAct::DeleteComment {
+            board: 12,
+            card: 40,
+            comment: 9,
+        },
+        BoardAct::RestoreComment {
+            board: 12,
+            card: 40,
+            index: 0,
+            comment: Comment {
+                id: 9,
+                by: "you".into(),
+                text: "x".into(),
+                at: 0,
+                edited: false,
+            },
+        },
+        BoardAct::KeepDraft(draft),
+        BoardAct::DropDraft(7),
+    ];
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            for act in acts {
+                ws.act_on_boards("r1", act, window, cx);
+            }
+            assert!(ws.fresh_id("r1") > u64::MAX - 10, "a mirror's own ids");
+        })
+    })
+    .unwrap();
+    ws.update(cx, |ws, cx| ws.save_canvas_now(cx));
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.boards == boards, "the boards as they were")
+    });
+    assert_eq!(
+        std::fs::read(&boards_json).ok(),
+        file,
+        "boards.json byte for byte"
+    );
+}
+
+/// The open card's description field, as drawn (auto grow settles a frame after the text).
+fn description_box(handle: AnyWindowHandle, cx: &mut TestAppContext) -> (f32, f32) {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let b = window.find("card-description").bounds();
+        (f32::from(b.top()), f32::from(b.size.height))
+    })
+    .unwrap()
+}
+
+/// Types `n` lines in the field that has the keyboard, each after an Enter.
+fn type_lines(handle: AnyWindowHandle, cx: &mut TestAppContext, n: usize) {
+    for i in 0..n {
+        super::card_draft::press_key(handle, cx, "enter");
+        cx.simulate_input(handle, &format!("line{i}"));
+    }
+}
+
+/// Drags the description's grip `dy` pixels down (up when negative) and lets it go there.
+fn drag_grip(handle: AnyWindowHandle, cx: &mut TestAppContext, dy: f32) {
+    let from = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find("card-description-grip").bounds().center()
+        })
+        .unwrap();
+    let to = from + point(px(0.0), px(dy));
+    hold_drag(handle, cx, from, to);
+    release(handle, cx, to);
+}
+
+#[gpui_kit::test]
+fn the_description_starts_six_lines_high_and_grows_with_its_text_to_sixteen(
+    cx: &mut TestAppContext,
+) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (block, _, todo) = super::card_draft::empty_board(handle, &ws, cx);
+    super::card_draft::click_add(handle, cx, block, todo);
+    let (_, empty) = description_box(handle, cx);
+    super::card_draft::click_on(handle, cx, "card-description");
+    cx.simulate_input(handle, "line");
+    type_lines(handle, cx, 5);
+    assert_eq!(description_box(handle, cx).1, empty, "six lines fit");
+    type_lines(handle, cx, 4);
+    let ten = description_box(handle, cx).1;
+    assert!(ten > empty, "it grows with its text: {empty} → {ten}");
+    type_lines(handle, cx, 6);
+    let sixteen = description_box(handle, cx).1;
+    let line = (sixteen - ten) / 6.0;
+    assert!(
+        (ten - empty - 4.0 * line).abs() < 0.5,
+        "a line at a time: {empty}, {ten}, {sixteen}"
+    );
+    assert!(empty > 6.0 * line, "six lines high with nothing typed");
+    type_lines(handle, cx, 5);
+    assert_eq!(
+        description_box(handle, cx).1,
+        sixteen,
+        "past sixteen lines it scrolls"
+    );
+}
+
+#[gpui_kit::test]
+fn the_descriptions_grip_sets_its_height_within_its_bounds_for_every_card(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let (block, board, todo) = super::card_draft::empty_board(handle, &ws, cx);
+    super::card_draft::click_add(handle, cx, block, todo);
+    let (top, before) = description_box(handle, cx);
+    drag_grip(handle, cx, 120.0);
+    assert_eq!(
+        description_box(handle, cx),
+        (top, before + 120.0),
+        "its bottom follows the pointer"
+    );
+    let saved = || {
+        let crate::session::Loaded::Saved(index) = crate::session::load_index(data.path()) else {
+            panic!("no index");
+        };
+        index.description_h
+    };
+    assert_eq!(saved(), Some(before + 120.0), "written as the drag ends");
+    drag_grip(handle, cx, -1000.0);
+    assert_eq!(
+        description_box(handle, cx).1,
+        64.0,
+        "no lower than its least"
+    );
+    drag_grip(handle, cx, 336.0);
+    assert_eq!(description_box(handle, cx).1, 400.0);
+    // A window too short for it draws what fits, and gives the height set back when it grows.
+    cx.simulate_window_resize(handle, size(px(1280.), px(500.)));
+    assert_eq!(description_box(handle, cx).1, 500.0 - 190.0);
+    cx.simulate_window_resize(handle, size(px(1280.), px(800.)));
+    assert_eq!(description_box(handle, cx).1, 400.0);
+    super::card_draft::press_key(handle, cx, "escape");
+    assert!(!super::card_draft::dialog_open(handle, cx));
+    // The next card's dialog has it, and its text scrolls in it; typing still edits it.
+    super::card_draft::click_add(handle, cx, block, todo);
+    assert_eq!(description_box(handle, cx).1, 400.0);
+    cx.simulate_input(handle, "Notes");
+    super::card_draft::click_on(handle, cx, "card-description");
+    cx.simulate_input(handle, "first");
+    type_lines(handle, cx, 30);
+    assert_eq!(
+        description_box(handle, cx).1,
+        400.0,
+        "a height set doesn't grow"
+    );
+    super::card_draft::click_on(handle, cx, "card-done");
+    let card = &super::card_draft::cards(&ws, cx, board)[0];
+    assert_eq!(card.title, "Notes");
+    assert!(
+        card.description.starts_with("first\nline0\n"),
+        "{:?}",
+        card.description
+    );
+    assert!(card.description.ends_with("\nline29"));
+    // A new Templum on the same folder.
+    assert_eq!(saved(), Some(400.0));
+    let (_, again) = open_in(cx, None, Some(data.path().to_path_buf()));
+    again.read_with(cx, |ws, _| assert_eq!(ws.description_h, Some(400.0)));
 }

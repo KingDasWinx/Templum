@@ -999,6 +999,55 @@ fn past_the_budget_untracked_files_are_listed_unread_until_asked_for() {
     assert_eq!(last.hunks[0].lines[0].text, "x");
 }
 
+#[test]
+fn the_files_asked_for_whole_are_read_up_to_a_budget_too() {
+    let (dir, repo) = fresh();
+    // The API can name any number of files in `whole`: each is under the file limit, together
+    // they are not what one read takes.
+    let line = format!("{}\n", "x".repeat(63));
+    let text = line.repeat(3 * 1024 * 1024 / line.len());
+    let names: Vec<String> = (0..12).map(|i| format!("big{i:02}.txt")).collect();
+    for name in &names {
+        write(dir.path(), name, &text);
+    }
+    let s = repo.status().unwrap();
+    let whole: Vec<(bool, String)> = names.iter().map(|n| (false, n.clone())).collect();
+    let d = repo.working_diff(&s, false, &whole).unwrap();
+    assert_eq!(d.unstaged.len(), 12, "every file is listed");
+    let unread = d.unstaged.iter().filter(|f| f.unread).count();
+    assert_eq!(unread, 1, "past 32 MiB only one more file is read");
+}
+
+#[test]
+fn tracked_files_asked_for_whole_are_read_up_to_the_budget_too() {
+    let (dir, repo) = fresh();
+    // Each file is under the file limit and has one changed line: its normal diff is a few
+    // lines, its whole re-read is the file. Twenty of them are not what one read takes.
+    let line = format!("{}\n", "x".repeat(63));
+    let text = line.repeat(38 * 1024 * 1024 / 10 / line.len());
+    let names: Vec<String> = (0..20).map(|i| format!("big{i:02}.txt")).collect();
+    for name in &names {
+        write(dir.path(), name, &text);
+    }
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    repo.stage(&refs).unwrap();
+    repo.commit("big", false).unwrap();
+    for name in &names {
+        write(dir.path(), name, &text.replacen("xx", "yy", 1));
+    }
+    let s = repo.status().unwrap();
+    let whole: Vec<(bool, String)> = names.iter().map(|n| (false, n.clone())).collect();
+    let d = repo.working_diff(&s, false, &whole).unwrap();
+    assert_eq!(d.unstaged.len(), 20, "every file is listed, with its diff");
+    let reread = d.unstaged.iter().filter(|f| f.hunks[0].lines.len() > 1000);
+    assert_eq!(
+        reread.count(),
+        8,
+        "past 32 MiB the others keep their normal diff"
+    );
+    assert!(d.unstaged.iter().all(|f| f.added() == 1 && !f.too_large));
+}
+
 /// a.txt of 30 lines committed, then lines 2, 15 and 28 changed: three hunks.
 fn three_hunks() -> (tempfile::TempDir, Repo) {
     let (dir, repo) = fresh();
@@ -2254,4 +2303,171 @@ fn a_worktree_off_its_branch_says_so_and_isnt_removed() {
     assert_eq!(state.branch.as_deref(), Some("other"));
     assert!(repo.remove_worktree("w", true).is_err());
     assert!(branch_exists(&repo, "other") && branch_exists(&repo, "w"));
+}
+
+/// What the API's `git` tool sends: every result type goes to JSON and back unchanged.
+#[test]
+fn the_git_types_go_to_json_and_back() {
+    fn round<T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
+        x: T,
+    ) {
+        let back: T = serde_json::from_value(serde_json::to_value(&x).unwrap()).unwrap();
+        assert_eq!(back, x);
+    }
+    let (dir, repo) = committed();
+    write(dir.path(), "b.txt", "b\n");
+    repo.stash_push("wip", true).unwrap();
+    repo.run(&["branch", "feature"]).unwrap();
+    write(dir.path(), "a.txt", "two\n");
+    write(dir.path(), "c.txt", "c\n");
+    let status = repo.status().unwrap();
+    round(status.clone());
+    round(repo.branches().unwrap());
+    round(repo.history(&HistoryQuery::default(), 0, 10).unwrap());
+    round(repo.stashes().unwrap());
+    let diff = repo.working_diff(&status, false, &[]).unwrap();
+    assert!(!diff.unstaged.is_empty());
+    round(diff);
+}
+
+#[test]
+fn enums_are_snake_case_and_a_diff_without_cut_reads_as_not_cut() {
+    use serde_json::json;
+    assert_eq!(
+        serde_json::to_value(Operation::CherryPick).unwrap(),
+        "cherry_pick"
+    );
+    assert_eq!(
+        serde_json::to_value(Change::TypeChanged).unwrap(),
+        "type_changed"
+    );
+    assert_eq!(
+        serde_json::to_value(Synced::Done { got: 1, sent: 2 }).unwrap(),
+        json!({"done": {"got": 1, "sent": 2}})
+    );
+    assert_eq!(
+        serde_json::to_value(Back::Kept("x".into())).unwrap(),
+        json!({"kept": "x"})
+    );
+    let mut value = serde_json::to_value(templum_git::FileDiff::empty()).unwrap();
+    assert!(value.as_object_mut().unwrap().remove("cut").is_some());
+    let diff: templum_git::FileDiff = serde_json::from_value(value).unwrap();
+    assert!(!diff.cut);
+}
+
+#[test]
+fn set_author_writes_the_repository_s_own_config_when_not_global() {
+    let (_dir, repo) = fresh();
+    repo.set_author("Grace", "grace@example.com", false)
+        .unwrap();
+    let get = |key: &str| {
+        String::from_utf8(repo.run(&["config", "--local", "--get", key]).unwrap()).unwrap()
+    };
+    assert_eq!(get("user.name"), "Grace\n");
+    assert_eq!(get("user.email"), "grace@example.com\n");
+}
+
+/// Runs `f` on a thread and fails, rather than hangs, when it doesn't return: a read of a
+/// device never ends.
+#[cfg(unix)]
+fn within<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(20))
+        .expect("the working diff read through a link to a device and never ended")
+}
+
+// A link to /dev/zero is a character device of size 0 through the link: it passed the size check
+// and then `read` never ended.
+#[cfg(unix)]
+#[test]
+fn a_link_to_a_device_is_never_read_by_the_working_diff() {
+    let (dir, repo) = fresh();
+    std::os::unix::fs::symlink("a.txt", dir.path().join("x")).unwrap();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt", "x"]).unwrap();
+    repo.commit("base", false).unwrap();
+    // A tracked link changed, and an untracked one.
+    std::fs::remove_file(dir.path().join("x")).unwrap();
+    std::os::unix::fs::symlink("/dev/zero", dir.path().join("x")).unwrap();
+    std::os::unix::fs::symlink("/dev/zero", dir.path().join("y")).unwrap();
+    let r = repo.clone();
+    let d = within(move || {
+        let s = r.status().unwrap();
+        r.working_diff(&s, false, &[]).unwrap()
+    });
+    let x = d.unstaged.iter().find(|f| f.path() == "x").unwrap();
+    assert_eq!(
+        x.bytes,
+        Some("/dev/zero".len() as u64),
+        "the link's own size"
+    );
+    assert_eq!(x.lines, Some(1), "its target text, one line");
+    let y = d.unstaged.iter().find(|f| f.path() == "y").unwrap();
+    assert_eq!(y.hunks[0].lines[0].text, "/dev/zero");
+}
+
+/// Both branches change link x: git leaves `UU x` with x still a link.
+#[cfg(unix)]
+#[test]
+fn a_conflicted_link_to_a_device_is_never_read_by_the_working_diff() {
+    let (dir, repo) = fresh();
+    let link = |to: &str| {
+        let _ = std::fs::remove_file(dir.path().join("x"));
+        std::os::unix::fs::symlink(to, dir.path().join("x")).unwrap();
+        repo.stage(&["x"]).unwrap();
+        repo.commit(to, false).unwrap();
+    };
+    link("base");
+    repo.run(&["checkout", "-q", "-b", "topic"]).unwrap();
+    link("/dev/full");
+    repo.run(&["checkout", "-q", "main"]).unwrap();
+    link("/dev/zero");
+    assert!(repo.run(&["merge", "topic"]).is_err());
+    let r = repo.clone();
+    let s = r.status().unwrap();
+    assert_eq!(s.conflicts().len(), 1, "UU x");
+    let d = within(move || r.working_diff(&s, false, &[]).unwrap());
+    assert!(
+        d.unstaged.iter().all(|f| f.hunks.is_empty()),
+        "a link holds no markers"
+    );
+}
+
+// The popup's poll and the API's `diff` hold every conflicted file's regions at once.
+#[test]
+fn past_the_budget_conflicted_files_are_listed_unread() {
+    let (dir, repo) = fresh();
+    // Common bulk under the 4 MiB limit, so every file is read and none is skipped by size.
+    let bulk = "line of the shared part of the file\n".repeat(80_000);
+    let names: Vec<String> = (0..6).map(|i| format!("c{i}.txt")).collect();
+    let set = |text: &str| {
+        for n in &names {
+            write(dir.path(), n, &format!("{bulk}{text}\n"));
+        }
+        repo.stage(&names.iter().map(String::as_str).collect::<Vec<_>>())
+            .unwrap();
+    };
+    set("base");
+    repo.commit("base", false).unwrap();
+    repo.run(&["checkout", "-q", "-b", "topic"]).unwrap();
+    set("topic");
+    repo.commit("topic", false).unwrap();
+    repo.run(&["checkout", "-q", "main"]).unwrap();
+    set("main");
+    repo.commit("main", false).unwrap();
+    assert!(repo.run(&["merge", "topic"]).is_err());
+    let s = repo.status().unwrap();
+    assert_eq!(s.conflicts().len(), 6);
+    let d = repo.working_diff(&s, false, &[]).unwrap();
+    let unread: Vec<bool> = d.unstaged.iter().map(|f| f.unread).collect();
+    assert_eq!(unread.len(), 6, "every conflicted file is listed");
+    assert!(!unread[0], "the first is read");
+    assert!(
+        unread[5] && d.unstaged[5].hunks.is_empty(),
+        "the last is not"
+    );
+    assert_eq!(d.unstaged[5].status, Change::Conflict);
 }

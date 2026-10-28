@@ -176,7 +176,7 @@ separated by hairlines:
   | `new_editor` | Ctrl+Shift+E | Cmd+Shift+E | The editor's folder dialog |
   | `new_git` | Ctrl+Shift+G | Cmd+Shift+G | The workspace's Git popup, or closes it |
   | `new_docker` | Ctrl+Shift+D | Cmd+Shift+D | A Docker block |
-  | `workspaces` | Ctrl+Shift+O | Cmd+Shift+O | The workspaces screen |
+  | `workspaces` | Ctrl+Shift+O | Cmd+Shift+O | Home ([home.md](home.md)) |
 
 - The toolbar is hidden while the settings panel is open on a window narrower than 900 px, so they don't overlap.
 - With a drawing tool or the hand on, a layer over the blocks takes the pointer, as the Alt layer does; Ctrl+wheel
@@ -251,6 +251,11 @@ Architecture: `templum-canvas/src/ink.rs` (pure: `Drawing`, `Stroke`, `Shape`, `
 tolerance)`, `bounds(drawing)`, `simplify(points, min_distance)`, `move_by`) and `templum/src/ink.rs` (the
 paint, the tool's pointer handling, the undo stack, serde in `session.rs`).
 
+**On a mirrored workspace** ([Templum to Templum](templum-to-templum.md), part 2e) home's ink and shapes are drawn
+above the blocks, in the order home keeps them, by the same painter; they can't be picked, moved, erased or have a
+menu (a right-click there opens the canvas menu), and the tools say "Drawing on a mirror isn't there yet: draw on
+winx-desktop." Home sends at most its newest 2,000 drawings and 100,000 points; nothing is saved here.
+
 ## 5. Notes
 
 Notes are plain text, kept app-wide like the kanban boards: closing a tab or a block never loses one. A **note block**
@@ -310,31 +315,44 @@ close, resize, move, focus, hover lift, pop-in and fade-out, menus, zoom.
   "notes": [3, 5], "active": 1 }`. A canvas from before `notes.json` held the note's `text` (and `color`) in the
   block: read once, it becomes a note in `notes.json`.
 
-Architecture: `notes.rs` (the notes, their names, `notes.json`), `note.rs` (`Note { tabs, active, renaming }`, the
-body, the tabs, the Notes dialog), `tab_strip.rs` (the tabs and the rename field), `workspace/note_tabs.rs` (opening,
-closing, renaming and deleting). An editor's Markdown preview lives in `markdown.rs`.
+Architecture: `notes.rs` (the notes, their names, `notes.json`), `note.rs` (`Note { tabs, active, renaming, remote }`,
+the body, the tabs, the Notes dialog), `tab_strip.rs` (the tabs and the rename field), `workspace/note_tabs.rs`
+(opening, closing, renaming and deleting). An editor's Markdown preview lives in `markdown.rs`.
+
+**On a mirrored workspace** ([Templum to Templum](templum-to-templum.md), part 2e) a note block shows the notes home's
+block shows, as tabs, in an editor typed in as a local one: the text goes to home after a pause, checked against
+home's text (a change of home's in the same place keeps both texts, the person's as a new note beside it; see
+[Notes on a mirror](templum-to-templum.md#notes-on-a-mirror-kanban-card-204)). Select, Copy, Copy all, Find and Send to ▸
+(home's terminals) work; which tab is shown is the mirror's own choice. The tabs' + and ×, a double click, Rename…,
+Color ▸ and All notes… are home's acts, dimmed with the rule's words when the mirror can't. A text home cut at 256 KiB
+ends with "… The rest is on winx-desktop." and is read-only. Home's text follows into the editor as a ranged change,
+the selection kept.
 
 ## 6. The workspaces screen
 
-The sidebar stays as the quick switcher. The screen is where workspaces are looked at and customized.
+The sidebar stays as the quick switcher. The screen is where workspaces are looked at and customized. Kanban card 256
+turned it into Templum's **Home** ([home.md](home.md)): the full-window starting point, opened at launch, with what
+waits for the person across every workspace, the workspaces' cards and recent folders. What follows about its cards
+still holds there.
 
 ### Opening it
 
-The sidebar gets a **grid button** (`layout-grid`) at its top, above the tiles; the workspace's name in the title
-bar is a button too; and the `workspaces` command. The screen covers the whole window below the title bar, over
-the canvas, with a scrim of `canvas @ 0.6` behind a centered sheet: 920 px wide at most, the `surface` fill, the
-card radius, the focused block's shadow. Esc, the ✕ in its header, or a click on the scrim closes it. Opening it
-slides it up over 200 ms like the settings panel; closing slides it down.
+The sidebar's **Home** button (`house`) at its top, above the tiles; the workspace's name in the title bar; and the
+`workspaces` command. Where it is drawn and how it is left: [home.md](home.md#when-it-shows) and
+[design-system.md](design-system.md#screens).
 
 ### The screen
 
-- **Header:** "Workspaces", a search field that filters the cards by name as you type, and **New workspace**.
-- **Cards,** in the sidebar's order, in a grid of 4 columns (3 under 760 px of width), 200 × 140 each: the icon
-  (or image) 40 px, tinted with the workspace's color; the name; a line with what is in it, live:
-  "3 terminals · 1 note · 1 Claude Code running" (counts of blocks by kind, and the agents found by the last
-  snapshot); the active card has the `accent` border and ring, the others a hairline that goes `hover_border`
-  on hover.
-- **Click a card:** switches to it and closes the screen. **Right-click:** Open, Edit…, Stop (see
+- **Header, cards, tiles and recent folders:** [home.md](home.md#what-it-holds). The cards keep this section's order,
+  look and live words ("3 terminals · 1 note", the agents running found by the last snapshot); no card is marked
+  active, as on the Home no workspace is shown.
+- **A remote workspace's card** (a mirror of another computer's workspace) says "Mirror of winx-desktop · live · 3
+  terminals" and "1 Claude Code working", and the header has **Connect to a Templum…** (the keymap's
+  `connect_templum`, no default key). On its canvas a banner tells the state of the connection (live, reconnecting, or
+  why it stopped) and a veil dims its frozen blocks while it isn't live
+  ([templum-to-templum.md](templum-to-templum.md)).
+- **A mirrored workspace's card** wears the sidebar tile's cast mark and tooltip.
+- **Click a card:** shows its workspace in the Home's place. **Right-click, or its ⋯:** Open, Edit…, Stop (see
   [Stopping a workspace](#stopping-a-workspace)), Delete… (disabled for the last one, with the same confirmation as
   the sidebar). A sidebar tile's right-click menu is the same.
 - **The keyboard:** the search field has it. Typing filters; Up and Down move the highlight a row (Left and Right
@@ -342,8 +360,12 @@ slides it up over 200 ms like the settings panel; closing slides it down.
   Ctrl+9 still jump; Esc closes. A card's tooltip names its Ctrl+digit.
 - **Drag a card onto another:** the dragged one takes that card's place (the kanban columns' drag and drop). The
   sidebar follows at once, and `index.json` is written. Sidebar tiles drag and drop the same way.
-- **New workspace** creates "Workspace *n*" as the sidebar's **+** does, switches to it, and opens its edit dialog
-  with the name selected. The **+** does the same from now on.
+- **New workspace** opens the **New workspace** dialog, as the sidebar's **+** and Ctrl+Shift+N do: the edit dialog
+  below titled "New workspace", its name "Workspace *n*" selected, no color, icon, image or folder, and no Sharing (a
+  workspace not yet made has none). **Create** (Enter) makes the workspace with what was chosen and shows it;
+  Cancel and Esc make nothing, and nothing is written. An empty name is refused, as is a folder that isn't one
+  anymore, the dialog staying open saying why. Open folder… and a recent folder still make their workspace at once:
+  the folder is the choice. The API's `create_workspace` makes one directly, too: an agent has no dialog.
 
 ### The edit dialog
 
@@ -360,6 +382,17 @@ Replaces the sidebar's **Rename…**, which becomes **Edit…** everywhere. A di
 - **Image:** **Choose an image…** opens the system's file picker (PNG, JPG, JPEG, WebP, SVG); the file is copied
   to `<data folder>/workspaces/icons/<id>.<ext>` (replacing an older one) and shown instead of the icon, cropped to
   the tile's rounded square. **Remove image** goes back to the icon. A file over 4 MB is refused with a message.
+- **Sharing,** below Folder: what it does applies at once, not on Save. With no share, "Let another Templum mirror
+  this workspace: watch it live, move its blocks, answer its agents, type into its terminals." and **Share…**; else a
+  row per share (its name; dim under it, "Full · expires in 29 days" and "mirrored now from 203.0.113.7" with the
+  accent dot, "last used 3 h ago from 203.0.113.7" or "never used") with **Revoke**, and **Share…** for one more.
+  Share… opens a second dialog (name, what it can do, expiry, how the other computer reaches this one) that makes the
+  connection code and shows it once ([templum-to-templum.md](templum-to-templum.md#on-home-sharing-a-workspace)).
+- **A remote workspace's Edit…** ([templum-to-templum.md](templum-to-templum.md#the-remote-workspace)) has no Name
+  field (home's, dim: "named on winx-desktop"), Image, Folder or Sharing; it keeps Color and Icon (the local look, none:
+  home's) and gains **Connection**: the address, the way in, whether it trusts an authority this computer added, the
+  Access Client ID and the proxy when set, what the share can do, when it ends and the round trip, and **Paste a new
+  code…** (the Connect dialog for this remote).
 - **Save** and Cancel. Enter saves. Every change previews in the tile at once; Cancel puts everything back.
 
 ### Where the look shows
@@ -389,9 +422,10 @@ does for all of them:
 - The canvas is written as on quit (the agents found in it are kept, to resume), then its blocks are dropped. Each
   shell gets SIGHUP as when a block closes; 2 s later, every process that was below a shell and still runs is
   killed (SIGKILL; TerminateProcess on Windows), so programs that ignore the hangup end too.
-- **Stopping the active workspace** first shows the one before it, as deleting does. Stop is disabled while it is
-  the only workspace, and for one stopped already. A workspace whose file couldn't be read still stops: its file is
-  kept as it is, and starting it in the same session brings back what was stopped.
+- **Stopping the active workspace** first shows the nearest one running above it, else below it; with none running,
+  the Home (kanban card 264, [workspaces.md](workspaces.md#workspaces)). Stop is disabled only for one stopped already
+  and for a mirror: the only workspace can be stopped. A workspace whose file couldn't be read still stops: its file
+  is kept as it is, and starting it in the same session brings back what was stopped.
 - A stopped workspace's tile is dimmed and has no dots; its card says "Stopped" and counts what its saved canvas
   holds.
 - **Opening it starts it** (a click, the screen, Ctrl+Tab, Ctrl+digit): its canvas comes back as on a start of
@@ -424,7 +458,8 @@ moves the block, or the selection it is part of:
   `image` is a file name inside `workspaces/icons/` (letters, digits, `-`, `_`, `.`, no path separators, no
   `..`); a file that doesn't exist or can't be decoded shows the icon instead and says nothing.
 - `folder` is an absolute path; one that isn't a folder anymore is ignored when a terminal starts. `stopped` is
-  true for a stopped workspace; the active one is never stopped (an index that says so starts it).
+  true for a stopped workspace; the active one is stopped only when every workspace was: Templum opens on the Home
+  then, as always, and the card chosen starts its workspace.
 - An unknown value never makes the whole index unreadable: only that key is dropped.
 - Deleting a workspace removes its image file along with setting its canvas aside.
 

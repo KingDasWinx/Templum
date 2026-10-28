@@ -7,7 +7,7 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::DialogButtonProps;
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, SharedString, Window, div, px};
 
@@ -47,6 +47,55 @@ pub(crate) fn ask_text<V: 'static>(
     });
 }
 
+/// A field of several lines (about 6 rows), empty, with the keyboard. Ctrl+Enter or `ok` calls
+/// `apply` with the text; the dialog closes when it returns true. A text field that takes a long
+/// text, a task for an agent for one.
+pub(crate) fn ask_lines<V: 'static>(
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    ok: &'static str,
+    apply: impl Fn(String, &mut Window, &mut App) -> bool + 'static,
+    window: &mut Window,
+    cx: &mut Context<V>,
+) {
+    let (title, description) = (title.into(), description.into());
+    let input = cx.new(|cx| TextareaState::new(window, cx).rows(6));
+    let apply = Rc::new(
+        move |input: &Entity<TextareaState>, window: &mut Window, cx: &mut App| {
+            let text = input.read(cx).value().to_string();
+            apply(text, window, cx)
+        },
+    );
+    // Ctrl+Enter confirms from the field (Enter is a new line).
+    {
+        let (field, apply) = (input.clone(), apply.clone());
+        window
+            .subscribe(&input, cx, move |_, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter {
+                    secondary: true, ..
+                } = event
+                    && apply(&field, window, cx)
+                {
+                    window.close_dialog(cx);
+                }
+            })
+            .detach();
+    }
+    let field = input.clone();
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        let (apply, field) = (apply.clone(), field.clone());
+        alert
+            .confirm()
+            .title(title.clone())
+            .description(description.clone())
+            .w(px(480.0))
+            .button_props(DialogButtonProps::default().ok_text(ok))
+            .child(Textarea::new(&field))
+            .on_ok(move |_, window, cx| apply(&field, window, cx))
+    });
+    input.update(cx, |input, cx| input.focus(window, cx));
+}
+
 /// A question with Cancel and `ok`; `ok` calls `on_ok`.
 pub(crate) fn confirm(
     title: impl Into<SharedString>,
@@ -57,6 +106,8 @@ pub(crate) fn confirm(
     cx: &mut App,
 ) {
     let (title, description) = (title.into(), description.into());
+    #[cfg(test)]
+    crate::workspace::told(&format!("{title} {description}"));
     let on_ok = Rc::new(on_ok);
     window.open_alert_dialog(cx, move |alert, _, _| {
         let on_ok = on_ok.clone();

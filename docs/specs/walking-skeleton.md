@@ -50,7 +50,7 @@ All coordinates in `templum-canvas` are **world units**: logical pixels at zoom 
 | Item | Responsibility |
 |---|---|
 | `Point`, `Rect` | `f32` geometry: `contains`, `intersects`, `union`, `right`, `bottom`. |
-| `Camera` | `origin` is the world point at the viewport's top-left. `zoom` is one of `ZOOM_STEPS` (0.25 … 3.0, 14 steps, 1.0 included). See the camera methods below. |
+| `Camera` | `origin` is the world point at the viewport's top-left. `zoom` is one of `ZOOM_STEPS` (0.01 … 3.0, 23 steps, 1.0 included; 0.25 … 3.0 until card 227). See the camera methods below. |
 | `BlockId` | Opaque `u64`, never reused within a session. |
 | `Canvas` | Holds `camera` and the blocks (back-to-front, each `{ id, rect }`). See the canvas methods below. |
 | `Gesture` | `Pan { last }`, `Move { id, grab }` and `Resize { id, grab }`. `update(&mut Canvas, pointer_screen) -> Option<(BlockId, Rect)>` returns the new rect of a resized block, and resize clamps to the minimum size. |
@@ -90,6 +90,7 @@ All coordinates in `templum-canvas` are **world units**: logical pixels at zoom 
 | `write(bytes)` | Raw input, used by the IME commit path. Like `key` and `paste`, it scrolls the view back to the bottom. |
 | `resize(cols, rows, cell_px)` | Resizes the grid and the PTY. A no-op if unchanged. |
 | `scroll(lines)` | In the alternate screen with alternate-scroll mode set, it sends ↑/↓ keys. Otherwise it scrolls the history. |
+| `SharedTerm::scrollback() -> Option<Scrollback>`, `scroll_to(below)` | Where the view is: the history's lines, how many are under the view (`below`, 0 at the live screen), the screen's lines and whether the program asked for the mouse; None while the PTY thread holds the grid (`Snapshot::scrollback` keeps the last one read). `scroll_to` puts the view `below` lines back, as far as the history goes. `Scrollback::thumb` and `below_at` turn it into the scrollbar's shares and back; `bar` says whether a scrollbar is drawn. |
 | `select_start(cell, side, kind)`, `select_update(cell, side)`, `select_clear()`, `selection_text()` | `kind` is `Simple`, `Word` or `Line`, using alacritty's `Selection`. |
 | `title() -> String` | The last OSC 0/2 title. With none, the shell's name: `$SHELL` basename, or `powershell` on Windows. |
 | `exited() -> bool` | True once the shell has exited. |
@@ -159,14 +160,66 @@ Painting (in `grid.rs`):
 | Drag the title bar | Move the block |
 | Drag the bottom-right handle | Resize the block. The PTY gets the new grid size, clamped to 20×4 |
 | Drag empty canvas | Pan |
-| Drag in a terminal body | Select text. Double-click selects a word, triple-click selects a line |
-| Wheel or two-finger scroll over a body | Scroll that terminal (see `Terminal::scroll`) |
+| Drag in a terminal body | Select text. Double-click selects a word, triple-click selects a line. Letting go copies the selection to the clipboard (`terminal.copy_on_select`, on by default) |
+| Wheel or two-finger scroll over a body | Scroll that terminal (see `Terminal::scroll`); its scrollbar shows ([below](#the-scrollbar-and-jump-to-the-bottom)) |
+| Drag a terminal's scrollbar thumb, or press its track | Scroll its history there |
+| Click a scrolled-back terminal's *N lines below* | Back to its live screen |
 | Two-finger scroll over empty canvas or a title bar | Pan |
 | A mouse's wheel over empty canvas or a title bar | Zoom one step around the pointer (pans with a drawing tool) |
 | Ctrl+wheel anywhere, or pinch | Zoom one step around the pointer |
 | × button | Close the block, killing its shell |
 
 Drags keep working when the pointer leaves the window, until the button is released.
+
+**Copy on select** (kanban card 119): the selection is copied once per gesture, as the button is let go (not while
+it moves; a release the window never heard, at the next move), through the same clipboard as Ctrl+Shift+C; a click that selects nothing copies nothing, and a selection
+made otherwise (Find's match, an agent's output) isn't copied. Only the clipboard: Templum writes no PRIMARY
+selection on Linux (its middle button pans the canvas, it doesn't paste). Settings ▸ Terminal ▸ Copy selection
+automatically turns it off.
+
+A quiet **"Copied"** says it happened (kanban card 125), not a notification: a pill with a check, in the block's
+surface and hairline colors, where the button was let go, part of the terminal's body, so it moves and zooms with the
+block. It sits above the pointer (below it near the top), grows away from the nearer side and stays inside the body,
+even when the drag ended outside it. It fades in over 120 ms, stays, and fades out over the last 180 ms of 1.2 s
+(`motion::COPIED`); the next copy starts it over where that one was let go, so there is one at a time. A selection of
+several lines says how many ("Copied 3 lines"), counting up to the last line with text. It has no listener: clicks
+and the pointer's text cursor go through it to the grid. Ctrl+Shift+C and the menu's Copy show nothing: the person
+asked for those copies; the pill answers the one they didn't ask for.
+
+### The scrollbar and Jump to the bottom
+
+*(Kanban card 230.)* A terminal with a history has a scrollbar, and a terminal scrolled back a way back to the live
+screen. Up close only (the Full level, where the wheel scrolls the history); far away the wheel moves the canvas and
+nothing is drawn.
+
+- **Where:** a strip over the right of the text, `kanban::TRACK` (16) wide, from the text's top down to the resize
+  grip's square, so the grip keeps its presses. Everything is the zoom's, as the rest of the block: the strip, the
+  thumb, the inset; the layout and the wrapping never change.
+- **Look:** the app's scrollbar (`kanban::scrollbar`, as a kanban column's, a checklist's and the popups'): its thumb
+  6 wide, 8 while the pointer is over it or holds it, 48 at the least, 4 in from the strip's edge, in the theme's
+  colors. Its length is the screen's share of the history and the screen together, its place the view's
+  (`Scrollback::thumb`).
+- **When it shows:** while the pointer is over the strip or holds the thumb, and while the person scrolls the history
+  (the wheel, Jump to the bottom), for the theme's idle (2 s); it fades in over 300 ms and out over 500 ms. A history
+  that grows at the live screen doesn't show it, nor does a bar drawn again (zoomed back in, its workspace shown
+  again): the kit's own showing would take those for scrolling, so the terminal keeps which bar shows
+  (`block::Bars`) and draws the kit's bar only then.
+- **Hidden, the strip is the text's:** a press there selects text or reaches the program. Shown, it takes the presses:
+  a drag of the thumb moves the view (to the nearest line, `Scrollback::below_at`), a press on the track jumps the
+  thumb's middle there; an unfocused block is focused, the middle button pans and a right-click opens the block's
+  menu as over the rest of the block.
+- **No bar** without a history (a fresh terminal, the alternate screen, where a full-screen program has none), and
+  over a program that asked for the mouse while the view is at the live screen: its clicks on the last columns are
+  its own. Shift and the wheel go back in its history anyway, and then the bar shows.
+- **Jump to the bottom:** while the view is scrolled back, a pill at the body's bottom right, 8 in from the text's
+  corner (clear of the grip), in the Copied pill's look (22 high, `surface` on `card`, a hairline border, its shadow),
+  with an accent ↓ and how many lines are under the view ("1 line below", "120 lines below"), its tooltip "Jump to
+  the bottom". A click shows the live screen; typing still does too.
+- **A mirror's terminal** has the same over the history it read from home (`VIEWER_HISTORY`, 2000 lines), once the
+  person went back: the first wheel step or Shift+PageUp asks for home's history, and the lines it found nothing for
+  wait for it (`RemoteSpace::back`) instead of being lost.
+- **In the API:** nothing. The view's place in the history is the person's, as the camera and the keyboard are: no
+  tool moves it, the stream's frame stays the live screen, and `read_terminal` reads any part of the history.
 
 ### Keyboard
 
@@ -245,6 +298,11 @@ dev-dependency):
 - clicking `("close", id)` removes the block, and so does Ctrl+Shift+W;
 - dragging `("title", id)` moves the block;
 - dragging `("handle", id)` resizes it, and its terminal's grid size changes;
+- a selection dragged or double-clicked in a terminal lands in the test harness's clipboard as the button is let go,
+  not while it moves, and at the next move after a release the window never heard; a click copies nothing; with `terminal.copy_on_select` off nothing is copied; it is on by
+  default; each copy shows `("copied", id)` inside the body by where it was let go (above the pointer at the bottom
+  right, below it at the top left), with the count of lines with text, gone after `motion::COPIED` on the test
+  clock and started over by the next copy; a click or a copy turned off shows none;
 - scrolling over empty canvas pans the camera;
 - the zoom keybindings change the zoom step, and fit-all frames every block.
 

@@ -1,6 +1,6 @@
 //! Selecting blocks: a rectangle (Shift+drag on the empty canvas) or Shift+click on a title; and
-//! what acts on the selected blocks, or on the focused one: a selected title's drag moves them
-//! together, Delete closes them, Copy and Paste copy them.
+//! what acts on the selected blocks, or on the focused one: a drag from a selected block or from
+//! the box around them moves them together, Delete closes them, Copy and Paste copy them.
 
 use gpui_kit::{ClipboardItem, Context, Pixels, Point as PixelPoint, Window};
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,11 @@ use templum_canvas::{BlockId, Gesture, Point, Rect};
 use crate::session;
 
 use super::history::{Change, Then};
+use super::remote::Deed;
 use super::{Drag, Workspace};
+
+/// How far outside the selected blocks their box is drawn (world units).
+pub(crate) const BOX_MARGIN: f32 = 8.0;
 
 /// What Copy puts on the clipboard for blocks: JSON that Paste knows, here or in another
 /// Templum. A terminal comes back as a fresh shell in its folder, without its agent.
@@ -58,15 +62,23 @@ impl Workspace {
         self.space.selected = selected;
     }
 
-    /// A press on a selected block's title: dragging moves every selected block.
-    pub(crate) fn begin_group_move(&mut self, pos: PixelPoint<Pixels>) {
-        if self.space.grid.is_some() {
+    /// The box drawn around two or more selected blocks (world units); a press in it moves them.
+    pub(crate) fn selection_box(&self) -> Option<Rect> {
+        self.space
+            .canvas
+            .selection_box(&self.space.selected, BOX_MARGIN)
+    }
+
+    /// A press on a selected block's title, or on its body (`picks` it, if let go in place), or on
+    /// the empty canvas in the selection's box: dragging moves every selected block.
+    pub(crate) fn begin_group_move(&mut self, pos: PixelPoint<Pixels>, picks: Option<BlockId>) {
+        if self.space.grid.is_some() || self.why_not(Deed::Move).is_some() {
             return;
         }
         let p = self.local(pos);
         self.space.pristine = false;
         self.drag = Gesture::move_blocks(&self.space.canvas, &self.space.selected, p)
-            .map(|g| Drag::held(g, p));
+            .map(|g| Drag::held(g, p, picks));
         self.placing(&self.space.selected.clone());
     }
 
@@ -95,11 +107,15 @@ impl Workspace {
     /// The keyboard is on the canvas, not in a field: the workspace has it (a focused terminal's
     /// keys go through it).
     pub(super) fn canvas_has_keys(&self, window: &Window) -> bool {
-        self.focus_handle.is_focused(window)
+        // On the Home its focus is the Home's.
+        !self.home_up() && self.focus_handle.is_focused(window)
     }
 
     /// Copies the selected blocks to the clipboard. False when none is selected.
     pub(super) fn copy_blocks(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.why_not(Deed::CopyBlocks).is_some() {
+            return false;
+        }
         let items: Vec<_> = self
             .space
             .canvas
@@ -123,6 +139,9 @@ impl Workspace {
     /// Pastes the blocks on the clipboard, centered in the view (or beside the blocks already
     /// there), and selects them. False when the clipboard holds no blocks.
     pub(super) fn paste_blocks(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.why_not(Deed::CopyBlocks).is_some() {
+            return false;
+        }
         let Some(clip) = cx
             .read_from_clipboard()
             .and_then(|item| item.text())

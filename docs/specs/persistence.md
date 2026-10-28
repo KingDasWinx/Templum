@@ -175,6 +175,13 @@ What doesn't come back: the text that was on screen, and programs other than the
   (`SetProcessShutdownParameters`), so Windows asks it to close, and it saves, before the programs in its terminals.
   macOS quits the apps before the other processes, and Linux ends Templum at once on `SIGTERM`, with no last save:
   the snapshot from up to 5 seconds before stays.
+- **When the window stops answering (Linux, kanban card 291):** after a sleep, the GPU driver may never finish the
+  frame Templum asked for, and the UI thread waits for it forever: the window shows the same picture, keys and Close
+  do nothing, and agents wait on Templum's tools. After 30 seconds without the UI thread (not counting a sleep),
+  Templum starts again by itself and this one ends at once, with no last save: the snapshot from up to 5 seconds
+  before the stall stays, and the new Templum restores it and resumes its agents, as a restart does, with a notice
+  saying why. A stall while quitting ends Templum after 10 seconds instead; a Templum started this way that stalls
+  again quits instead of restarting again ([ARCHITECTURE.md](../ARCHITECTURE.md#runtime)).
 - **Off the UI thread:** the UI thread only gathers each block's rect and process ids. Reading the processes
   (folders, agents) and writing the file run in a background task, so a snapshot never costs a frame. On quit the
   same work runs at once, before Templum exits.
@@ -216,6 +223,7 @@ What doesn't come back: the text that was on screen, and programs other than the
 | `config.rs` | `write_whole` (temporary file, rename, read-only check) becomes `pub(crate)` and names its temporary file and error after the file it writes. |
 | `workspace.rs` | `Workspace::with` gets the data folder. It restores the canvas, starts the snapshot every 5 seconds (and runs it at once on quit), and holds the last written snapshot. Restoring starts each block in its folder and types an agent's resume command into it. |
 | `main.rs` | Passes `session::dir()`, or nothing for `--bench`. |
+| `watchdog.rs` (Linux) | The UI thread's beat, the thread that watches it, and the restart with `--after-stall` ([When it saves](#when-it-saves)). The pure `Watch::look` is unit-tested. |
 | `templum-terminal` | `Terminal::processes()`, the block's process ids (`Send`), and `inspect(ids)`, which reads a block's folder and agent from any thread. `Agent` (`Claude`, `Codex`, with `resume_command()`) and the pure `agent_of(name, args)` that matches the table in [Agents](#agents). The folder is the agent's when one is open. |
 | `templum-canvas` | `Camera::set_zoom(f32)`, which snaps to the nearest step. |
 

@@ -84,11 +84,7 @@ fn a_new_note_takes_the_keyboard_and_keeps_every_key_in_the_notes(cx: &mut TestA
     assert_eq!(text_of(&ws, cx, note).as_deref(), Some("  Groceries\nmilk"));
     ws.read_with(cx, |ws, _| {
         assert_eq!(
-            ws.space.blocks[&id]
-                .note()
-                .unwrap()
-                .title(&ws.notes)
-                .as_ref(),
+            ws.space.blocks[&id].note().unwrap().title(ws).as_ref(),
             "Untitled",
             "typing never names a note"
         );
@@ -119,11 +115,7 @@ fn a_note_is_plain_text(cx: &mut TestAppContext) {
     );
     ws.read_with(cx, |ws, _| {
         assert_eq!(
-            ws.space.blocks[&id]
-                .note()
-                .unwrap()
-                .title(&ws.notes)
-                .as_ref(),
+            ws.space.blocks[&id].note().unwrap().title(ws).as_ref(),
             "Untitled"
         );
     });
@@ -295,7 +287,9 @@ fn the_notes_dialog_finds_opens_and_deletes_notes(cx: &mut TestAppContext) {
     let row = |id: u64| gpui_kit::ElementId::Name(format!("note-row-{id}").into());
     let trash = |id: u64| gpui_kit::ElementId::Name(format!("note-delete-{id}").into());
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |_, cx| crate::note::open_notes(None, window, cx));
+        ws.update(cx, |ws, cx| {
+            crate::note::open_notes(ws.space.id.clone(), None, window, cx)
+        });
         window.render_frame(cx);
         window.find(row(pie));
         window.find(row(banana));
@@ -315,7 +309,9 @@ fn the_notes_dialog_finds_opens_and_deletes_notes(cx: &mut TestAppContext) {
     let opened = top_note(&ws, cx);
     assert_eq!(shown(&ws, cx, opened), banana, "a new block shows it");
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |_, cx| crate::note::open_notes(None, window, cx));
+        ws.update(cx, |ws, cx| {
+            crate::note::open_notes(ws.space.id.clone(), None, window, cx)
+        });
         window.render_frame(cx);
         window.click(trash(pie), cx);
         window.render_frame(cx);
@@ -654,7 +650,9 @@ fn the_notes_dialog_shows_and_finds_notes_by_name(cx: &mut TestAppContext) {
     ws.update(cx, |ws, _| ws.notes.rename(milk, "Groceries"));
     let row = gpui_kit::ElementId::Name(format!("note-row-{milk}").into());
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |_, cx| crate::note::open_notes(None, window, cx));
+        ws.update(cx, |ws, cx| {
+            crate::note::open_notes(ws.space.id.clone(), None, window, cx)
+        });
         window.render_frame(cx);
         window.find(row.clone());
     })

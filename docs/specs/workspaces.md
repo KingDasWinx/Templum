@@ -32,15 +32,37 @@ Terminals in the workspaces you aren't looking at keep running, so an agent keep
 ## The sidebar
 
 - **Where:** a 56 px column on the left of the window, under the title bar, next to the canvas.
+- **Home** (a house) at its top, above the tiles: shows the [Home](home.md), Templum's first screen, in the canvas's
+  place. While the Home is shown this item is marked as the active tile is (below), and no tile is; a tile shows its
+  workspace in the Home's place.
 - **Tiles:** one per workspace, in order, 40 px square with a 10 px radius, showing the first letter of its name
   (two for a two-word name: "Side project" is "SP").
-  - The active tile has the `hover` fill, a hairline border and a 3 px accent bar on its left.
+  - The active tile (the workspace shown; none on the Home) has the `hover` fill, a hairline border and a 3 px accent
+    bar on its left.
   - Hovering any tile fills it with `hover`, and shows its full name in a tooltip.
   - A tile gets a small accent dot when the last snapshot of its workspace found Claude Code or Codex running.
-- **+** at the bottom creates a workspace and switches to it.
+  - A tile of a workspace another Templum mirrors now (a share's event stream is open) wears a small Lucide `cast`
+    mark at its bottom-right, in the accent; its tooltip says "Mirrored now on Another computer (203.0.113.7)", a
+    line per mirror ([templum-to-templum.md](templum-to-templum.md)).
+- **A remote workspace's tile** (a mirror of another computer's workspace,
+  [templum-to-templum.md](templum-to-templum.md)) wears home's color and icon, a small Lucide `globe` mark at its
+  bottom-right and, while it isn't live, is dimmed. Its tooltip is "API, on winx-desktop · 84 ms". It is dragged,
+  Ctrl+Tab'd and Ctrl+1–9'd like any tile; its right-click menu is Open, Edit…, Disconnect (or Connect) and Forget….
+  **Edit…** keeps home's name ("named on winx-desktop") and the person's own icon and color (none: home's), and shows
+  the connection with **Paste a new code…**; it has no Folder, Image or Sharing. It has no canvas file: only its index
+  entry.
+- **+** at the bottom creates a workspace and switches to it. Under it, a plug button, **Connect to a Templum…**,
+  opens the dialog that turns a connection code into a remote workspace.
 - **Right-click a tile:** a menu with **Rename…** and **Delete…**.
   - Rename opens a dialog with a text field. Enter or **Rename** applies it, Esc cancels.
   - Delete asks first: "Delete *name*? Its terminals will close." It is disabled while only one workspace exists.
+- **At the foot, apart:** the Agents button ("Agents"; [agents-view.md](agents-view.md)) above the requests inbox
+  button ("Requests"; [ask-inbox.md](ask-inbox.md)) above the Automations button ("Automations";
+  [automations.md](automations.md); a red badge counts the automations whose last run failed, was skipped or was
+  missed since the popup was last opened) above the Git button ([git.md](git.md)). A yellow badge at the
+  Requests button's top right counts the requests waiting in the workspace shown, "99+" past 99, and the button
+  pulses for 3 seconds when one arrives there (not with reduced motion). An accent badge at the Agents button's top
+  right counts the agents of every running workspace that finished unseen, "99+" past 99; it never pulses.
 - **Collapsing:** the title bar gets a button on its left (gpui-kit's panel icon) that hides or shows the
   sidebar. The canvas then takes the whole width. Whether it is shown is kept across restarts.
 
@@ -55,20 +77,26 @@ Terminals in the workspaces you aren't looking at keep running, so an agent keep
 - **Switching:**
   - shows the other canvas at once, with its camera, blocks and focus;
   - the keyboard goes to its focused terminal;
-  - a drag in progress ends, and a block still fading out of the old canvas is dropped.
+  - a drag in progress ends, and a block still fading out of the old canvas is dropped;
+  - from the Home it is the same plain swap, to the workspace held under it too ([home.md](home.md#when-it-shows)).
 - **Hidden workspaces keep running.** Their terminals stay alive, their output is still read, and agents keep
   working. Their blocks aren't drawn, and their output doesn't wake the UI.
 - **A theme, font or terminal setting change** applies to every workspace's terminals, hidden or not.
 - **Deleting** closes the workspace's terminals and keeps its file as `<id>.json.bak`. If it was active, the one
-  before it becomes active.
-- **The title bar** shows the active workspace's name where it said "Templum".
+  before it becomes active (on the Home, the one held under it: the Home stays).
+- **Stopping** ends a workspace's programs and keeps its canvas ([cockpit.md](cockpit.md#stopping-a-workspace)). Any
+  workspace that runs can be stopped, the only one too. Stopping the one shown shows the nearest workspace running
+  above it in the sidebar, else the nearest below it, stopped ones skipped; when none runs, the Home, which then shows
+  every workspace stopped and starts the one whose card is chosen. Stopped from the Home, it leaves the Home as it is.
+  The confirmations (a terminal at work, unsaved files) come first, as before.
+- **The title bar** shows the active workspace's name where it said "Templum"; on the Home, a house and "Home".
 
 ## Shortcuts
 
 | Command | Linux, Windows | macOS | What it does |
 |---|---|---|---|
-| `next_workspace` | Ctrl+Tab | Ctrl+Tab | The next workspace, wrapping around |
-| `previous_workspace` | Ctrl+Shift+Tab | Ctrl+Shift+Tab | The previous one, wrapping around |
+| `next_workspace` | Ctrl+Tab | Ctrl+Tab | The next workspace, wrapping around; from the Home, the first |
+| `previous_workspace` | Ctrl+Shift+Tab | Ctrl+Shift+Tab | The previous one, wrapping around; from the Home, the last |
 | `new_workspace` | Ctrl+Shift+N | Cmd+Shift+N | Creates a workspace and switches to it |
 | `toggle_sidebar` | none | none | Hides or shows the sidebar |
 

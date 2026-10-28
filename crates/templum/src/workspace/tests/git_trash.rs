@@ -156,8 +156,15 @@ fn past_the_cap_a_discard_keeps_nothing(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| window.click("git-discard-all", cx))
         .unwrap();
     settle(handle, cx);
+    let asked = told_so_far();
+    assert!(
+        asked.len() == 1
+            && asked[0].contains(" Too much to keep a copy: ")
+            && asked[0].ends_with(". This can't be undone."),
+        "says no copy is kept: {asked:?}"
+    );
     cx.update_window(handle, |_, window, cx| {
-        assert!(window.has_active_dialog(cx), "says no copy is kept");
+        assert!(window.has_active_dialog(cx));
         window.within("dialog").click("ok", cx);
         window.render_frame(cx);
     })

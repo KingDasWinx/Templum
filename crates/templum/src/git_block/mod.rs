@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::prelude::*;
@@ -32,10 +32,10 @@ mod view;
 pub(crate) mod widgets;
 pub(crate) mod words;
 
-pub(crate) use view::{popup, resize_zones};
+pub(crate) use view::popup;
 pub(crate) use widgets::field;
 
-/// The Git popup's size, pixels, until the person drags it to another; a smaller window gets a
+/// The popups' size (Git's, and the others in its place: crate::popup), pixels, until the person drags it to another; a smaller window gets a
 /// smaller one.
 pub(crate) const SIZE: Size = Size { w: 760.0, h: 540.0 };
 /// The smallest the person can drag the popup to: the header's actions, a list column and a
@@ -63,7 +63,7 @@ pub(crate) const FONT: f32 = 12.0;
 /// How often the status is read while the block is on screen.
 pub(crate) const POLL: Duration = Duration::from_secs(2);
 /// How many commits History loads at a time.
-pub(crate) const PAGE: usize = 200;
+pub(crate) use templum_git::ops::PAGE;
 /// Past this many lanes the graph is cut (the commit's dot on the last one).
 // ponytail: a history with more than 6 branches open at once draws 6; a horizontal scroll of the
 // graph if people meet it.
@@ -145,6 +145,11 @@ pub(crate) enum Found {
     NoGit(GitError),
     NotARepo,
     Repo(Repo),
+    /// A mirrored workspace's repository: its root, as home writes it. Nothing here is a path of
+    /// this computer, and no `Repo` is held: nothing runs or reads on its behalf.
+    Home(String),
+    /// Home couldn't look for it: its words.
+    Refused(String),
 }
 
 /// Which of fetch, pull, push and sync runs: the bar's Sync button spins, and a click on it
@@ -200,27 +205,15 @@ impl Check {
 /// A command waiting for the block's running one.
 pub(crate) type Queued = Box<dyn FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>)>;
 
-/// One refresh's result, read in the background.
-pub(crate) struct Read {
-    pub status: Status,
-    pub operation: Option<Operation>,
-    pub author: Option<(String, String)>,
-}
-
-impl Read {
-    pub fn of(repo: &Repo) -> Result<Read, GitError> {
-        Ok(Read {
-            status: repo.status()?,
-            operation: repo.operation(),
-            author: repo.author()?,
-        })
-    }
-}
-
 /// A Git block's state: the folder, what it holds, and the last read.
 pub(crate) struct Git {
     /// What the user chose; the repository's root may be above it.
     pub folder: PathBuf,
+    /// A mirrored workspace's Git: the folder at home its repository is found from, as home
+    /// writes it. Nothing on this computer reads it.
+    pub home: Option<String>,
+    /// On a mirror: the status the panel's diff was last asked with, and when.
+    pub home_diff: Option<(Status, Instant)>,
     /// The folder wasn't there at the last look, on opening and every POLL: the body says so.
     /// Never looked up while drawing: a stat each frame stalls on a slow or network disk.
     pub gone: bool,
@@ -331,15 +324,6 @@ pub(crate) struct Git {
     _search: Subscription,
 }
 
-/// The summary, then a blank line and the description when there is one.
-pub(crate) fn join_message(summary: &str, description: &str) -> String {
-    if description.is_empty() {
-        summary.to_string()
-    } else {
-        format!("{summary}\n\n{description}")
-    }
-}
-
 impl Git {
     pub fn new(folder: PathBuf, tab: Tab, window: &mut Window, cx: &mut Context<Workspace>) -> Git {
         let summary = cx.new(|cx| InputState::new(window, cx).placeholder(COMMIT_MESSAGE));
@@ -404,6 +388,8 @@ impl Git {
         Git {
             gone: !folder.is_dir(),
             folder,
+            home: None,
+            home_diff: None,
             generation: 0,
             found: Found::Looking,
             tab,
@@ -668,6 +654,20 @@ impl Git {
             .is_some_and(|d| !d.hunks.is_empty())
     }
 
+    /// The Git of a mirrored workspace, looked for from `folder` at home. It holds no `Repo` and
+    /// its `folder` is empty: no code path of this computer can stat or run git on it.
+    pub fn at_home(
+        folder: String,
+        tab: Tab,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> Git {
+        let mut git = Git::new(PathBuf::new(), tab, window, cx);
+        git.gone = false;
+        git.home = Some(folder);
+        git
+    }
+
     pub fn repo(&self) -> Option<&Repo> {
         match &self.found {
             Found::Repo(repo) => Some(repo),
@@ -675,8 +675,30 @@ impl Git {
         }
     }
 
+    /// A repository was found, here or at home.
+    pub fn has_repo(&self) -> bool {
+        matches!(self.found, Found::Repo(_) | Found::Home(_))
+    }
+
+    /// The repository's root, else the folder: this computer's path as it displays, or home's as
+    /// it wrote it.
+    pub fn place(&self) -> String {
+        match (&self.found, &self.home) {
+            (Found::Home(root), _) => root.clone(),
+            (_, Some(home)) => home.clone(),
+            _ => self
+                .repo()
+                .map_or(&self.folder, |r| &r.root)
+                .display()
+                .to_string(),
+        }
+    }
+
     /// The repository's folder name, else the chosen folder's.
     pub fn name(&self) -> String {
+        if self.home.is_some() {
+            return home_name(&self.place());
+        }
         let dir = self.repo().map_or(&self.folder, |r| &r.root);
         dir.file_name().map_or_else(
             || dir.display().to_string(),
@@ -713,6 +735,14 @@ impl Git {
     }
 }
 
+/// The last part of one of home's paths, split on `/` and `\`; the whole path when it has none.
+pub(crate) fn home_name(path: &str) -> String {
+    path.rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(path)
+        .to_string()
+}
+
 pub(crate) fn row_id(list: &str, i: usize) -> ElementId {
     ElementId::Name(format!("git-row-{list}-{i}").into())
 }
@@ -721,6 +751,13 @@ pub(crate) fn row_id(list: &str, i: usize) -> ElementId {
 mod tests {
     use super::*;
     use templum_git::Change;
+
+    #[test]
+    fn home_s_folder_is_named_by_its_last_part() {
+        assert_eq!(home_name("/home/ada/app"), "app");
+        assert_eq!(home_name("C:\\Users\\ada\\app\\"), "app");
+        assert_eq!(home_name("/"), "/");
+    }
 
     #[test]
     fn a_files_box_is_what_of_it_is_staged() {

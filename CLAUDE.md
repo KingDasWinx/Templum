@@ -30,6 +30,16 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing structure. Dec
   and the lessons in [ADR-0002](docs/adr/0002-ui-framework.md) instead of guessing APIs. The `spike/gpui` branch has a working
   canvas-of-terminals prototype to learn from.
 - **Tests:** every logic change ships a test that fails without it. For UI-only changes, state how you verified them.
+- **One layout and design standard** ([docs/specs/design-system.md](docs/specs/design-system.md), its Popups section;
+  the Git popup is the reference): every popup or modal is built from `crates/templum/src/popup.rs` (`frame`,
+  `header`, `slot`, `content`, `section`, `row`, `line`, `foot`) and never draws its own frame, so each one has the
+  full-width header (tile, title, subtitle, actions, Full screen, Close), the resize edges, full screen, Esc and a
+  press outside to close, and forms as sections of labelled rows, not a column of stacked fields. Colors come only
+  from the theme's tokens, sizes and spacing from the spec's values. A new kind of UI writes its standard in that
+  spec in the same change, and its look is checked by running the app beside the Git popup.
+- **Every feature in the API** (kanban card 171, [docs/specs/api.md](docs/specs/api.md)): a new feature ships its
+  Templum API surface (a tool in the registry, or its data in the API's state) and its lines in `docs/api.md`, in the
+  same change. A control tool is in the API by itself; give it its scope (`control::reads`, `control::rule`).
 - **Minor issues left for later:** every minor deferred by a review, a plan or a fix goes into
   [docs/minors.md](docs/minors.md), under its area, with where it is, what a person sees and a way to fix it. When one
   is fixed, delete its entry in the same commit as the fix.
@@ -50,7 +60,8 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing structure. Dec
   `--bench-mixed`, an agent cockpit: TUIs, editors, a note, kanban; and `--bench-zoom=<kind>` for a change to
   zooming, run from a real project folder: `cd ~/Documents/github/DaemonQuest &&
   ~/Documents/github/Templum/target/release/templum --bench-zoom=editor`; `--bench-far`, run the same way, for a
-  change to drawing at far zoom; and `--bench-git` for a change to the Git popup's diff panel).
+  change to drawing at far zoom; `--bench-git` for a change to the Git popup's diff panel; and `--bench-mirror`,
+  the cockpit mirrored by the same Templum over loopback, for a change to the mirror's painting or its client).
   The bar is `p95_ms` <= 16.7 (see [ADR-0002](docs/adr/0002-ui-framework.md)).
 
 ## Before saying "done"

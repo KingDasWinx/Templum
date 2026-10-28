@@ -339,6 +339,13 @@ fn the_templum_agent_section_edits_its_keys(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| {
         window.click("settings-tab-templum-agent", cx);
         window.render_frame(cx);
+        // Without Claude Code installed (CI), the rows run taller and the pill is below the fold.
+        window.scroll(
+            "settings-scroll",
+            ScrollDelta::Pixels(point(px(0.), px(-5000.))),
+            cx,
+        );
+        window.render_frame(cx);
         window.click("field-templum_agent.pill", cx);
         window.render_frame(cx);
         window.render_frame(cx);
@@ -381,4 +388,85 @@ fn the_templum_agent_section_edits_its_keys(cx: &mut TestAppContext) {
     );
     let text = file();
     assert!(!text.contains("effort"), "Default removes the key: {text}");
+}
+
+#[gpui_kit::test]
+fn the_templum_agent_model_is_picked_from_the_agents_models_or_typed(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    settle_slide(handle, cx);
+    let model =
+        |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.config.templum_agent.model.clone());
+    cx.update_window(handle, |_, window, cx| {
+        window.click("settings-tab-templum-agent", cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+        assert!(window.try_find("field-templum_agent.other_model").is_some());
+    })
+    .unwrap();
+    // Typing in Another model goes through the same check as `spawn_agent`'s.
+    cx.update_window(handle, |_, window, cx| {
+        window.click("field-templum_agent.other_model", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.simulate_input(handle, "my-model:1");
+    frame(handle, cx);
+    assert_eq!(model(cx), "my-model:1");
+    cx.simulate_input(handle, "!");
+    frame(handle, cx);
+    assert_eq!(
+        model(cx),
+        "my-model:1",
+        "one Templum wouldn't type isn't taken"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        // Default, haiku, sonnet, opus.
+        window
+            .within("field-templum_agent.model")
+            .click("menu-templum_agent.model", cx);
+        window.render_frame(cx);
+        window.within("popup-menu").click(3usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(model(cx), "opus");
+    // An engine with no models offers the text field alone.
+    ws.update(cx, |ws, cx| {
+        ws.agents
+            .iter_mut()
+            .find(|a| a.id == "claude")
+            .unwrap()
+            .models
+            .clear();
+        cx.notify();
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        assert!(window.try_find("field-templum_agent.model").is_some());
+        assert!(window.try_find("menu-templum_agent.model").is_none());
+        assert!(window.try_find("field-templum_agent.other_model").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_pickers_offer_only_models_templum_can_type(cx: &mut TestAppContext) {
+    let (_, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        ws.agents
+            .iter_mut()
+            .find(|a| a.id == "claude")
+            .unwrap()
+            .models = vec!["sonnet".into(), "sonnet[1m]".into(), "opus".into()];
+    });
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.engine_models()),
+        ["sonnet", "opus"]
+    );
 }

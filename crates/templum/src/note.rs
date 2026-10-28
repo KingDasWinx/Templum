@@ -7,20 +7,23 @@ use std::cell::RefCell;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
 use gpui_kit::component::input::{Editor, EditorState, InputState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, ClickEvent, Context, ElementId, Entity, ScrollWheelEvent, SharedString,
-    TestSupportExt, Window, div, px, relative,
+    AnyElement, App, ClickEvent, Context, ElementId, Entity, KeyDownEvent, ScrollWheelEvent,
+    SharedString, TestSupportExt, Window, div, px, relative,
 };
+use gpui_kit::{EntityInputHandler as _, Keystroke};
 use templum_canvas::{BlockId, Level, Size, chrome};
 
 use crate::block::BORDER;
 use crate::grid::{BAR_OPACITY, hsla};
 use crate::list_dialog;
-use crate::notes::{self, Notes};
+use crate::notes;
 use crate::silhouette::{self, Far};
 use crate::tab_strip::{LABELS_IN, TABS_H, tab_strip};
 use crate::workspace::Workspace;
+use crate::workspace::remote::Deed;
 
 /// A new note's size, and the smallest one (world units).
 pub(crate) const SIZE: Size = Size { w: 360.0, h: 280.0 };
@@ -51,6 +54,9 @@ pub(crate) struct Note {
     pub active: usize,
     /// The tab whose name is being typed over, in place.
     pub renaming: Option<Renaming>,
+    /// Of a mirrored workspace: its ids are home's, its notes the copy in `RemoteSpace::notes`,
+    /// its editors read-only and unsubscribed. No local lookup by note id meets it.
+    pub remote: bool,
 }
 
 /// A tab's name being edited in its place: kept on Enter or when the keyboard leaves, dropped on
@@ -113,10 +119,10 @@ impl Note {
     }
 
     /// The note on screen's name; "Notes" without one.
-    pub fn title(&self, notes: &Notes) -> SharedString {
-        match self.tab() {
-            Some(tab) => notes.name(tab.id).to_string().into(),
-            None => "Notes".into(),
+    pub fn title(&self, ws: &Workspace) -> SharedString {
+        match (self.tab(), ws.notes_of(self)) {
+            (Some(tab), Some(notes)) => notes.name(tab.id).to_string().into(),
+            _ => "Notes".into(),
         }
     }
 
@@ -130,6 +136,28 @@ impl Note {
     }
 }
 
+/// Whether `keystroke` types into a text field, or pastes or cuts: a key with a character and no
+/// Ctrl, Alt or platform key, Enter, Backspace, Delete, Tab, and the platform's paste and cut.
+pub(crate) fn would_type(keystroke: &Keystroke) -> bool {
+    let m = &keystroke.modifiers;
+    let secondary = if cfg!(target_os = "macos") {
+        m.platform
+    } else {
+        m.control
+    };
+    if secondary && !m.alt {
+        return matches!(keystroke.key.as_str(), "v" | "x");
+    }
+    if m.control || m.alt || m.platform {
+        return false;
+    }
+    keystroke.key_char.is_some()
+        || matches!(
+            keystroke.key.as_str(),
+            "enter" | "backspace" | "delete" | "tab"
+        )
+}
+
 /// A note's editor: plain text, wrapped at the block's width.
 pub(crate) fn editor(text: &str, window: &mut Window, cx: &mut App) -> Entity<EditorState> {
     let text = text.to_string();
@@ -139,6 +167,41 @@ pub(crate) fn editor(text: &str, window: &mut Window, cx: &mut App) -> Entity<Ed
             .line_number(false)
             .default_value(text)
     })
+}
+
+/// Writes `text` into a note's `editor` as one ranged change: one step of its Ctrl+Z, the
+/// selection (moved by the change) and the scroll kept. The same when the editor is read-only
+/// (gpui-base lifts that for a program's edits). Nothing happens when the text is the same. A
+/// composition pending (a dead key, an input method) is committed first as plain text: a ranged
+/// replace would otherwise land over its marked range.
+pub(crate) fn write(editor: &Entity<EditorState>, text: &str, window: &mut Window, cx: &mut App) {
+    editor.update(cx, |editor, cx| {
+        if editor.marked_text_range(window, cx).is_some() {
+            editor.unmark_text(window, cx);
+        }
+        let Some(change) = notes::splice(&editor.value(), text) else {
+            return;
+        };
+        let (kept, scroll) = (editor.selected_range(), editor.scroll_offset());
+        editor.set_selected_range(change.range.clone(), cx);
+        editor.replace(change.text.clone(), window, cx);
+        editor.set_selected_range(
+            notes::shift(kept.start, &change)..notes::shift(kept.end, &change),
+            cx,
+        );
+        editor.set_scroll_offset(scroll, cx);
+    });
+}
+
+/// Whether the editor of `note` (home's id on a mirror) takes no keys: it is a mirror's and the
+/// rule, a cut note or a copy being made says so.
+fn readonly(ws: &Workspace, note: &Note, id: u64) -> bool {
+    note.remote
+        && ws
+            .space
+            .remote
+            .as_deref()
+            .is_none_or(|remote| remote.note_locked(id).is_some())
 }
 
 /// The body below the header at the block's zoom `z`: the tab strip, then the note on screen
@@ -159,12 +222,35 @@ pub(crate) fn body(
         .map_or(Size::default(), |b| chrome::content_rect(b.rect).size());
     // The text's area, below the tabs.
     let area = Size::new(content.w, (content.h - TABS_H).max(0.0));
+    // A mirrored note's tabs can't be added, closed or renamed: home's notes are read-only here.
+    let locked = note
+        .remote
+        .then(|| ws.why_not(Deed::EditNote))
+        .flatten()
+        .map(SharedString::from);
     // Far away the tabs' place stays, empty: the bars stay where the text was.
     let strip = if level == Level::Full {
+        let now = std::time::Instant::now();
         let titles = note
             .tabs
             .iter()
-            .map(|t| ws.notes.name(t.id).to_string().into())
+            .map(|t| {
+                let name = ws
+                    .notes_of(note)
+                    .map_or(notes::UNTITLED, |notes| notes.name(t.id));
+                // A mirrored note whose text isn't at home yet.
+                let unsaved = note.remote
+                    && ws
+                        .space
+                        .remote
+                        .as_deref()
+                        .is_some_and(|r| r.note_unsaved(t.id, now));
+                if unsaved {
+                    format!("{name} •").into()
+                } else {
+                    name.to_string().into()
+                }
+            })
             .collect();
         let renaming = note.renaming.as_ref().and_then(|r| {
             let at = note.tabs.iter().position(|t| t.id == r.id)?;
@@ -183,13 +269,14 @@ pub(crate) fn body(
                 Workspace::rename_note_tab,
             ],
             Workspace::new_note_tab,
+            locked,
             cx,
         )
     } else {
         div().h(px(TABS_H * z)).into_any_element()
     };
     let inner = match note.tab() {
-        None if level == Level::Full => empty(ws, id, area, z, cx),
+        None if level == Level::Full => empty(ws, id, note.remote, area, z, cx),
         None => div().into_any_element(),
         Some(tab) => {
             // What its word map is of.
@@ -202,7 +289,7 @@ pub(crate) fn body(
             };
             if level == Level::Full {
                 tab.far.borrow_mut().full = Some((z, taken));
-                editor_box(ws, n, &tab.editor, area, z, cx)
+                editor_box(ws, n, &tab.editor, area, z, readonly(ws, note, tab.id), cx)
             } else {
                 // Its words as bars; the wheel moves the canvas.
                 silhouette::body(
@@ -214,7 +301,7 @@ pub(crate) fn body(
                     FONT,
                     silhouette::note_origin,
                     hsla(ws.theme.palette.foreground, BAR_OPACITY),
-                    |cx| editor_box(ws, n, &tab.editor, area, z, cx),
+                    |cx| editor_box(ws, n, &tab.editor, area, z, readonly(ws, note, tab.id), cx),
                     cx,
                 )
             }
@@ -234,7 +321,22 @@ pub(crate) fn body(
             })
         })
         .child(strip)
-        .child(div().relative().flex_1().min_h(px(0.0)).child(inner))
+        .child(
+            div()
+                .relative()
+                .flex_1()
+                .min_h(px(0.0))
+                // A key that would type in home's note is told once, here before the editor
+                // (which is read-only) takes it.
+                .when(note.remote, |el| {
+                    el.capture_key_down(cx.listener(move |ws, e: &KeyDownEvent, window, cx| {
+                        if would_type(&e.keystroke) {
+                            ws.tell_note_locked(id, window, cx);
+                        }
+                    }))
+                })
+                .child(inner),
+        )
         .into_any_element()
 }
 
@@ -304,12 +406,23 @@ fn styled(
 fn empty(
     ws: &Workspace,
     block: BlockId,
+    remote: bool,
     area: Size,
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let n = block.0 as usize;
     let ui = ws.ui;
+    // A mirrored block's buttons are home's, dimmed with the rule's words when the mirror can't.
+    let dim = |deed: Deed| remote.then(|| ws.why_not(deed)).flatten();
+    let (new_why, open_why) = (dim(Deed::EditNote), dim(Deed::OpenNote));
+    let gated = |button: gpui_kit::Stateful<gpui_kit::Div>, why: Option<String>| {
+        button
+            .when(why.is_some(), |el| el.opacity(0.4))
+            .when_some(why, |el, words| {
+                el.tooltip(move |window, cx| Tooltip::new(words.clone()).build(window, cx))
+            })
+    };
     let (roomy, tight) = (area.h >= ROOMY, area.h < TIGHT);
     let wide = |button: gpui_kit::Stateful<gpui_kit::Div>| {
         button
@@ -317,23 +430,37 @@ fn empty(
             .justify_center()
             .when(tight, |el| el.py(px(5.0 * z)))
     };
-    let new = wide(lit_button(
-        ("note-new-here", n),
-        IconName::Plus,
-        "New note",
-        ws,
-        z,
-    ))
-    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| ws.new_note_tab(block, window, cx)))
+    let new = gated(
+        wide(lit_button(
+            ("note-new-here", n),
+            IconName::Plus,
+            "New note",
+            ws,
+            z,
+        )),
+        new_why,
+    )
+    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+        if !remote || ws.why_not(Deed::EditNote).is_none() {
+            ws.new_note_tab(block, window, cx)
+        }
+    }))
     .test_support();
-    let open = wide(button(
-        ("note-open-here", n),
-        IconName::NotebookText,
-        "Open a note…",
-        ws,
-        z,
-    ))
-    .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| open_notes(Some(block), window, cx)))
+    let open = gated(
+        wide(button(
+            ("note-open-here", n),
+            IconName::NotebookText,
+            "Open a note…",
+            ws,
+            z,
+        )),
+        open_why,
+    )
+    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+        if !remote || ws.why_not(Deed::OpenNote).is_none() {
+            open_notes(ws.space.id.clone(), Some(block), window, cx)
+        }
+    }))
     .test_support();
     div()
         .id(("note-empty", n))
@@ -395,6 +522,7 @@ fn editor_box(
     editor: &Entity<EditorState>,
     area: Size,
     z: f32,
+    readonly: bool,
     cx: &mut App,
 ) -> AnyElement {
     let (across, down) = (FIXED_LEFT + FIXED_RIGHT, FIXED_TOP + FIXED_BOTTOM);
@@ -416,6 +544,7 @@ fn editor_box(
                     // On the editor itself: it sets the theme's code size on itself, over a
                     // parent's.
                     Editor::new(editor)
+                        .readonly(readonly)
                         .appearance(false)
                         .bordered(false)
                         .text_size(px(FONT * z))
@@ -427,10 +556,17 @@ fn editor_box(
         .into_any_element()
 }
 
-/// The Notes dialog: every note, the most recently changed first, and a field that finds them by
-/// their text. A click opens one: in the block `into` it was asked from, where it is open
-/// already, or in a new block. Its trash deletes it on a second click, from every block too.
-pub(crate) fn open_notes(into: Option<BlockId>, window: &mut Window, cx: &mut Context<Workspace>) {
+/// The Notes dialog of workspace `space`: every note, the most recently changed first, and a field
+/// that finds them by their text. A click opens one: in the block `into` it was asked from, where
+/// it is open already, or in a new block. Its trash deletes it on a second click, from every block
+/// too. On a mirror it lists home's notes the workspace's blocks show ("Open") and those last
+/// closed in it ("Closed"); a click on a closed one, New note and the trash are home's.
+pub(crate) fn open_notes(
+    space: String,
+    into: Option<BlockId>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
     let kind = list_dialog::Kind {
         title: "Notes",
         prefix: "note",
@@ -439,29 +575,61 @@ pub(crate) fn open_notes(into: Option<BlockId>, window: &mut Window, cx: &mut Co
         no_match: "No note holds that.",
         new: "New note",
     };
+    let (listed, opens, deletes, makes) = (space.clone(), space.clone(), space.clone(), space);
     list_dialog::open(
         kind,
-        note_rows,
-        move |ws, id, window, cx| ws.open_note(id, into, window, cx),
-        |ws, id, window, cx| ws.delete_note(id, window, cx),
-        move |ws, window, cx| match into {
-            Some(block) => ws.new_note_tab(block, window, cx),
-            None => ws.new_note(window, cx),
+        move |ws, query| note_rows(ws, &listed, query),
+        move |ws, id, window, cx| {
+            if ws.still_on(&opens, window, cx) {
+                ws.open_note_here(id, into, window, cx)
+            }
+        },
+        move |ws, id, window, cx| {
+            if ws.still_on(&deletes, window, cx) {
+                ws.delete_note_here(id, window, cx)
+            }
+        },
+        move |ws, window, cx| {
+            if ws.still_on(&makes, window, cx) {
+                match into {
+                    Some(block) => ws.new_note_tab(block, window, cx),
+                    None => ws.new_note(window, cx),
+                }
+            }
         },
         window,
         cx,
     );
 }
 
-/// The Notes dialog's rows for `query`: each note's title, then when it changed, where it is
-/// open and its next line ("5 min ago · Open in Workspace 2 · milk"), its color's dot.
-fn note_rows(ws: &Workspace, query: &str) -> Vec<list_dialog::Row> {
+/// The Notes dialog's rows for `query`, of workspace `space`: each note's title, then when it
+/// changed, where it is open and its next line ("5 min ago · Open in Workspace 2 · milk"), its
+/// color's dot. A mirror's are home's: the ones its blocks show are "Open", the ones last closed
+/// in it "Closed", and no other.
+pub(crate) fn note_rows(ws: &Workspace, space: &str, query: &str) -> Vec<list_dialog::Row> {
     let now = notes::now();
-    ws.notes
-        .find(query)
+    let Some(shown_in) = ws.space_named(space) else {
+        return Vec::new();
+    };
+    let Some(all) = ws.notes_in(space) else {
+        return Vec::new();
+    };
+    let remote = shown_in.remote.as_deref();
+    let home = remote.and_then(|r| r.home_workspace());
+    all.find(query)
         .into_iter()
-        .map(|note| {
-            let at = list_dialog::open_at(ws, ws.note_open_at(note.id).map(|(space, _)| space));
+        .filter_map(|note| {
+            let at = match remote {
+                Some(remote) => {
+                    let open = remote.note_editors.contains_key(&note.id);
+                    let closed = home.is_some() && note.closed_in == home;
+                    if !open && !closed {
+                        return None;
+                    }
+                    Some(if open { "Open" } else { "Closed" }.to_string())
+                }
+                None => list_dialog::open_at(ws, ws.note_open_at(note.id).map(|(space, _)| space)),
+            };
             // The first line the name doesn't already say.
             let line = note
                 .text
@@ -470,18 +638,51 @@ fn note_rows(ws: &Workspace, query: &str) -> Vec<list_dialog::Row> {
                 .filter(|l| !l.is_empty())
                 .find(|l| notes::title(l) != note.name)
                 .map(str::to_string);
-            let detail: Vec<String> = [Some(notes::ago(note.changed, now)), at, line]
-                .into_iter()
-                .flatten()
-                .collect();
-            list_dialog::Row {
+            let ago = (remote.is_none() || note.changed > 0).then(|| notes::ago(note.changed, now));
+            let detail: Vec<String> = [ago, at, line].into_iter().flatten().collect();
+            Some(list_dialog::Row {
                 id: note.id,
                 title: note.name.clone(),
                 detail: detail.join(" · "),
                 dot: note
                     .color
                     .map(|color| hsla(ws.theme.palette.ansi[color.ansi()], 1.0)),
-            }
+            })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keystroke(text: &str) -> Keystroke {
+        Keystroke::parse(text).unwrap().with_simulated_ime()
+    }
+
+    #[test]
+    fn would_type_is_a_key_that_types_or_pastes() {
+        for typing in [
+            "a",
+            "shift-A",
+            "enter",
+            "backspace",
+            "tab",
+            "secondary-v",
+            "secondary-x",
+        ] {
+            assert!(would_type(&keystroke(typing)), "{typing}");
+        }
+        for not in [
+            "ctrl-t",
+            "alt-1",
+            "f5",
+            "escape",
+            "secondary-c",
+            "pageup",
+            "secondary-f",
+        ] {
+            assert!(!would_type(&keystroke(not)), "{not}");
+        }
+    }
 }

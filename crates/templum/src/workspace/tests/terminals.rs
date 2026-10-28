@@ -207,6 +207,175 @@ fn mouse_down_in_a_body_starts_a_selection(cx: &mut TestAppContext) {
     });
 }
 
+/// A selection the person drags in a terminal goes to the clipboard once, as the button is let go
+/// (not while it moves), or as the next move shows it up when the window never heard the release,
+/// unless `terminal.copy_on_select` is off; a click selects nothing and copies nothing. Each copy
+/// shows "Copied" where it was let go, inside the body, for motion::COPIED; the next one starts
+/// it over.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_selection_is_copied_when_the_button_is_let_go(cx: &mut TestAppContext) {
+    use crate::motion::COPIED;
+    use gpui_kit::{ClipboardItem, MouseMoveEvent, Pixels};
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    shown_in(&ws, cx, id, "hello\r", "hello\nhello");
+    let clipboard = |cx: &mut TestAppContext| cx.read_from_clipboard().and_then(|c| c.text());
+    let before =
+        |cx: &mut TestAppContext| cx.write_to_clipboard(ClipboardItem::new_string("before".into()));
+    let body = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(("body", id.0 as usize)).bounds()
+        })
+        .unwrap();
+    // From the first line's first letters to the body's bottom right: every line.
+    let from = point(body.origin.x + px(6.), body.origin.y + px(8.));
+    let to = point(
+        body.origin.x + body.size.width - px(2.),
+        body.origin.y + body.size.height - px(2.),
+    );
+    let press = |cx: &mut TestAppContext, count| {
+        cx.update_window(handle, |_, window, cx| {
+            window.dispatch_event(
+                PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: from,
+                    modifiers: Modifiers::default(),
+                    click_count: count,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+        })
+        .unwrap();
+    };
+    let release = |cx: &mut TestAppContext, at| {
+        cx.update_window(handle, |_, window, cx| {
+            window.dispatch_event(
+                PlatformInput::MouseUp(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: at,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                }),
+                cx,
+            );
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
+    // "Copied", as the next frame draws it.
+    let pill = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(("copied", id.0 as usize))
+                .map(|p| p.bounds())
+        })
+        .unwrap()
+    };
+    let lines = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.copied.as_ref().map(|c| c.lines))
+    };
+    let inside = |pill: Bounds<Pixels>| {
+        pill.origin.x >= body.origin.x
+            && pill.origin.y >= body.origin.y
+            && pill.right() <= body.right()
+            && pill.bottom() <= body.bottom()
+    };
+    let drag = |cx: &mut TestAppContext| {
+        press(cx, 1);
+        cx.update_window(handle, |_, window, cx| {
+            window.dispatch_event(
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position: to,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::default(),
+                }),
+                cx,
+            );
+        })
+        .unwrap();
+    };
+    assert!(
+        ws.read_with(cx, |ws, _| ws.config.terminal.copy_on_select),
+        "on by default"
+    );
+    before(cx);
+    drag(cx);
+    assert_eq!(
+        clipboard(cx).as_deref(),
+        Some("before"),
+        "not while it moves"
+    );
+    assert_eq!(pill(cx), None, "nothing copied yet");
+    release(cx, to);
+    let copied = clipboard(cx).unwrap_or_default();
+    assert!(copied.contains("hello"), "clipboard: {copied:?}");
+    // Above the pointer, at the body's bottom right, and in it.
+    let shown = pill(cx).expect("Copied shows");
+    assert!(inside(shown), "{shown:?} in {body:?}");
+    assert!(
+        shown.right() <= to.x && shown.bottom() <= to.y && to.y - shown.bottom() < px(16.),
+        "{shown:?} by {to:?}"
+    );
+    assert_eq!(lines(cx), Some(2), "the lines with text");
+    cx.executor().advance_clock(COPIED);
+    assert_eq!(pill(cx), None, "gone after its time");
+    // A click: an empty selection.
+    before(cx);
+    press(cx, 1);
+    release(cx, from);
+    assert_eq!(clipboard(cx).as_deref(), Some("before"), "nothing selected");
+    assert_eq!(pill(cx), None, "nothing copied");
+    // A double click: the word; near the top, below the pointer.
+    press(cx, 2);
+    release(cx, from);
+    assert_eq!(clipboard(cx).as_deref(), Some("hello"));
+    let shown = pill(cx).expect("Copied shows");
+    assert!(inside(shown), "{shown:?} in {body:?}");
+    assert!(
+        shown.origin.y > from.y && shown.origin.x >= from.x - px(1.),
+        "{shown:?} by {from:?}"
+    );
+    assert_eq!(lines(cx), Some(1));
+    cx.executor().advance_clock(COPIED / 2);
+    // A release the window never heard: the next move has no button.
+    before(cx);
+    drag(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position: to,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    let copied = clipboard(cx).unwrap_or_default();
+    assert!(copied.contains("hello"), "unheard release: {copied:?}");
+    // The new copy starts it over, where it was let go: past the first one's time, it shows.
+    let moved = pill(cx).expect("Copied shows");
+    assert!(
+        moved.bottom() <= to.y && moved.origin.y > shown.bottom(),
+        "{moved:?}"
+    );
+    cx.executor().advance_clock(COPIED * 3 / 4);
+    assert!(pill(cx).is_some(), "started over");
+    cx.executor().advance_clock(COPIED / 4);
+    assert_eq!(pill(cx), None, "gone after its time");
+    // Off.
+    before(cx);
+    ws.update(cx, |ws, _| ws.config.terminal.copy_on_select = false);
+    drag(cx);
+    release(cx, to);
+    assert_eq!(clipboard(cx).as_deref(), Some("before"), "turned off");
+    assert_eq!(pill(cx), None, "nothing copied");
+}
+
 // gpui-kit's Root binds tab to focus navigation; the shell must get it (completion).
 #[cfg(unix)]
 #[gpui_kit::test]
@@ -1065,4 +1234,32 @@ fn a_terminal_opened_with_a_shell_runs_it_and_saves_its_label(cx: &mut TestAppCo
         #[cfg(unix)]
         assert_eq!(pane.term.title(), "cat");
     });
+}
+
+/// A shell killed from outside (SIGKILL), as systemd-oomd ends a terminal's scope that uses too
+/// much memory: its block closes and a notification says why (card 173).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_killed_shell_closes_its_block_and_says_why(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let pid = ws.read_with(cx, |ws, _| {
+        ws.space
+            .terminal(id)
+            .unwrap()
+            .term
+            .processes()
+            .shell
+            .unwrap()
+    });
+    let killed = std::process::Command::new("kill")
+        .args(["-KILL", &pid.to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    until("its block to close", handle, &ws, cx, |ws| {
+        ws.space.terminal(id).is_none()
+    });
+    cx.run_until_parked();
+    assert_eq!(notification_count(handle, cx), 1);
 }

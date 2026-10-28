@@ -1,7 +1,7 @@
 //! The Git block's words for people: each Git word's one-sentence tooltip, and the sentences
 //! that say where a branch stands. See docs/specs/git.md, Words.
 
-use templum_git::{Change, Entry, Operation, Status};
+use templum_git::{Operation, Status};
 
 /// The tooltip of a Git word, as the spec's Words table gives it ("" for a word it hasn't).
 pub(crate) fn tip(word: &str) -> &'static str {
@@ -133,39 +133,12 @@ pub(crate) fn synced(got: u32, sent: u32) -> String {
     }
 }
 
-/// The message a commit of the one file `entry` gets when none is typed: "Add a.rs", "Delete
-/// a.rs", "Rename a.rs to b.rs" ("Move a.rs to dir/" when only its folder changed), else
-/// "Update a.rs", by the change in the index (`staged`) or in the working tree. None when the entry
-/// has no such change.
-pub(crate) fn generic_summary(entry: &Entry, staged: bool) -> Option<String> {
-    let change = if staged { entry.staged } else { entry.unstaged }?;
-    let name = entry.name();
-    Some(match (change, &entry.from) {
-        (Change::Added | Change::Untracked, _) => format!("Add {name}"),
-        (Change::Deleted, _) => format!("Delete {name}"),
-        (Change::Renamed, Some(from)) => {
-            let old = from.rsplit('/').next().unwrap_or(from);
-            match (old == name, entry.folder()) {
-                (false, _) => format!("Rename {old} to {name}"),
-                (true, "") => format!("Move {name} to the root"),
-                (true, dir) => format!("Move {name} to {dir}/"),
-            }
-        }
-        _ => format!("Update {name}"),
-    })
-}
-
-/// `generic_summary` of the one file the index holds in `status`: None with no file or several.
-pub(crate) fn staged_summary(status: &Status) -> Option<String> {
-    match status.staged().as_slice() {
-        [entry] => generic_summary(entry, true),
-        _ => None,
-    }
-}
+pub(crate) use templum_git::ops::generic_summary;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use templum_git::{Change, Entry};
 
     fn status(upstream: Option<&str>, ahead: u32, behind: u32, gone: bool) -> Status {
         Status {

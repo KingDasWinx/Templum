@@ -22,7 +22,8 @@ canvas, and every choice applies at once.
 - **Not** when a saved file was there but couldn't be read (a damaged canvas or workspace list starts as a first run
   did, with a terminal), nor without a data folder (`--bench`).
 - **Again** from Settings: **Welcome**, in the panel's footer, closes the panel and opens it.
-- The first terminal waits for it: closing it opens the terminal, centered, in the shell picked.
+- The first terminal waits for it: closing it opens the terminal, centered, in the shell picked. Every later start
+  opens on the [Home](home.md) instead.
 - It is not in `config.toml`: that file holds preferences people edit, and it rejects unknown keys, so an older
   Templum would report a new one as an error.
 
@@ -64,7 +65,8 @@ Steps at the top (Welcome · Look · Shell · Agents · Ready) show where one is
   welcome: the panel has everything. So does showing another workspace or a block (a notification's link): the
   keyboard goes there.
 - It is a modal: nothing under it gets the pointer, and a press beside the card closes nothing. The title bar stays
-  usable, and what it opens (the theme picker, the workspaces screen) is drawn above it.
+  usable, and what it opens (the theme picker) is drawn above it; the Home never shows over it: opening it closes the
+  welcome ([home.md](home.md#when-it-shows)).
 - Fading out, it lets the canvas beside the card have the pointer at once; the card still takes its presses, so a
   second click on Skip doesn't reach the canvas.
 

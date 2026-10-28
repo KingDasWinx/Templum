@@ -131,7 +131,7 @@ impl Workspace {
     /// Whether a block running `pane_agent` runs `agent` to a card: the same agent, or one with
     /// its program (the first word of their commands, as `program_name` reads it). A card for an
     /// account is that account's only: its agent's other folders run the same program.
-    fn runs(&self, pane_agent: Option<&str>, agent: &str) -> bool {
+    pub(super) fn runs(&self, pane_agent: Option<&str>, agent: &str) -> bool {
         if self
             .agents
             .iter()
@@ -281,6 +281,7 @@ impl Workspace {
         from: &str,
         card: u64,
         column: &str,
+        before: Option<u64>,
         cx: &mut Context<Self>,
     ) -> Reply {
         let (space, me) = self.caller_space(from);
@@ -312,7 +313,7 @@ impl Workspace {
             .and_then(|c| c.assignee.as_ref())
             .filter(|a| !self.is_callers(a, &caller))
             .map(|a| self.for_whom(a, cx));
-        let moved = self.card_move(card, column, cx);
+        let moved = self.card_move(card, column, before, cx);
         if moved.is_error {
             return moved;
         }
@@ -347,27 +348,9 @@ impl Workspace {
     /// comment is its writer's to change, so the person's and other agents' are refused.
     fn own_comment(&self, from: &str, card: u64, comment: u64, cx: &App) -> Result<u64, Reply> {
         let (space, me) = self.caller_space(from);
-        let board = self.card_board(space, me, card)?;
-        let Some(c) = self
-            .boards
-            .card(board, card)
-            .and_then(|c| c.comments.iter().find(|c| c.id == comment))
-        else {
-            return Err(Reply::err(format!(
-                "Card {card} has no comment {comment}: list_cards with card shows its comments."
-            )));
-        };
-        if space.uids.get(&me) != Some(&c.by) {
-            let writer = if c.by == "you" {
-                "the person".into()
-            } else {
-                self.who(&c.by, cx)
-            };
-            return Err(Reply::err(format!(
-                "Comment {comment} is by {writer}, not you: you can only change your own."
-            )));
-        }
-        Ok(board)
+        self.card_board(space, me, card)?;
+        let uid = space.uids.get(&me).map(String::as_str).unwrap_or_default();
+        self.comment_of(card, comment, Some(uid), cx)
     }
 
     /// `edit_comment`: the caller's own comment gets `text`, one step of the kanban's Ctrl+Z.
@@ -379,25 +362,10 @@ impl Workspace {
         text: &str,
         cx: &mut Context<Self>,
     ) -> Reply {
-        let board = match self.own_comment(from, card, comment, cx) {
-            Ok(b) => b,
-            Err(refused) => return refused,
-        };
-        if text.trim().is_empty() {
-            return Reply::err("A comment needs text. delete_comment removes one.");
+        match self.own_comment(from, card, comment, cx) {
+            Ok(board) => self.comment_edit(board, card, comment, text, cx),
+            Err(refused) => refused,
         }
-        let text = text.trim_end();
-        let same = self
-            .boards
-            .card(board, card)
-            .and_then(|c| c.comments.iter().find(|c| c.id == comment))
-            .is_some_and(|c| c.text == text);
-        if same {
-            return Reply::ok(format!("Comment {comment} already says that."));
-        }
-        self.edit_boards(|b| b.edit_comment(board, card, comment, text));
-        cx.notify();
-        Reply::ok(format!("Edited comment {comment} on card {card}."))
     }
 
     /// `delete_comment`: the caller's own comment goes, one step of the kanban's Ctrl+Z.
@@ -408,13 +376,10 @@ impl Workspace {
         comment: u64,
         cx: &mut Context<Self>,
     ) -> Reply {
-        let board = match self.own_comment(from, card, comment, cx) {
-            Ok(b) => b,
-            Err(refused) => return refused,
-        };
-        self.edit_boards(|b| b.remove_comment(board, card, comment));
-        cx.notify();
-        Reply::ok(format!("Deleted comment {comment} on card {card}."))
+        match self.own_comment(from, card, comment, cx) {
+            Ok(board) => self.comment_delete(board, card, comment, cx),
+            Err(refused) => refused,
+        }
     }
 
     pub(super) fn claim_card(&mut self, from: &str, card: u64, cx: &mut Context<Self>) -> Reply {
@@ -494,12 +459,6 @@ impl Workspace {
         })
     }
 
-    /// The checklist the checklist block `block` wired to the caller shows.
-    fn wired_checklist(&self, from: &str, block: &str) -> Result<u64, Reply> {
-        let (space, id) = self.wired(from, block)?;
-        self.list_of((&space, id), block)
-    }
-
     pub(super) fn read_checklist(&self, from: &str, block: &str) -> Reply {
         match self.wired(from, block) {
             Ok((space, id)) => self.checklist_text((&space, id), block),
@@ -521,7 +480,7 @@ impl Workspace {
         }
     }
 
-    /// `edit_item`: the text of an item of the checklist `block` shows; one Ctrl+Z step.
+    /// `edit_item` from the terminal `from`: see [`Workspace::item_text`].
     pub(super) fn edit_item(
         &mut self,
         from: &str,
@@ -530,23 +489,13 @@ impl Workspace {
         text: &str,
         cx: &mut Context<Self>,
     ) -> Reply {
-        let list = match self.wired_checklist(from, block) {
-            Ok(list) => list,
-            Err(refused) => return refused,
-        };
-        let text = text.trim();
-        if text.is_empty() {
-            return Reply::err("delete_item removes an item");
+        match self.wired(from, block) {
+            Ok((space, id)) => self.item_text((&space, id), block, item, text, cx),
+            Err(refused) => refused,
         }
-        if !self.item_edit(list, item, text) {
-            return self.no_item(list, item);
-        }
-        cx.notify();
-        Reply::ok(format!("Item {item} is now {text:?}."))
     }
 
-    /// `delete_item`: an item of the checklist `block` shows, deleted as the row's × does; one
-    /// Ctrl+Z step.
+    /// `delete_item` from the terminal `from`: see [`Workspace::item_delete`].
     pub(super) fn remove_item(
         &mut self,
         from: &str,
@@ -554,21 +503,10 @@ impl Workspace {
         item: u64,
         cx: &mut Context<Self>,
     ) -> Reply {
-        let list = match self.wired_checklist(from, block) {
-            Ok(list) => list,
-            Err(refused) => return refused,
-        };
-        if self
-            .checklists
-            .get(list)
-            .and_then(|l| l.item(item))
-            .is_none()
-        {
-            return self.no_item(list, item);
+        match self.wired(from, block) {
+            Ok((space, id)) => self.item_delete((&space, id), block, item, cx),
+            Err(refused) => refused,
         }
-        self.delete_item(list, item, cx);
-        self.agent_changed(list);
-        Reply::ok(format!("Deleted item {item}."))
     }
 
     pub(super) fn add_items(
@@ -600,6 +538,7 @@ impl Workspace {
             tools::BlockKind::Note => (
                 NewBlock::Note {
                     text: args.text.unwrap_or_default(),
+                    open: None,
                 },
                 "a note",
             ),
@@ -615,6 +554,7 @@ impl Workspace {
                     NewBlock::Terminal {
                         folder,
                         command: args.command.clone(),
+                        shell: None,
                     },
                     "a terminal",
                 ),

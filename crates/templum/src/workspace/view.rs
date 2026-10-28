@@ -114,6 +114,7 @@ impl Workspace {
         if to == self.space.canvas.camera {
             return;
         }
+        self.api.moved_at = Some(Instant::now());
         // Mid-flight, from where it is drawn; otherwise the camera is what was last drawn (or
         // moved since, by a drag), at rest there until now, on a canvas not drawn yet too.
         let from = if self.space.flight.is_some() {
@@ -137,6 +138,7 @@ impl Workspace {
 
     /// Pans the camera, and the flight under way with it, so the view doesn't jump.
     pub(crate) fn pan_by(&mut self, screen_delta: Point) {
+        self.api.moved_at = Some(Instant::now());
         self.space.canvas.camera.pan_by(screen_delta);
         if let Some((flight, _)) = &mut self.space.flight {
             flight.pan_by(screen_delta);

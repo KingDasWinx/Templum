@@ -5,11 +5,12 @@ use std::rc::Rc;
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
-use templum_git::{Commit, FileDiff, GitError};
+use templum_git::ops::{self, Op};
 
 use crate::git_block::diff_view::{DiffPanel, Source};
 use crate::git_block::{self, Compare, Tab, words};
 
+use super::git_home::parsed;
 use super::{GitAt, Workspace, show_notification};
 
 impl Workspace {
@@ -52,22 +53,23 @@ impl Workspace {
         let Some(git) = self.git_at(&at) else {
             return;
         };
-        let (Some(repo), Some(c)) = (git.repo().cloned(), git.compare.as_ref()) else {
+        let (true, Some(c)) = (git.has_repo(), git.compare.as_ref()) else {
             return;
         };
         let asked = (c.branch.clone(), c.base.clone(), c.narrowed.clone());
         let ignore_ws = c.panel.ignore_ws;
         let (branch, base, narrowed) = asked.clone();
-        self.git_job(
+        let op = Op::Compare {
+            base: base.clone(),
+            branch: branch.clone(),
+            hash: narrowed.clone(),
+            ignore_whitespace: ignore_ws,
+        };
+        self.git_op(
             at,
-            move || -> Result<(Vec<Commit>, Vec<FileDiff>), GitError> {
-                let commits = repo.compare_log(&base, &branch)?;
-                let files = match &narrowed {
-                    Some(hash) => repo.commit_changes(hash, ignore_ws)?,
-                    None => repo.range_diff(&base, &branch, ignore_ws)?,
-                };
-                Ok((commits, files))
-            },
+            op,
+            move |repo| ops::compare(repo, &base, &branch, narrowed.as_deref(), ignore_ws),
+            parsed::<ops::Compared>,
             move |ws, at, read, _, cx| {
                 let Some(git) = ws.git_at(&at) else {
                     return;
@@ -78,7 +80,7 @@ impl Workspace {
                     return;
                 };
                 match read {
-                    Ok((commits, files)) => {
+                    Ok(ops::Compared { commits, files }) => {
                         let title = match &c.narrowed {
                             Some(hash) => format!(
                                 "{} vs {} · commit {}",

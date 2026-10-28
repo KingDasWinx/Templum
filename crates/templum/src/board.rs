@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::attachments;
 use crate::checklists::Item;
 use crate::session::{self, Loaded};
 
@@ -22,6 +23,23 @@ pub(crate) struct Boards {
     pub next_id: u64,
     #[serde(default)]
     pub boards: Vec<Board>,
+    /// Card dialogs left half-done and kept, apart from the cards: agents never see them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drafts: Vec<Draft>,
+}
+
+/// The work of a card's dialog: the card as it was opened (`base`) and as the person made it
+/// (`work`). It touches the board only at Done, and then only what differs between the two, so
+/// what an agent changed meanwhile survives. Comments of a card that exists are sent at once and
+/// stay out of it; a card not created yet keeps its own here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Draft {
+    /// The card it edits, or the column a card not created yet is for (ids are unique).
+    pub at: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub new: bool,
+    pub base: Card,
+    pub work: Card,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -69,6 +87,43 @@ pub(crate) struct Card {
     pub checklist: Vec<Item>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comments: Vec<Comment>,
+    /// Files kept for it in `<data>/attachments/<id>/`, in the order attached.
+    #[serde(
+        default,
+        deserialize_with = "known",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub attachments: Vec<Attachment>,
+}
+
+/// A file of a card, by its name in the card's folder. One whose name isn't a plain file name
+/// doesn't read, so a hand-edited `boards.json` can't point outside the folder.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RawAttachment")]
+pub(crate) struct Attachment {
+    pub name: String,
+    pub size: u64,
+}
+
+#[derive(Deserialize)]
+struct RawAttachment {
+    name: String,
+    size: u64,
+}
+
+impl TryFrom<RawAttachment> for Attachment {
+    type Error = String;
+
+    fn try_from(raw: RawAttachment) -> Result<Self, String> {
+        if attachments::plain_name(&raw.name) {
+            Ok(Attachment {
+                name: raw.name,
+                size: raw.size,
+            })
+        } else {
+            Err(format!("{:?} is not a file name", raw.name))
+        }
+    }
 }
 
 /// Who a card is for: one block (one agent's session), or any session of an agent.
@@ -159,19 +214,144 @@ pub(crate) struct Comment {
 }
 
 impl Card {
-    /// What sending it to a terminal types: its title, then its description.
-    pub fn text(&self) -> String {
-        if self.description.trim().is_empty() {
+    /// A card titled "New card", with nothing else.
+    pub fn new(id: u64) -> Card {
+        Card {
+            id,
+            title: "New card".into(),
+            description: String::new(),
+            labels: Vec::new(),
+            priority: None,
+            assignee: None,
+            checklist: Vec::new(),
+            comments: Vec::new(),
+            attachments: Vec::new(),
+        }
+    }
+
+    /// What sending it to a terminal types: its title, then its description, then (with a data
+    /// folder to say where they are) the path of each attachment, for the agent to read.
+    pub fn text(&self, data: Option<&Path>) -> String {
+        let mut text = if self.description.trim().is_empty() {
             self.title.clone()
         } else {
             format!("{}\n\n{}", self.title, self.description)
+        };
+        if let (Some(data), false) = (data, self.attachments.is_empty()) {
+            text.push_str("\n\nAttachments:");
+            for a in &self.attachments {
+                let path = attachments::dir(data, self.id).join(&a.name);
+                text.push_str(&format!("\n{}", path.display()));
+            }
         }
+        text
     }
 
     /// Its checklist's (done, all).
     pub fn progress(&self) -> (usize, usize) {
         let done = self.checklist.iter().filter(|i| i.done).count();
         (done, self.checklist.len())
+    }
+
+    pub fn toggle_label(&mut self, label: Label) {
+        if let Some(i) = self.labels.iter().position(|l| *l == label) {
+            self.labels.remove(i);
+        } else {
+            self.labels.push(label);
+        }
+    }
+
+    /// Changes a comment's text, which then reads as edited; its author and time stay.
+    pub fn edit_comment(&mut self, comment: u64, text: &str) {
+        if let Some(c) = self.comments.iter_mut().find(|c| c.id == comment)
+            && c.text != text
+        {
+            c.text = text.to_string();
+            c.edited = true;
+        }
+    }
+
+    /// Puts a deleted `comment` back at `index` of the thread, or at its end when it is shorter
+    /// now. False, and nothing changes, when the thread has a comment with its id.
+    pub fn restore_comment(&mut self, index: usize, comment: Comment) -> bool {
+        if self.comments.iter().any(|x| x.id == comment.id) {
+            return false;
+        }
+        self.comments
+            .insert(index.min(self.comments.len()), comment);
+        true
+    }
+}
+
+impl Draft {
+    /// Moves the draft onto `live`, the card as it is now: `base` becomes it and `work` it with
+    /// the person's changes over it. Comments stay out, as in the dialog.
+    pub fn rebase(&mut self, live: &Card) {
+        let mut work = live.clone();
+        self.merge_into(&mut work);
+        self.base = Card {
+            comments: Vec::new(),
+            ..live.clone()
+        };
+        self.work = Card {
+            comments: Vec::new(),
+            ..work
+        };
+    }
+
+    /// Applies to `card` what the person changed: the fields that differ between `base` and
+    /// `work`, the labels turned on or off, the items added, removed or checked. What they left
+    /// alone stays as `card` has it now.
+    pub fn merge_into(&self, card: &mut Card) {
+        let (base, work) = (&self.base, &self.work);
+        if work.title != base.title {
+            card.title = work.title.clone();
+        }
+        if work.description != base.description {
+            card.description = work.description.clone();
+        }
+        if work.priority != base.priority {
+            card.priority = work.priority;
+        }
+        if work.assignee != base.assignee {
+            card.assignee = work.assignee.clone();
+        }
+        for label in Label::ALL {
+            let on = work.labels.contains(&label);
+            if base.labels.contains(&label) != on && card.labels.contains(&label) != on {
+                card.toggle_label(label);
+            }
+        }
+        for item in &base.checklist {
+            if work.checklist.iter().all(|i| i.id != item.id) {
+                card.checklist.retain(|i| i.id != item.id);
+            }
+        }
+        for item in &work.checklist {
+            match base.checklist.iter().find(|i| i.id == item.id) {
+                None if card.checklist.iter().all(|i| i.id != item.id) => {
+                    card.checklist.push(item.clone())
+                }
+                Some(was) if was.done != item.done => {
+                    if let Some(i) = card.checklist.iter_mut().find(|i| i.id == item.id) {
+                        i.done = item.done;
+                    }
+                }
+                _ => {}
+            }
+        }
+        for a in &base.attachments {
+            if work.attachments.iter().all(|w| w.name != a.name) {
+                card.attachments.retain(|c| c.name != a.name);
+            }
+        }
+        for a in &work.attachments {
+            if base.attachments.iter().all(|b| b.name != a.name)
+                && card.attachments.iter().all(|c| c.name != a.name)
+            {
+                card.attachments.push(a.clone());
+            }
+        }
     }
 }
 
@@ -245,6 +425,7 @@ impl Default for Boards {
             version: VERSION,
             next_id: 0,
             boards: Vec::new(),
+            drafts: Vec::new(),
         }
     }
 }
@@ -256,7 +437,7 @@ impl Board {
 }
 
 impl Boards {
-    fn next(&mut self) -> u64 {
+    pub fn next(&mut self) -> u64 {
         self.next_id += 1;
         self.next_id
     }
@@ -371,20 +552,76 @@ impl Boards {
         board.columns.insert(at, moved);
     }
 
+    /// Puts `column` right before column `before`, or at the end without one.
+    pub fn move_column_before(&mut self, board: u64, column: u64, before: Option<u64>) {
+        let Some(board) = self.board_mut(board) else {
+            return;
+        };
+        let Some(from) = board.columns.iter().position(|c| c.id == column) else {
+            return;
+        };
+        let moved = board.columns.remove(from);
+        let at = before
+            .and_then(|b| board.columns.iter().position(|c| c.id == b))
+            .unwrap_or(board.columns.len());
+        board.columns.insert(at, moved);
+    }
+
     /// "New card" at the end of `column`; returns its id.
     pub fn add_card(&mut self, board: u64, column: u64) -> Option<u64> {
         let id = self.next();
-        self.column_mut(board, column)?.cards.push(Card {
-            id,
-            title: "New card".into(),
-            description: String::new(),
-            labels: Vec::new(),
-            priority: None,
-            assignee: None,
-            checklist: Vec::new(),
-            comments: Vec::new(),
-        });
+        self.column_mut(board, column)?.cards.push(Card::new(id));
         Some(id)
+    }
+
+    /// Done on a dialog's `draft`: a card not created yet is added at the end of its column, with
+    /// its own comments; one that exists gets what the person changed. The draft goes. Returns the
+    /// card's id (None when its column or itself is gone).
+    pub fn finish_draft(&mut self, board: u64, draft: &Draft) -> Option<u64> {
+        self.drop_draft(draft.at);
+        if draft.new {
+            // An attachment reserved its id (`work.id`) so its files are in the card's folder.
+            let id = match draft.work.id {
+                0 => self.next(),
+                reserved => reserved,
+            };
+            let card = Card {
+                id,
+                ..draft.work.clone()
+            };
+            self.column_mut(board, draft.at)?.cards.push(card);
+            return Some(id);
+        }
+        self.card(board, draft.at)?;
+        self.edit_card(board, draft.at, |c| draft.merge_into(c));
+        Some(draft.at)
+    }
+
+    /// The draft kept for card `at` (or column `at`, for a new one).
+    pub fn draft(&self, at: u64) -> Option<&Draft> {
+        self.drafts.iter().find(|d| d.at == at)
+    }
+
+    /// Keeps `draft`, in place of the one before it.
+    pub fn keep_draft(&mut self, draft: Draft) {
+        self.drop_draft(draft.at);
+        self.drafts.push(draft);
+    }
+
+    pub fn drop_draft(&mut self, at: u64) {
+        self.drafts.retain(|d| d.at != at);
+    }
+
+    /// Drops the drafts of cards and columns that are gone.
+    pub fn prune_drafts(&mut self) {
+        let boards = &self.boards;
+        self.drafts.retain(|d| {
+            boards.iter().any(|b| {
+                b.columns
+                    .iter()
+                    .any(|c| c.id == d.at || c.cards.iter().any(|x| x.id == d.at))
+            })
+        });
     }
 
     /// The board and column holding `card`: ids are unique across boards.
@@ -462,10 +699,6 @@ impl Boards {
         found
     }
 
-    pub fn remove_item(&mut self, board: u64, card: u64, item: u64) {
-        self.edit_card(board, card, |c| c.checklist.retain(|i| i.id != item));
-    }
-
     /// Adds a comment by `by` at the end of the card's thread; returns its id (None when the card
     /// is gone).
     pub fn add_comment(
@@ -491,48 +724,11 @@ impl Boards {
 
     /// Changes a comment's text, which then reads as edited; its author and time stay.
     pub fn edit_comment(&mut self, board: u64, card: u64, comment: u64, text: &str) {
-        self.edit_card(board, card, |c| {
-            if let Some(c) = c.comments.iter_mut().find(|c| c.id == comment)
-                && c.text != text
-            {
-                c.text = text.to_string();
-                c.edited = true;
-            }
-        });
+        self.edit_card(board, card, |c| c.edit_comment(comment, text));
     }
 
     pub fn remove_comment(&mut self, board: u64, card: u64, comment: u64) {
         self.edit_card(board, card, |c| c.comments.retain(|c| c.id != comment));
-    }
-
-    /// Puts a deleted `comment` back, as it was (its id, author, text, time and edited flag), at
-    /// `index` of the card's thread, or at its end when the thread is shorter now. False, and
-    /// nothing changes, when the card is gone or already has a comment with its id.
-    pub fn restore_comment(
-        &mut self,
-        board: u64,
-        card: u64,
-        index: usize,
-        comment: Comment,
-    ) -> bool {
-        let mut restored = false;
-        self.edit_card(board, card, |c| {
-            if c.comments.iter().all(|x| x.id != comment.id) {
-                c.comments.insert(index.min(c.comments.len()), comment);
-                restored = true;
-            }
-        });
-        restored
-    }
-
-    pub fn toggle_label(&mut self, board: u64, card: u64, label: Label) {
-        self.edit_card(board, card, |card| {
-            if let Some(i) = card.labels.iter().position(|l| *l == label) {
-                card.labels.remove(i);
-            } else {
-                card.labels.push(label);
-            }
-        });
     }
 
     pub fn remove_card(&mut self, board: u64, card: u64) {
@@ -560,6 +756,33 @@ impl Boards {
         };
         let cards = &mut board.columns[target].cards;
         let at = at.unwrap_or(cards.len()).min(cards.len());
+        cards.insert(at, moved);
+    }
+
+    /// Moves `card` into `column`, right before card `before`, or at the end without one: the
+    /// card leaves its place first, so one moved down its own column still lands before it.
+    pub fn move_card_before(&mut self, board: u64, card: u64, column: u64, before: Option<u64>) {
+        let Some(board) = self.board_mut(board) else {
+            return;
+        };
+        if !board.columns.iter().any(|c| c.id == column) {
+            return;
+        }
+        let Some(moved) = board.columns.iter_mut().find_map(|c| {
+            let i = c.cards.iter().position(|x| x.id == card)?;
+            Some(c.cards.remove(i))
+        }) else {
+            return;
+        };
+        let cards = &mut board
+            .columns
+            .iter_mut()
+            .find(|c| c.id == column)
+            .expect("checked above")
+            .cards;
+        let at = before
+            .and_then(|b| cards.iter().position(|c| c.id == b))
+            .unwrap_or(cards.len());
         cards.insert(at, moved);
     }
 }
@@ -597,6 +820,14 @@ pub(crate) fn save(dir: &Path, boards: &Boards, generation: u64) -> io::Result<(
 mod tests {
     use super::*;
 
+    fn restore(boards: &mut Boards, board: u64, card: u64, index: usize, comment: Comment) -> bool {
+        let mut restored = false;
+        boards.edit_card(board, card, |c| {
+            restored = c.restore_comment(index, comment)
+        });
+        restored
+    }
+
     fn titles(boards: &Boards, board: u64, column: usize) -> Vec<String> {
         boards.board(board).unwrap().columns[column]
             .cards
@@ -622,6 +853,50 @@ mod tests {
             id
         });
         (boards, board, columns.try_into().unwrap(), cards)
+    }
+
+    #[test]
+    fn the_block_server_s_labels_are_the_board_s() {
+        assert_eq!(Label::ALL.map(Label::name), templum_mcp::tools::LABELS);
+    }
+
+    #[test]
+    fn move_column_before_puts_it_right_before_the_column() {
+        let (mut boards, board, [todo, doing, done], _) = abc();
+        let order = |boards: &Boards| -> Vec<u64> {
+            boards
+                .board(board)
+                .unwrap()
+                .columns
+                .iter()
+                .map(|c| c.id)
+                .collect()
+        };
+        boards.move_column_before(board, done, Some(todo));
+        assert_eq!(order(&boards), [done, todo, doing]);
+        // Right before, even moved down: the place of the column is not the same thing.
+        boards.move_column_before(board, done, Some(doing));
+        assert_eq!(order(&boards), [todo, done, doing]);
+        boards.move_column_before(board, todo, None);
+        assert_eq!(order(&boards), [done, doing, todo]);
+    }
+
+    #[test]
+    fn move_card_before_puts_it_right_before_the_card() {
+        let (mut boards, board, columns, [a, b, c]) = abc();
+        let d = boards.add_card(board, columns[1]).unwrap();
+        boards.edit_card(board, d, |card| card.title = "D".into());
+        // Doing [D]; To do [A, B, C]. Make Doing [C, D], To do [A, B].
+        boards.move_card_before(board, c, columns[1], Some(d));
+        assert_eq!(titles(&boards, board, 1), ["C", "D"]);
+        boards.move_card_before(board, a, columns[1], Some(d));
+        assert_eq!(titles(&boards, board, 1), ["C", "A", "D"]);
+        // Down its own column: it lands before `before`, not after it.
+        boards.move_card_before(board, c, columns[1], Some(d));
+        assert_eq!(titles(&boards, board, 1), ["A", "C", "D"]);
+        boards.move_card_before(board, b, columns[1], None);
+        assert_eq!(titles(&boards, board, 1), ["A", "C", "D", "B"]);
+        assert_eq!(titles(&boards, board, 0), Vec::<String>::new());
     }
 
     #[test]
@@ -721,9 +996,9 @@ mod tests {
     #[test]
     fn labels_toggle_and_cards_edit() {
         let (mut boards, board, _, cards) = abc();
-        boards.toggle_label(board, cards[1], Label::Green);
-        boards.toggle_label(board, cards[1], Label::Red);
-        boards.toggle_label(board, cards[1], Label::Green);
+        boards.edit_card(board, cards[1], |c| c.toggle_label(Label::Green));
+        boards.edit_card(board, cards[1], |c| c.toggle_label(Label::Red));
+        boards.edit_card(board, cards[1], |c| c.toggle_label(Label::Green));
         boards.edit_card(board, cards[1], |c| c.description = "why".into());
         let card = boards.card(board, cards[1]).unwrap();
         assert_eq!(card.labels, [Label::Red]);
@@ -746,7 +1021,7 @@ mod tests {
     #[test]
     fn boards_read_back_equal_and_unknown_labels_go() {
         let (mut boards, board, _, cards) = abc();
-        boards.toggle_label(board, cards[0], Label::Cyan);
+        boards.edit_card(board, cards[0], |c| c.toggle_label(Label::Cyan));
         let d = tempfile::tempdir().unwrap();
         save(d.path(), &boards, 1).unwrap();
         assert_eq!(load(d.path()), Loaded::Saved(boards));
@@ -933,9 +1208,9 @@ mod tests {
         boards.remove_comment(board, card, first);
         assert_eq!(thread(&boards), [(second, "Thanks".into(), false)]);
         // A deleted comment comes back whole at its place, once; a shorter thread takes it at the end.
-        assert!(boards.restore_comment(board, card, 0, gone.clone()));
+        assert!(restore(&mut boards, board, card, 0, gone.clone()));
         assert!(
-            !boards.restore_comment(board, card, 0, gone.clone()),
+            !restore(&mut boards, board, card, 0, gone.clone()),
             "it is there"
         );
         assert_eq!(boards.card(board, card).unwrap().comments[0], gone);
@@ -947,7 +1222,7 @@ mod tests {
             ]
         );
         boards.remove_comment(board, card, first);
-        assert!(boards.restore_comment(board, card, 7, gone));
+        assert!(restore(&mut boards, board, card, 7, gone));
         assert_eq!(
             thread(&boards),
             [
@@ -957,7 +1232,8 @@ mod tests {
         );
         boards.remove_comment(board, card, first);
         assert!(
-            !boards.restore_comment(
+            !restore(
+                &mut boards,
                 board,
                 999,
                 0,
@@ -1026,7 +1302,7 @@ mod tests {
             !boards.set_item_done(board, cards[0], ids[0], true),
             "another card's item"
         );
-        boards.remove_item(board, cards[1], ids[1]);
+        boards.edit_card(board, cards[1], |c| c.checklist.retain(|i| i.id != ids[1]));
         assert_eq!(boards.card(board, cards[1]).unwrap().progress(), (1, 1));
         assert!(
             boards
@@ -1090,7 +1366,274 @@ mod tests {
         // Ticking or deleting the second item leaves the first alone.
         assert!(read.set_item_done(1, 3, 6, true));
         assert_eq!(read.card(1, 3).unwrap().progress(), (1, 2));
-        read.remove_item(1, 3, 6);
+        read.edit_card(1, 3, |c| c.checklist.retain(|i| i.id != 6));
         assert_eq!(read.card(1, 3).unwrap().checklist[0].text, "a");
+    }
+
+    /// A board with one card: (boards, board, column, card).
+    fn one_card() -> (Boards, u64, u64, u64) {
+        let mut boards = Boards::default();
+        let board = boards.add_board();
+        let column = boards.board(board).unwrap().columns[0].id;
+        let card = boards.add_card(board, column).unwrap();
+        (boards, board, column, card)
+    }
+
+    /// A draft of `card`: `work` is what `change` makes of it.
+    fn draft_of(boards: &Boards, board: u64, card: u64, change: impl FnOnce(&mut Card)) -> Draft {
+        let base = boards.card(board, card).unwrap().clone();
+        let mut work = base.clone();
+        change(&mut work);
+        Draft {
+            at: card,
+            new: false,
+            base,
+            work,
+        }
+    }
+
+    #[test]
+    fn done_applies_only_what_the_person_changed_and_an_agents_change_stays() {
+        let (mut boards, board, _, card) = one_card();
+        let ids = boards.add_items(board, card, &[("a".into(), false), ("b".into(), false)]);
+        let item = Item {
+            id: boards.next(),
+            text: "c".into(),
+            done: false,
+        };
+        let draft = draft_of(&boards, board, card, |c| {
+            c.title = "Mine".into();
+            c.toggle_label(Label::Red);
+            c.checklist.retain(|i| i.id != ids[0]);
+            c.checklist[0].done = true;
+            c.checklist.push(item.clone());
+        });
+        // Meanwhile an agent sets the priority and the description, ticks the item the person
+        // removed, adds an item, and labels the card green.
+        boards.edit_card(board, card, |c| {
+            c.priority = Some(Priority::High);
+            c.description = "theirs".into();
+            c.checklist[0].done = true;
+            c.toggle_label(Label::Green);
+        });
+        let theirs = boards.add_items(board, card, &[("d".into(), false)])[0];
+        boards.keep_draft(draft.clone());
+        assert_eq!(boards.finish_draft(board, &draft), Some(card));
+        assert!(boards.draft(card).is_none(), "Done drops the draft");
+        let c = boards.card(board, card).unwrap();
+        assert_eq!(c.title, "Mine");
+        assert_eq!(c.description, "theirs");
+        assert_eq!(c.priority, Some(Priority::High));
+        assert_eq!(c.labels, [Label::Green, Label::Red]);
+        assert_eq!(
+            c.checklist
+                .iter()
+                .map(|i| (i.id, i.done))
+                .collect::<Vec<_>>(),
+            [(ids[1], true), (theirs, false), (item.id, false)],
+            "removed, ticked and added by the person; the agent's item stays"
+        );
+    }
+
+    #[test]
+    fn a_new_cards_draft_creates_it_with_its_comments_and_a_gone_card_or_column_changes_nothing() {
+        let (mut boards, board, column, card) = one_card();
+        let comment = Comment {
+            id: boards.next(),
+            by: "you".into(),
+            text: "first".into(),
+            at: 1,
+            edited: false,
+        };
+        let draft = Draft {
+            at: column,
+            new: true,
+            base: Card::new(0),
+            work: Card {
+                title: "Typed".into(),
+                comments: vec![comment.clone()],
+                ..Card::new(0)
+            },
+        };
+        assert_eq!(boards.finish_draft(board, &draft), Some(card + 2));
+        let made = boards.card(board, card + 2).unwrap();
+        assert_eq!(
+            (made.title.as_str(), &made.comments),
+            ("Typed", &vec![comment])
+        );
+        assert_eq!(boards.board(board).unwrap().columns[0].cards.len(), 2);
+        // The column, or the card, is gone: nothing is made, nothing panics.
+        let existing = draft_of(&boards, board, card, |c| c.title = "x".into());
+        boards.remove_card(board, card);
+        assert_eq!(boards.finish_draft(board, &existing), None);
+        boards.remove_column(board, column);
+        assert_eq!(boards.finish_draft(board, &draft), None);
+    }
+
+    #[test]
+    fn drafts_of_cards_and_columns_that_are_gone_are_pruned() {
+        let (mut boards, board, column, card) = one_card();
+        boards.keep_draft(draft_of(&boards, board, card, |c| c.title = "x".into()));
+        boards.keep_draft(Draft {
+            at: column,
+            new: true,
+            base: Card::new(0),
+            work: Card::new(0),
+        });
+        boards.keep_draft(draft_of(&boards, board, card, |c| c.title = "y".into()));
+        assert_eq!(boards.drafts.len(), 2, "one per card or column");
+        boards.prune_drafts();
+        assert_eq!(boards.drafts.len(), 2);
+        boards.remove_card(board, card);
+        boards.prune_drafts();
+        assert_eq!(boards.drafts.len(), 1);
+        boards.remove_board(board);
+        boards.prune_drafts();
+        assert!(boards.drafts.is_empty());
+    }
+
+    #[test]
+    fn a_draft_round_trips_boards_json_and_a_file_without_drafts_loads() {
+        let d = tempfile::tempdir().unwrap();
+        let (mut boards, board, column, card) = one_card();
+        boards.keep_draft(draft_of(&boards, board, card, |c| c.title = "Mine".into()));
+        boards.keep_draft(Draft {
+            at: column,
+            new: true,
+            base: Card::new(0),
+            work: Card {
+                title: "Typed".into(),
+                ..Card::new(0)
+            },
+        });
+        save(d.path(), &boards, 1).unwrap();
+        assert_eq!(load(d.path()), Loaded::Saved(boards.clone()));
+        // Nothing is written for a board with no draft, and an older file (or Templum) reads one.
+        boards.drafts.clear();
+        save(d.path(), &boards, 2).unwrap();
+        let text = std::fs::read_to_string(path(d.path())).unwrap();
+        assert!(!text.contains("drafts"), "{text}");
+        let old = r#"{"version":1,"next_id":3,"boards":[{"id":1,"name":"B","columns":[{"id":2,
+            "title":"T","cards":[{"id":3,"title":"x"}]}]}]}"#;
+        std::fs::write(path(d.path()), old).unwrap();
+        let Loaded::Saved(read) = load(d.path()) else {
+            panic!("not read")
+        };
+        assert!(read.drafts.is_empty());
+    }
+    fn attached(name: &str, size: u64) -> Attachment {
+        Attachment {
+            name: name.into(),
+            size,
+        }
+    }
+
+    #[test]
+    fn attachments_read_back_and_a_card_without_any_writes_no_key() {
+        let (mut boards, board, _, cards) = abc();
+        boards.edit_card(board, cards[0], |c| {
+            c.attachments = vec![attached("shot.png", 48213), attached("log.txt", 12)]
+        });
+        let d = tempfile::tempdir().unwrap();
+        save(d.path(), &boards, 1).unwrap();
+        assert_eq!(load(d.path()), Loaded::Saved(boards.clone()));
+        let text = std::fs::read_to_string(path(d.path())).unwrap();
+        assert_eq!(text.matches("\"attachments\"").count(), 1, "{text}");
+        assert!(text.contains("\"name\": \"shot.png\""), "{text}");
+        assert!(text.contains("\"size\": 48213"), "{text}");
+    }
+
+    #[test]
+    fn an_attachment_name_that_leaves_its_folder_is_dropped() {
+        let d = tempfile::tempdir().unwrap();
+        let text = r#"{"version":1,"boards":[{"id":1,"name":"B","columns":[{"id":2,"title":"T",
+            "cards":[{"id":3,"title":"kept","attachments":[
+              {"name":"../../.ssh/id_rsa","size":1},{"name":"a/b","size":1},{"name":"a\\b","size":1},
+              {"name":"","size":1},{"name":"..","size":1},{"name":".","size":1},{"name":"ok.png","size":7},
+              {"size":3}]}]}]}]}"#;
+        std::fs::write(path(d.path()), text).unwrap();
+        let Loaded::Saved(read) = load(d.path()) else {
+            panic!("not read")
+        };
+        let card = &read.boards[0].columns[0].cards[0];
+        assert_eq!(card.title, "kept");
+        assert_eq!(card.attachments, [attached("ok.png", 7)]);
+    }
+
+    #[test]
+    fn done_adds_and_removes_the_persons_attachments_and_keeps_the_rest() {
+        let (mut boards, board, _, card) = one_card();
+        boards.edit_card(board, card, |c| {
+            c.attachments = vec![attached("old.png", 1), attached("keep.txt", 2)]
+        });
+        let draft = draft_of(&boards, board, card, |c| {
+            c.attachments.retain(|a| a.name != "old.png");
+            c.attachments.push(attached("new.pdf", 3));
+        });
+        // Meanwhile (a second window's Done or a Ctrl+Z) the card gained a file.
+        boards.edit_card(board, card, |c| {
+            c.attachments.push(attached("other.png", 4))
+        });
+        assert_eq!(boards.finish_draft(board, &draft), Some(card));
+        let names: Vec<_> = boards
+            .card(board, card)
+            .unwrap()
+            .attachments
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect();
+        assert_eq!(names, ["keep.txt", "other.png", "new.pdf"]);
+    }
+
+    #[test]
+    fn a_new_card_keeps_its_reserved_id_at_done() {
+        let (mut boards, board, column, _) = one_card();
+        let reserved = boards.next();
+        let draft = Draft {
+            at: column,
+            new: true,
+            base: Card::new(reserved),
+            work: Card {
+                title: "Typed".into(),
+                attachments: vec![attached("shot.png", 5)],
+                ..Card::new(reserved)
+            },
+        };
+        assert_eq!(boards.finish_draft(board, &draft), Some(reserved));
+        assert_eq!(boards.card(board, reserved).unwrap().attachments.len(), 1);
+        // No reservation (0): a fresh id, as before.
+        let plain = Draft {
+            base: Card::new(0),
+            work: Card::new(0),
+            ..draft
+        };
+        let made = boards.finish_draft(board, &plain).unwrap();
+        assert_ne!(made, 0);
+        assert_ne!(made, reserved);
+    }
+
+    #[test]
+    fn a_cards_text_ends_with_its_attachments_paths() {
+        let mut card = Card::new(7);
+        card.title = "Fix".into();
+        card.attachments = vec![attached("shot.png", 5), attached("log.txt", 6)];
+        let data = Path::new("data");
+        let shot = crate::attachments::dir(data, 7).join("shot.png");
+        let log = crate::attachments::dir(data, 7).join("log.txt");
+        assert_eq!(
+            card.text(Some(data)),
+            format!("Fix\n\nAttachments:\n{}\n{}", shot.display(), log.display())
+        );
+        assert_eq!(
+            card.text(None),
+            "Fix",
+            "without a data folder there is no path"
+        );
+        assert_eq!(Card::new(8).text(Some(data)), "New card");
+        card.description = "Why".into();
+        assert!(
+            card.text(Some(data))
+                .starts_with("Fix\n\nWhy\n\nAttachments:\n")
+        );
     }
 }

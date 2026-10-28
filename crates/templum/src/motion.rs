@@ -15,6 +15,8 @@ pub(crate) const THEME: Duration = Duration::from_millis(200);
 pub(crate) const FLIGHT: Duration = Duration::from_millis(150);
 /// Two tiles trading places in grid mode slide to them; eased with `slide`.
 pub(crate) const TILE: Duration = Duration::from_millis(220);
+/// An automatic copy's "Copied" stays this long, its last CLOSE fading out (`copied`).
+pub(crate) const COPIED: Duration = Duration::from_millis(1200);
 /// A tile held by its title to trade places: smaller and faded, picked up.
 pub(crate) const HELD: Look = Look {
     scale: 0.96,
@@ -42,6 +44,16 @@ impl Look {
 /// 0 at `since`, 1 once `duration` has passed.
 pub(crate) fn progress(since: Instant, now: Instant, duration: Duration) -> f32 {
     (now.saturating_duration_since(since).as_secs_f32() / duration.as_secs_f32()).min(1.0)
+}
+
+/// How opaque the "Copied" shown at `since` is at `now`: fading in over HOVER, out over the
+/// last CLOSE of COPIED; None once it is gone.
+pub(crate) fn copied(since: Instant, now: Instant) -> Option<f32> {
+    let shown = now.saturating_duration_since(since);
+    let left = COPIED.checked_sub(shown).filter(|left| !left.is_zero())?;
+    let fade_in = shown.as_secs_f32() / HOVER.as_secs_f32();
+    let fade_out = left.as_secs_f32() / CLOSE.as_secs_f32();
+    Some(fade_in.min(fade_out).min(1.0))
 }
 
 /// Ease-out (cubic): fast at first, settling at the end.
@@ -159,6 +171,18 @@ mod tests {
             let (a, b) = (opening(t).scale, closing(t).scale);
             assert!(on_a_step(a) && on_a_step(b), "t {t}: {a} {b}");
         }
+    }
+
+    #[test]
+    fn copied_fades_in_stays_then_fades_out() {
+        let t0 = Instant::now();
+        assert_eq!(copied(t0, t0), Some(0.0));
+        assert_eq!(copied(t0, t0 + HOVER), Some(1.0));
+        assert_eq!(copied(t0, t0 + COPIED - CLOSE), Some(1.0));
+        let fading = copied(t0, t0 + COPIED - CLOSE / 2).unwrap();
+        assert!((fading - 0.5).abs() < 1e-3, "{fading}");
+        assert_eq!(copied(t0, t0 + COPIED), None);
+        assert_eq!(copied(t0, t0 + COPIED * 2), None);
     }
 
     #[test]

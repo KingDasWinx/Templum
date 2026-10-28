@@ -125,9 +125,9 @@ pub struct Conversation {
     /// The messages the engine was given that no turn has taken yet.
     #[serde(skip)]
     pending: u32,
-    /// The turn under way said it started (`Started`), so it took its message.
+    /// The turn under way took a message (its replay came).
     #[serde(skip)]
-    started: bool,
+    took: bool,
     /// The last row is the text the engine is writing: its next delta grows it.
     #[serde(skip)]
     open_text: bool,
@@ -150,6 +150,7 @@ pub fn is_read(tool: &str) -> bool {
         tool_name(tool),
         "overview"
             | "list_agents"
+            | "list_shells"
             | "read_terminal"
             | "list_cards"
             | "read_note"
@@ -182,7 +183,7 @@ impl Conversation {
             spent: 0.0,
             working: false,
             pending: 0,
-            started: false,
+            took: false,
             open_text: false,
         }
     }
@@ -194,8 +195,7 @@ impl Conversation {
 
     /// The person sent a message: queued when a turn runs.
     pub fn person(&mut self, text: &str) {
-        self.open_text = false;
-        self.rows.push(Row::Person {
+        self.push(Row::Person {
             text: text.to_owned(),
             queued: self.working,
         });
@@ -211,13 +211,8 @@ impl Conversation {
         // Only a delta keeps the turn's text open; `Text` ends the block that streamed.
         let open_text = std::mem::take(&mut self.open_text);
         match e {
-            // Every turn starts so, and takes one message.
             ChatEvent::Started { session, .. } => {
                 self.session = Some(session);
-                if !self.started {
-                    self.pending = self.pending.saturating_sub(1);
-                }
-                self.started = true;
                 self.working = true;
             }
             ChatEvent::Thinking => {
@@ -278,7 +273,11 @@ impl Conversation {
                     *said = text.lines().next().unwrap_or_default().to_owned();
                 }
             }
+            // Each message is replayed once, when a turn takes it: at its start, or at a tool's
+            // answer for one written while it runs.
             ChatEvent::Taken(taken) => {
+                self.pending = self.pending.saturating_sub(1);
+                self.took = true;
                 if let Some(Row::Person { queued, .. }) = self
                     .rows
                     .iter_mut()
@@ -308,10 +307,13 @@ impl Conversation {
                         text: format!("The turn failed: {error}"),
                     });
                 }
-                if !self.started {
+                // Nothing it called answers after its end.
+                self.fail_running();
+                // A turn that failed before its replay still answered its message.
+                if !self.took {
                     self.pending = self.pending.saturating_sub(1);
                 }
-                self.started = false;
+                self.took = false;
                 self.working = self.pending > 0;
             }
         }
@@ -368,6 +370,21 @@ impl Conversation {
         if self.rows.last() == Some(&Row::Thinking) {
             self.rows.pop();
         }
+        self.fail_running();
+        // What it was given and didn't take is lost with it.
+        for row in &mut self.rows {
+            if let Row::Person { queued, .. } = row {
+                *queued = false;
+            }
+        }
+        self.open_text = false;
+        self.pending = 0;
+        self.took = false;
+        self.working = false;
+    }
+
+    /// An action still running failed: no answer comes for it any more.
+    fn fail_running(&mut self) {
         for row in &mut self.rows {
             if let Row::Action {
                 state: state @ ActionState::Running,
@@ -377,23 +394,20 @@ impl Conversation {
                 *state = ActionState::Failed;
             }
         }
-        // What it was given and didn't take is lost with it.
-        for row in &mut self.rows {
-            if let Row::Person { queued, .. } = row {
-                *queued = false;
-            }
-        }
+    }
+
+    /// A row of Templum's: above the engine's Thinking, which stays last for its next event to
+    /// take away.
+    fn push(&mut self, row: Row) {
         self.open_text = false;
-        self.pending = 0;
-        self.started = false;
-        self.working = false;
+        let at = self.rows.len() - usize::from(self.rows.last() == Some(&Row::Thinking));
+        self.rows.insert(at, row);
     }
 
     /// A notice from one of its tasks, given to the engine as a message: a turn answers it.
     pub fn notice(&mut self, text: &str, level: NoticeLevel, target: Option<Target>) {
-        self.open_text = false;
         let first = text.lines().next().unwrap_or_default();
-        self.rows.push(Row::Notice {
+        self.push(Row::Notice {
             text: first.to_owned(),
             level,
             target,
@@ -403,8 +417,7 @@ impl Conversation {
     }
 
     pub fn note(&mut self, text: &str) {
-        self.open_text = false;
-        self.rows.push(Row::Note {
+        self.push(Row::Note {
             text: text.to_owned(),
         });
     }
@@ -726,6 +739,66 @@ mod tests {
         c.apply(started());
         c.apply(ended());
         assert!(!c.working);
+    }
+
+    #[test]
+    fn messages_taken_into_the_turn_under_way_leave_none_waiting() {
+        // Claude Code takes the two written during this turn into it, at a tool's answer: one
+        // init and one result for three messages, each replayed.
+        let mut c = Conversation::new("claude");
+        c.person(
+            "Read each of the files f1.txt to f6.txt in this folder, one Read call at a time, \
+             then tell me how many words in total.",
+        );
+        c.person("Also, after that, say the word banana.");
+        c.person("And then say the word cherry.");
+        for e in include_str!("../tests/fixtures/claude-taken.jsonl")
+            .lines()
+            .flat_map(crate::claude::parse)
+        {
+            c.apply(e);
+        }
+        assert!(!c.working, "no turn comes for what this one took");
+        assert!(
+            !c.rows
+                .iter()
+                .any(|r| matches!(r, Row::Person { queued: true, .. }))
+        );
+    }
+
+    #[test]
+    fn a_message_while_it_thinks_stays_above_thinking() {
+        let mut c = Conversation::new("claude");
+        c.person("go");
+        c.apply(ChatEvent::Thinking);
+        c.person("and this");
+        c.notice(
+            "[task t1 from Codex (b1): done in 3 s] Its answer.",
+            NoticeLevel::Done,
+            None,
+        );
+        assert_eq!(c.rows.last(), Some(&Row::Thinking));
+        c.apply(started("t1", "mcp__templum-control__add_block"));
+        assert!(!c.rows.contains(&Row::Thinking), "{:?}", c.rows);
+    }
+
+    #[test]
+    fn a_turns_end_fails_an_action_it_never_answered() {
+        let mut c = Conversation::new("claude");
+        c.person("go");
+        c.apply(started("t1", "mcp__templum-control__add_block"));
+        c.apply(ChatEvent::TurnEnded {
+            ms: None,
+            cost_usd: None,
+            error: Some("Overloaded".into()),
+        });
+        assert!(matches!(
+            &c.rows[1],
+            Row::Action {
+                state: ActionState::Failed,
+                ..
+            }
+        ));
     }
 
     #[test]

@@ -6,12 +6,14 @@ use std::rc::Rc;
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
-use templum_git::{Back, Status};
+use templum_git::ops::Op;
+use templum_git::{Back, Branch, Status};
 
 use crate::git_block::switcher::{self, Opened};
 use crate::git_block::{self, words};
 use crate::prompt::{self, Act, Choice};
 
+use super::git_home::parsed;
 use super::{Extra, Workspace, notify_git_error, notify_with, show_notification};
 
 impl Workspace {
@@ -24,9 +26,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.space.git().and_then(|g| g.repo().cloned()) else {
+        if !self.space.git().is_some_and(|g| g.has_repo()) {
             return;
-        };
+        }
         let dim = self.ui.title_dim;
         if matches!(opened, Opened::Commit(_)) {
             switcher::open(
@@ -40,9 +42,11 @@ impl Workspace {
             );
             return;
         }
-        self.git_job(
+        self.git_op(
             self.here(),
-            move || repo.branches(),
+            Op::Branches,
+            |repo| repo.branches(),
+            parsed::<Vec<Branch>>,
             move |ws, at, branches, window, cx| {
                 let branches = match branches {
                     Ok(branches) => branches,
@@ -71,7 +75,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let op = Op::NewBranch {
+            name: name.clone(),
+            hash: from.clone(),
+        };
         self.git_action(
+            op,
             move |repo| repo.new_branch(&name, from.as_deref()),
             window,
             cx,
@@ -183,15 +192,19 @@ impl Workspace {
         let Some(git) = self.space.git() else {
             return;
         };
-        let Some(repo) = git.repo().cloned() else {
-            return;
-        };
         let left = unpushed(&git.status);
         let here = git.status.branch.clone().unwrap_or_default();
         let (to, job_leave) = (name.clone(), leave.clone());
-        self.act_job(
+        let op = Op::Switch {
+            branch: name.clone(),
+            remote,
+            leave: leave.clone(),
+        };
+        self.act_op(
             self.here(),
-            move || repo.switch(&to, remote, job_leave.as_deref()),
+            op,
+            move |repo| repo.switch(&to, remote, job_leave.as_deref()),
+            parsed::<Back>,
             move |ws, at, result, window, cx| {
                 let entity = cx.entity();
                 let local = if remote {
@@ -225,13 +238,14 @@ impl Workspace {
                                     move |ws, window, cx| ws.push_branch(branch.clone(), window, cx)
                                 }),
                             );
+                            let message =
+                                format!("{branch} has {} not pushed yet", words::commits(n));
+                            #[cfg(test)]
+                            super::told(&message);
                             notify_with(
                                 &entity,
                                 at.clone(),
-                                Notification::info(format!(
-                                    "{branch} has {} not pushed yet",
-                                    words::commits(n)
-                                )),
+                                Notification::info(message),
                                 vec![push],
                                 window,
                                 cx,
@@ -290,6 +304,9 @@ impl Workspace {
     ) {
         self.git_sync(
             git_block::Sync::Push,
+            Op::PushBranch {
+                branch: branch.clone(),
+            },
             move |repo| repo.push_branch(&branch),
             |_, at, e, window, cx| {
                 let ws = cx.entity();

@@ -1,6 +1,8 @@
 //! Level of detail: how much of a block is drawn, from how big its text is on screen (its size at
-//! zoom 1 times the zoom), like InDesign's "Greek Type Below". Pure: unit-tested here.
-//! See docs/specs/level-of-detail.md, section 1.
+//! zoom 1 times the zoom), like InDesign's "Greek Type Below", and from how big the block is
+//! there. Pure: unit-tested here. See docs/specs/level-of-detail.md, section 1.
+
+use crate::{Rect, Size};
 
 /// Text smaller than this on screen (pixels) is drawn as bars: about the largest default size at
 /// 33% (4.62 px) and the smallest at 50% (6.0 px) apart, so every default block changes level at
@@ -8,8 +10,13 @@
 pub const GREEK_BELOW: f32 = 5.5;
 /// Under this a row is about 3 px and its bars 1 px lines: the block is its card.
 pub const CARD_BELOW: f32 = 2.5;
+/// The smallest block on screen (pixels, wide and high) that holds its title's label: the 12 px
+/// title 4 px in from the card's corner, legible if cut. Every block of its kind's smallest size
+/// holds it at 25% (a note, 50 × 35); a smaller block is its shape.
+pub const LABEL_FITS: Size = Size { w: 40.0, h: 24.0 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// From the most drawn to the least.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
     /// Drawn as it is: the text is readable.
     Full,
@@ -17,6 +24,8 @@ pub enum Level {
     Silhouette,
     /// The block's card with its title and status, nothing inside.
     Card,
+    /// The card alone, with a terminal's status dot: too small on screen for its title.
+    Shape,
 }
 
 /// The level of text `text` units high at zoom 1, drawn at `zoom`.
@@ -31,10 +40,90 @@ pub fn level(text: f32, zoom: f32) -> Level {
     }
 }
 
+/// The level of a block `size` world units big whose text is `text` units high, drawn at `zoom`:
+/// its shape when it can't hold its label there, else its text's [`level`].
+pub fn block_level(text: f32, size: Size, zoom: f32) -> Level {
+    if size.w * zoom < LABEL_FITS.w || size.h * zoom < LABEL_FITS.h {
+        Level::Shape
+    } else {
+        level(text, zoom)
+    }
+}
+
+/// How wide each block's label is drawn under 25%, screen pixels, given where the labels start in
+/// paint order (each rectangle's top-left corner; docs/specs/level-of-detail.md, section 2): 0
+/// hides it. Labels are placed from the top block down, each `high` tall; one reads up to `most`
+/// wide, up to the next label placed on its right, and hides when that leaves under `least` or
+/// its corner is under a placed label. A dense row far out shows its names one by one instead of
+/// a pile. From Felipe Silva Navarro's PR #54.
+pub fn label_widths(cards: &[Rect], most: f32, least: f32, high: f32) -> Vec<f32> {
+    let mut placed: Vec<Rect> = Vec::new();
+    let mut widths = vec![0.0; cards.len()];
+    for (i, card) in cards.iter().enumerate().rev() {
+        let mut w = most;
+        for p in &placed {
+            if p.y >= card.y + high || card.y >= p.bottom() {
+                continue;
+            }
+            if p.x <= card.x && card.x < p.right() {
+                w = 0.0;
+                break;
+            }
+            if p.x > card.x {
+                w = w.min(p.x - card.x);
+            }
+        }
+        if w >= least {
+            placed.push(Rect::new(card.x, card.y, w, high));
+            widths[i] = w;
+        }
+    }
+    widths
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ZOOM_STEPS;
+
+    #[test]
+    fn labels_shorten_to_their_neighbour_and_hide_when_crowded() {
+        let card = |x: f32, y: f32| Rect::new(x, y, 9.0, 6.0);
+        // A row at 6%: each label reads up to the next one's corner.
+        assert_eq!(
+            label_widths(
+                &[card(0.0, 0.0), card(55.0, 0.0), card(110.0, 0.0)],
+                240.0,
+                40.0,
+                30.0
+            ),
+            [55.0, 55.0, 240.0]
+        );
+        // A row at 1%, 11 px apart: only the top card's label, the last painted, is left.
+        assert_eq!(
+            label_widths(
+                &[card(0.0, 0.0), card(11.0, 0.0), card(22.0, 0.0)],
+                240.0,
+                40.0,
+                30.0
+            ),
+            [0.0, 0.0, 240.0]
+        );
+        // The row below, 8 px down, is under the labels above; far enough down, it reads.
+        assert_eq!(
+            label_widths(&[card(0.0, 8.0), card(0.0, 0.0)], 240.0, 40.0, 30.0),
+            [0.0, 240.0]
+        );
+        assert_eq!(
+            label_widths(&[card(0.0, 40.0), card(0.0, 0.0)], 240.0, 40.0, 30.0),
+            [240.0, 240.0]
+        );
+        // A card whose corner is under the label of a card painted over it shows none.
+        assert_eq!(
+            label_widths(&[card(100.0, 0.0), card(0.0, 0.0)], 240.0, 40.0, 30.0),
+            [0.0, 240.0]
+        );
+    }
 
     /// A terminal (14), an editor, a note or a kanban block (13), a Git block or a title (12).
     const DEFAULTS: [f32; 3] = [12.0, 13.0, 14.0];
@@ -62,6 +151,44 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Under 25% no default text is drawn: every block is its card, or its shape.
+    #[test]
+    fn default_sizes_are_cards_under_25() {
+        for text in DEFAULTS {
+            for zoom in ZOOM_STEPS.into_iter().filter(|&z| z < 0.25) {
+                assert_eq!(level(text, zoom), Level::Card, "{text} at {zoom}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_block_too_small_for_its_label_is_its_shape() {
+        // The smallest note (200 × 140) holds its label at 25%: 50 × 35 px.
+        let note = Size::new(200.0, 140.0);
+        assert_eq!(block_level(13.0, note, 0.25), Level::Silhouette);
+        assert_eq!(block_level(13.0, note, 0.16), Level::Shape, "32 × 22 px");
+        // A default note (360 × 280): its label down to 12%, its shape from 8%.
+        let note = Size::new(360.0, 280.0);
+        assert_eq!(block_level(13.0, note, 0.12), Level::Card, "43 × 34 px");
+        assert_eq!(block_level(13.0, note, 0.08), Level::Shape, "29 × 22 px");
+        // Too narrow, or too low.
+        assert_eq!(
+            block_level(13.0, Size::new(390.0, 900.0), 0.1),
+            Level::Shape
+        );
+        assert_eq!(
+            block_level(13.0, Size::new(900.0, 230.0), 0.1),
+            Level::Shape
+        );
+        // Big letters on a small block: still too small for the label.
+        assert_eq!(
+            block_level(72.0, Size::new(300.0, 200.0), 0.1),
+            Level::Shape
+        );
+        assert_eq!(block_level(72.0, Size::new(300.0, 200.0), 1.0), Level::Full);
+        assert!(Level::Full < Level::Silhouette && Level::Card < Level::Shape);
     }
 
     #[test]

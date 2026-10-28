@@ -8,6 +8,11 @@ authors.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+# Already in the tree: the results go to the API as JSON.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 [dev-dependencies]
 tempfile = "3"
 

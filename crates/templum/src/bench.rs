@@ -12,8 +12,13 @@
 //! `templum --bench-far`: an agent cockpit seen from afar, on the folder Templum runs from: 21
 //! blocks, 6 a row (8 terminals, 5 redrawing the mixed scenario's colored screen and 3 showing
 //! its largest file; 6 editors on its 6 largest files; 4 notes holding its README; 3 kanban
-//! blocks), each wired to the next, none focused. The camera rests at 33% for 5 s, then glides to 25% and rests
-//! there, while it circles 1,500 world units around the canvas's center.
+//! blocks), each wired to the next, none focused. The camera rests at 33% for 3 s, glides to 25% and rests
+//! there for 2 s, then glides out a step every 0.25 s down to 1% and rests there, while it circles
+//! 1,500 world units around the canvas's center.
+//! `templum --bench-mirror`: the mixed scenario's cockpit mirrored by the same Templum, over
+//! loopback (its API on, a Full share of its first workspace, connected as `r1`, which is shown
+//! and streams every terminal on screen while home's terminals redraw), driven as `--bench-mixed`
+//! is, with the ink bench's 200 strokes on home's workspace, which the mirror paints. It keeps its data in a temporary folder, removed at the end.
 //! Prints one JSON line (frame-interval percentiles, memory), then quits. Bar: p95 <= 16.7 ms.
 
 use std::path::{Path, PathBuf};
@@ -35,24 +40,7 @@ pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, mixed: bool, c
         ws.update(cx, |ws, cx| {
             let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, ws.cell.size);
             if mixed {
-                // The folder Templum runs from: a real one for the editors.
-                let repo = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                let mut slots =
-                    (1..).map(|i| Point::new((i % 5) as f32 * 950.0, (i / 5) as f32 * 750.0));
-                let mut next = || slots.next().expect("endless");
-                for _ in 0..4 {
-                    let p = next();
-                    ws.open(Rect::new(p.x, p.y, size.w, size.h), window, cx);
-                }
-                for _ in 0..3 {
-                    ws.add_editor_at(&repo, next(), window, cx);
-                }
-                ws.add_note_at(next(), window, cx);
-                for _ in 0..2 {
-                    ws.add_kanban_at(next(), window, cx);
-                }
-                wire_in_a_chain(ws);
-                agent_chat(ws);
+                mixed_cockpit(ws, window, cx);
                 return;
             }
             for i in 1..20 {
@@ -60,24 +48,7 @@ pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, mixed: bool, c
                 let rect = Rect::new(col * (size.w + 40.0), row * (size.h + 40.0), size.w, size.h);
                 ws.open(rect, window, cx);
             }
-            // 200 strokes of 50 points over the terminals: the spec's bar must hold with ink on
-            // screen.
-            for s in 0..200 {
-                let x0 = (s % 20) as f32 * 150.0;
-                let y0 = (s / 20) as f32 * 120.0;
-                let points = (0..50)
-                    .map(|i| {
-                        let t = i as f32;
-                        Point::new(x0 + t * 3.0, y0 + (t * 0.4).sin() * 20.0)
-                    })
-                    .collect();
-                ws.space.ink.push(Drawing::Stroke {
-                    points,
-                    width: 4.0,
-                    color: Color::Blue,
-                    highlight: s % 4 == 0,
-                });
-            }
+            strokes(ws);
         })
     });
     cx.spawn(async move |cx| {
@@ -98,38 +69,269 @@ pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, mixed: bool, c
                     .unwrap_or_default();
                 // The bench drives the camera: stop keeping the startup terminal centered.
                 ws.space.pristine = false;
-                measure(ws, idle_rss, move |ws, window, cx, t| {
-                    if mixed {
-                        let word = templum_agent::ChatEvent::TextDelta("streaming ".into());
-                        ws.templum_agent.conversation.apply(word);
-                    }
-                    // Zoom sweeps every step back and forth (4 per second) while panning in a circle.
-                    let n = ZOOM_STEPS.len();
-                    let k = (t / 0.25) as usize % (2 * (n - 1));
-                    let target = if k < n { k } else { 2 * (n - 1) - k };
-                    // Through the workspace, as the keys and the wheel do: zoom steps glide.
-                    let step = target as i32 - ws.space.canvas.camera.zoom_index() as i32;
-                    if step != 0 {
-                        ws.zoom_to(step, Point::default(), cx);
-                    }
-                    let cam = ws.space.canvas.camera;
-                    let z = cam.zoom();
-                    let a = t * std::f32::consts::TAU / 4.0;
-                    let vp = window.viewport_size();
-                    let want = Point::new(
-                        center.x + 400.0 * a.cos() - f32::from(vp.width) / 2.0 / z,
-                        center.y + 400.0 * a.sin() - f32::from(vp.height) / 2.0 / z,
-                    );
-                    ws.pan_by(Point::new(
-                        (cam.origin.x - want.x) * z,
-                        (cam.origin.y - want.y) * z,
-                    ));
-                });
+                measure(ws, idle_rss, sweep_and_circle(center, mixed));
                 cx.notify();
             })
         });
     })
     .detach();
+}
+
+/// Where `--bench-mirror` keeps its data: made empty at the start, removed at the end.
+pub(crate) fn mirror_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("templum-bench-mirror-{}", std::process::id()))
+}
+
+/// The folder of `--bench-mirror`, empty.
+pub(crate) fn make_mirror_dir() -> PathBuf {
+    let dir = mirror_dir();
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// A `--bench-mirror` that couldn't measure: says so as its line, removes its folder and exits
+/// with a failure.
+fn mirror_failed(error: &str) -> ! {
+    println!(
+        "{}",
+        serde_json::json!({ "bench": "mirror", "error": error })
+    );
+    let _ = std::fs::remove_dir_all(mirror_dir());
+    std::process::exit(1);
+}
+
+/// `--bench-mirror`: see the module's doc.
+pub(crate) fn run_mirror(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut App) {
+    let set_up = cx.update_window(window, |_, window, cx| {
+        ws.update(cx, |ws, cx| mirror_set_up(ws, window, cx))
+    });
+    let first = match set_up {
+        Ok(Ok(first)) => first,
+        Ok(Err(error)) => mirror_failed(&error),
+        Err(_) => mirror_failed("the window is gone"),
+    };
+    cx.spawn(async move |cx| {
+        // Live and streaming every terminal on screen, within 30 s.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut placed = false;
+        loop {
+            let ready = cx
+                .update_window(window, |_, window, cx| {
+                    ws.update(cx, |ws, _| {
+                        // Once r1 has its blocks: its camera at 50% on their middle, where
+                        // terminals are drawn in full.
+                        if !placed && ws.space.is_remote() && !ws.space.canvas.blocks().is_empty() {
+                            placed = true;
+                            let at = ws.space.canvas.bounds().unwrap_or_default();
+                            let vp = ws.viewport(window);
+                            let zoom = 0.5;
+                            let camera = Camera::at(
+                                Point::new(
+                                    at.x + at.w / 2.0 - vp.w / 2.0 / zoom,
+                                    at.y + at.h / 2.0 - vp.h / 2.0 / zoom,
+                                ),
+                                zoom,
+                            );
+                            ws.space.canvas.camera = camera;
+                            ws.space.view = camera;
+                            ws.space.flight = None;
+                            ws.space.pristine = false;
+                        }
+                        ws.mirror_streams_all()
+                    })
+                })
+                .unwrap_or(false);
+            if ready {
+                break;
+            }
+            if Instant::now() > deadline {
+                mirror_failed("r1 was not live and streaming within 30 s");
+            }
+            cx.background_executor()
+                .timer(Duration::from_millis(100))
+                .await;
+        }
+        // Let the viewers settle before measuring idle memory.
+        cx.background_executor().timer(Duration::from_secs(2)).await;
+        let idle_rss = rss_mb();
+        let _ = cx.update_window(window, |_, _, cx| {
+            ws.update(cx, |ws, cx| {
+                // Home's terminals redraw, as the mixed scenario's do.
+                if let Some(home) = ws.spaces().find(|s| s.id == first) {
+                    for (_, pane) in home.terminals().take(5) {
+                        pane.term.write(TUI_LOOP);
+                    }
+                }
+                let center = ws
+                    .space
+                    .canvas
+                    .bounds()
+                    .map(|b| Point::new(b.x + b.w / 2.0, b.y + b.h / 2.0))
+                    .unwrap_or_default();
+                ws.space.pristine = false;
+                measure_as(ws, Some("mirror"), idle_rss, sweep_and_circle(center, true));
+                cx.notify();
+            })
+        });
+    })
+    .detach();
+}
+
+/// 200 strokes of 50 points over the terminals: the spec's bar must hold with ink on screen.
+fn strokes(ws: &mut Workspace) {
+    for s in 0..200 {
+        let x0 = (s % 20) as f32 * 150.0;
+        let y0 = (s / 20) as f32 * 120.0;
+        let points = (0..50)
+            .map(|i| {
+                let t = i as f32;
+                Point::new(x0 + t * 3.0, y0 + (t * 0.4).sin() * 20.0)
+            })
+            .collect();
+        ws.space.ink.push(Drawing::Stroke {
+            points,
+            width: 4.0,
+            color: Color::Blue,
+            highlight: s % 4 == 0,
+        });
+    }
+}
+
+/// The mixed cockpit in the first workspace, its API on (loopback), a Full share of that
+/// workspace connected as `r1` (the key kept in memory: no keyring is touched), and `r1` shown
+/// with its camera on the middle of the blocks. The first workspace's id, or what went wrong.
+fn mirror_set_up(
+    ws: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Result<String, String> {
+    use crate::workspace::api::ShareDraft;
+    use crate::workspace::remote::Connecting;
+    use templum_api::store::{Scope, Way};
+    // The first run's welcome is not what is measured.
+    ws.close_welcome(window, cx);
+    ws.welcome = None;
+    mixed_cockpit(ws, window, cx);
+    // The ink bench's strokes, which the mirror paints from home's state.
+    strokes(ws);
+    // Its kanbans show a board each (12 cards): the mirror draws them live from home's boards.
+    let kanbans: Vec<_> = ws
+        .space
+        .canvas
+        .blocks()
+        .iter()
+        .map(|b| b.id)
+        .filter(|id| ws.space.kanban(*id).is_some())
+        .collect();
+    for id in kanbans {
+        let board = sample_board(&mut ws.boards);
+        if let Some(k) = ws.space.kanban_mut(id) {
+            k.board = Some(board);
+        }
+    }
+    let first = ws.space.id.clone();
+    ws.api_edit(
+        |settings| {
+            settings.enabled = true;
+            settings.port = 0;
+        },
+        cx,
+    );
+    let port = ws
+        .api
+        .server
+        .as_ref()
+        .map(|server| server.addr().port())
+        .ok_or("the API did not start")?;
+    let (_, code) = ws.share_workspace(
+        ShareDraft {
+            workspace: first.clone(),
+            name: "Bench".into(),
+            scope: Scope::Full,
+            expires: None,
+            way: Way::Public,
+            address: format!("http://127.0.0.1:{port}"),
+        },
+        cx,
+    )?;
+    ws.keys = templum_api::client::Keys::without_keyring(None);
+    let draft = Connecting {
+        code: templum_api::code::decode(&code).map_err(|e| e.to_string())?,
+        access: None,
+        proxy: None,
+        file: false,
+    };
+    ws.connect_code(draft, window, cx)?;
+    Ok(first)
+}
+
+/// The mixed scenario's canvas: the startup terminal and 4 more, 3 editors, a note and 2 kanban
+/// blocks, each wired to the next, and the Templum Agent's chat open.
+fn mixed_cockpit(ws: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, ws.cell.size);
+    // The folder Templum runs from: a real one for the editors.
+    let repo = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut slots = (1..).map(|i| Point::new((i % 5) as f32 * 950.0, (i / 5) as f32 * 750.0));
+    let mut next = || slots.next().expect("endless");
+    for _ in 0..4 {
+        let p = next();
+        ws.open(Rect::new(p.x, p.y, size.w, size.h), window, cx);
+    }
+    for _ in 0..3 {
+        ws.add_editor_at(&repo, next(), window, cx);
+    }
+    ws.add_note_at(next(), window, cx);
+    for _ in 0..2 {
+        ws.add_kanban_at(next(), window, cx);
+    }
+    wire_in_a_chain(ws);
+    agent_chat(ws);
+}
+
+/// The index of `zoom` in `ZOOM_STEPS`, which has it.
+fn step(zoom: f32) -> usize {
+    ZOOM_STEPS
+        .iter()
+        .position(|&z| z == zoom)
+        .expect("a zoom step")
+}
+
+/// What the zoom-and-pan scenarios do each frame: zoom sweeps every step from 25% up and back (4
+/// per second) while the camera pans in a circle around `center`; with `chat`, the Templum
+/// Agent's reply grows by a word.
+fn sweep_and_circle(
+    center: Point,
+    chat: bool,
+) -> impl FnMut(&mut Workspace, &mut Window, &mut Context<Workspace>, f32) + 'static {
+    move |ws, window, cx, t| {
+        if chat {
+            let word = templum_agent::ChatEvent::TextDelta("streaming ".into());
+            ws.templum_agent.conversation.apply(word);
+        }
+        // From 25%, as before there were steps under it: the numbers stay comparable.
+        let low = step(0.25);
+        let n = ZOOM_STEPS.len() - low;
+        let k = (t / 0.25) as usize % (2 * (n - 1));
+        let target = low + if k < n { k } else { 2 * (n - 1) - k };
+        // Through the workspace, as the keys and the wheel do: zoom steps glide.
+        let step = target as i32 - ws.space.canvas.camera.zoom_index() as i32;
+        if step != 0 {
+            ws.zoom_to(step, Point::default(), cx);
+        }
+        let cam = ws.space.canvas.camera;
+        let z = cam.zoom();
+        let a = t * std::f32::consts::TAU / 4.0;
+        let vp = window.viewport_size();
+        let want = Point::new(
+            center.x + 400.0 * a.cos() - f32::from(vp.width) / 2.0 / z,
+            center.y + 400.0 * a.sin() - f32::from(vp.height) / 2.0 / z,
+        );
+        ws.pan_by(Point::new(
+            (cam.origin.x - want.x) * z,
+            (cam.origin.y - want.y) * z,
+        ));
+    }
 }
 
 /// The Templum Agent's chat open on 30 rows of a conversation, its turn still running.
@@ -238,19 +440,17 @@ pub(crate) fn run_zoom(window: AnyWindowHandle, ws: Entity<Workspace>, kind: Str
                     .map(|b| Point::new(b.x + b.w / 2.0, b.y + b.h / 2.0))
                     .unwrap_or_default();
                 let vp = ws.viewport(window);
-                let low = ZOOM_STEPS[0];
+                let (low, high) = (step(0.25), step(2.0));
+                let zoom = ZOOM_STEPS[low];
                 ws.space.canvas.camera = Camera::at(
-                    Point::new(center.x - vp.w / 2.0 / low, center.y - vp.h / 2.0 / low),
-                    low,
+                    Point::new(center.x - vp.w / 2.0 / zoom, center.y - vp.h / 2.0 / zoom),
+                    zoom,
                 );
                 ws.space.flight = None;
-                let high = ZOOM_STEPS
-                    .iter()
-                    .position(|&z| z == 2.0)
-                    .expect("200% is a step");
                 measure(ws, idle_rss, move |ws, window, cx, t| {
-                    let k = (t / 0.25) as usize % (2 * high);
-                    let target = if k <= high { k } else { 2 * high - k };
+                    let span = high - low;
+                    let k = (t / 0.25) as usize % (2 * span);
+                    let target = low + if k <= span { k } else { 2 * span - k };
                     let step = target as i32 - ws.space.canvas.camera.zoom_index() as i32;
                     if step != 0 {
                         let pivot = ws.center(window);
@@ -350,17 +550,26 @@ pub(crate) fn run_far(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut A
                     .map(|b| Point::new(b.x + b.w / 2.0, b.y + b.h / 2.0))
                     .unwrap_or_default();
                 let vp = ws.viewport(window);
-                let far = ZOOM_STEPS[1];
+                let far = 0.33;
                 ws.space.canvas.camera = Camera::at(
                     Point::new(center.x - vp.w / 2.0 / far, center.y - vp.h / 2.0 / far),
                     far,
                 );
                 ws.space.flight = None;
                 measure(ws, idle_rss, move |ws, window, cx, t| {
-                    // 33% for 5 s, then one glide out to 25%, which it keeps.
-                    if t >= 5.0 && ws.space.canvas.camera.zoom_index() > 0 {
+                    // 33% for 3 s, then one glide out to 25%, kept for 2 s; then out a step every
+                    // 0.25 s, as the wheel does, down to 1% (at 7 s), which it keeps.
+                    let target = if t < 3.0 {
+                        step(0.33)
+                    } else if t < 5.0 {
+                        step(0.25)
+                    } else {
+                        step(0.25).saturating_sub(1 + ((t - 5.0) / 0.25) as usize)
+                    };
+                    let delta = target as i32 - ws.space.canvas.camera.zoom_index() as i32;
+                    if delta != 0 {
                         let pivot = ws.center(window);
-                        ws.zoom_to(-1, pivot, cx);
+                        ws.zoom_to(delta, pivot, cx);
                     }
                     // Around the canvas's center, 1,500 world units out, a turn every 4 s:
                     // blocks keep entering and leaving the view.
@@ -472,6 +681,16 @@ fn bench_repo() -> Result<PathBuf, String> {
 fn measure(
     ws: &mut Workspace,
     idle_rss: Option<f64>,
+    drive: impl FnMut(&mut Workspace, &mut Window, &mut Context<Workspace>, f32) + 'static,
+) {
+    measure_as(ws, None, idle_rss, drive);
+}
+
+/// `measure`, naming the scenario in the line (`"bench":"mirror"`) when `bench` is given.
+fn measure_as(
+    ws: &mut Workspace,
+    bench: Option<&'static str>,
+    idle_rss: Option<f64>,
     mut drive: impl FnMut(&mut Workspace, &mut Window, &mut Context<Workspace>, f32) + 'static,
 ) {
     let start = Instant::now();
@@ -488,8 +707,9 @@ fn measure(
             intervals.sort_by(f64::total_cmp);
             let p = |q: f64| percentile(&intervals, q);
             let json = |v: Option<f64>| v.map_or("null".to_string(), |v| format!("{v:.1}"));
+            let name = bench.map_or(String::new(), |b| format!(r#""bench":"{b}","#));
             println!(
-                r#"{{"frames":{},"p50_ms":{:.2},"p95_ms":{:.2},"p99_ms":{:.2},"max_ms":{:.2},"rss_mb":{},"idle_rss_mb":{}}}"#,
+                r#"{{{name}"frames":{},"p50_ms":{:.2},"p95_ms":{:.2},"p99_ms":{:.2},"max_ms":{:.2},"rss_mb":{},"idle_rss_mb":{}}}"#,
                 intervals.len() + 1,
                 p(50.0),
                 p(95.0),

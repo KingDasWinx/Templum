@@ -102,7 +102,6 @@ impl Drop for Bus {
 /// accepted, a connection gets no writer and only `HELLO_MAX` bytes and `HELLO_WAIT` in all to
 /// send it (on Windows, other local users can reach the port).
 fn serve(stream: Stream, tx: &UnboundedSender<Message>, token: Option<&str>) {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
     let mut reader = BufReader::new(stream);
     let Some(hello) = first_line(&mut reader)
         .and_then(|line| String::from_utf8(line).ok())
@@ -120,7 +119,7 @@ fn serve(stream: Stream, tx: &UnboundedSender<Message>, token: Option<&str>) {
     let _ = std::thread::Builder::new()
         .name("templum-bus-writer".into())
         .spawn(move || write_lines(writer, &replies));
-    let conn = NEXT.fetch_add(1, Ordering::Relaxed);
+    let conn = next_conn();
     for line in reader.lines() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() {
@@ -211,10 +210,25 @@ fn write_lines(mut stream: Stream, lines: &std::sync::mpsc::Receiver<String>) {
     let _ = stream.shutdown(Shutdown::Both);
 }
 
+/// The next connection number: the bus's own connections and the API's calls (docs/specs/api.md)
+/// share one counter, so their numbers never meet.
+pub fn next_conn() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// The `client` of the messages the API makes inside Templum. templum-api owns the name
+/// (`templum_api::CLIENT`; this crate can't depend on it): the bus refuses it on its socket, so a
+/// process in a terminal can't borrow the API's reach.
+const API_CLIENT: &str = "api";
+
 fn hello_of(line: &str, token: Option<&str>) -> Option<Hello> {
     let Ok(Incoming::Notification { method, params }) = rpc::parse(line) else {
         return None;
     };
+    if params["client"].as_str() == Some(API_CLIENT) {
+        return None;
+    }
     (method == HELLO && params["token"].as_str() == token).then(|| Hello {
         terminal: params["terminal"].as_str().unwrap_or_default().to_string(),
         client: params["client"].as_str().unwrap_or_default().to_string(),
@@ -560,6 +574,42 @@ mod tests {
             let _ = stream.write_all(rpc::request(2, "ping", Value::Null).as_bytes());
             assert_closed(stream);
         }
+    }
+
+    #[test]
+    fn an_api_hello_is_refused() {
+        // The channel receives nothing: the API's calls are made inside Templum, never on the socket.
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = seen.clone();
+        let (_dir, bus) = test_bus(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        let (mut stream, token) = connect(&bus.env).unwrap();
+        time_limit(&stream);
+        let _ = stream.write_all(hello_line("1", "api", token.as_deref(), None).as_bytes());
+        let _ = stream.write_all(
+            rpc::request(
+                1,
+                "tools/call",
+                json!({"name": "overview", "arguments": {}}),
+            )
+            .as_bytes(),
+        );
+        assert_closed(stream);
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            0,
+            "nothing reached the channel"
+        );
+        // A neighbour name is no refusal.
+        assert!(hello_of(&hello_line("1", "apix", None, None), None).is_some());
+        assert!(hello_of(&hello_line("1", "api", None, None), None).is_none());
+    }
+
+    #[test]
+    fn connection_numbers_are_shared() {
+        let (a, b) = (next_conn(), next_conn());
+        assert!(b > a);
     }
 
     #[test]

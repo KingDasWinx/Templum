@@ -6,6 +6,7 @@ use templum_canvas::{BlockId, Rect, Wire};
 
 use crate::session;
 
+use super::remote::Deed;
 use super::{CANVAS_UNDO, Workspace};
 
 /// A change to the canvas's blocks, kept to take back another: applying one gives the change
@@ -25,6 +26,9 @@ pub(crate) enum Change {
     Disconnect(Wire),
     /// Give this wire this label, or none (it had another).
     Label(Wire, Option<String>),
+    /// An act done at home that this Ctrl+Z can't take back: it only says so, and the next
+    /// Ctrl+Z undoes the older move.
+    Mark,
 }
 
 impl Change {
@@ -40,6 +44,7 @@ impl Change {
             Change::Connect(Wire { a, b })
             | Change::Disconnect(Wire { a, b })
             | Change::Label(Wire { a, b }, _) => vec![a, b],
+            Change::Mark => Vec::new(),
         }
     }
 }
@@ -74,6 +79,18 @@ impl Workspace {
         }
     }
 
+    /// An act was done at home that Ctrl+Z can't take back (a block added, closed, a wire made):
+    /// a stop in the undo stack, so Ctrl+Z says so instead of undoing an older move by surprise.
+    /// Acts one after another are one stop.
+    pub(super) fn mark_remote(&mut self) {
+        if matches!(self.space.undo.last(), Some((_, Change::Mark))) {
+            // A new act still ends what Ctrl+Shift+Z could redo.
+            self.space.redo.clear();
+        } else {
+            self.keep(Change::Mark, Then::New);
+        }
+    }
+
     /// Takes the step an undo or a redo applies off its stack. False when it isn't next anymore
     /// (the person did something else while a question was open): nothing is done then.
     pub(super) fn take_step(&mut self, then: Then) -> bool {
@@ -97,6 +114,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        // Home is the truth: a mirror that isn't live moves nothing.
+        if self.why_not(Deed::Move).is_some() {
+            return false;
+        }
         loop {
             let stack = if redo {
                 &self.space.redo
@@ -107,6 +128,15 @@ impl Workspace {
                 return false;
             };
             let then = if redo { Then::Redo(n) } else { Then::Undo(n) };
+            if matches!(change, Change::Mark) {
+                self.take_step(then);
+                let computer = (self.space.remote.as_deref())
+                    .map_or_else(String::new, crate::mirror::computer_of);
+                let sentence =
+                    format!("On a mirror, Ctrl+Z undoes moves only: undo the rest on {computer}.");
+                self.warn(sentence, window, cx);
+                return true;
+            }
             // A step whose blocks are all gone (a shell that exited) has nothing to take back; nor
             // has a wire's when one of its blocks is.
             let wire = matches!(
@@ -147,6 +177,7 @@ impl Workspace {
                     self.take_step(then);
                     self.set_label(wire, label, then, cx);
                 }
+                Change::Mark => unreachable!("a mark is taken off above"),
             }
             return true;
         }
@@ -192,7 +223,12 @@ impl Workspace {
     }
 
     /// Puts blocks at `rects`; a terminal's grid follows.
-    fn place(&mut self, rects: Vec<(BlockId, Rect)>, then: Then, cx: &mut Context<Self>) {
+    pub(super) fn place(
+        &mut self,
+        rects: Vec<(BlockId, Rect)>,
+        then: Then,
+        cx: &mut Context<Self>,
+    ) {
         let mut before = Vec::new();
         for (id, rect) in rects {
             // A tile's rect is the grid's: its place on the canvas is what moves.
@@ -207,6 +243,8 @@ impl Workspace {
             b.rect = rect;
             self.fit_terminal(id, rect);
         }
+        let ids: Vec<BlockId> = before.iter().map(|(id, _)| *id).collect();
+        self.remote_moved(&ids, std::time::Instant::now());
         self.keep(Change::Place(before), then);
         cx.notify();
     }
@@ -220,13 +258,31 @@ impl Workspace {
             .collect();
     }
 
+    /// The drag has moved or resized something since `placing`.
+    pub(super) fn displaced(&self) -> bool {
+        self.placed
+            .iter()
+            .any(|(id, r)| self.space.canvas.get(*id).is_some_and(|b| b.rect != *r))
+    }
+
+    /// The blocks `placing` took go back where they were, and the drag will keep no step: a click
+    /// that nudged them.
+    pub(super) fn unplace(&mut self) {
+        for (id, rect) in &self.placed {
+            if let Some(b) = self.space.canvas.get_mut(*id) {
+                b.rect = *rect;
+            }
+        }
+    }
+
     /// The drag ended: if it moved or resized anything, it is a step.
     pub(super) fn end_placing(&mut self) {
+        let moved = self.displaced();
         let placed = std::mem::take(&mut self.placed);
-        let moved = placed
-            .iter()
-            .any(|(id, r)| self.space.canvas.get(*id).is_some_and(|b| b.rect != *r));
         if moved {
+            // A mirrored block is home's: home moves it too.
+            let ids: Vec<BlockId> = placed.iter().map(|(id, _)| *id).collect();
+            self.remote_moved(&ids, std::time::Instant::now());
             self.keep(Change::Place(placed), Then::New);
         }
     }

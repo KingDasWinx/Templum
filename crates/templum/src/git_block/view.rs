@@ -7,10 +7,9 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, Div, ElementId, Hsla, KeyDownEvent, MouseButton,
-    MouseDownEvent, ScrollWheelEvent, SharedString, Stateful, TestSupportExt, div, px,
+    AnyElement, ClickEvent, Context, Div, ElementId, Hsla, KeyDownEvent, ScrollWheelEvent,
+    SharedString, TestSupportExt, div, px,
 };
-use templum_canvas::Edges;
 use templum_git::Operation;
 
 use super::branches::branches;
@@ -23,8 +22,10 @@ use super::{FONT, Found, Git, Sync, Tab, words};
 use crate::editor::button;
 use crate::grid::hsla;
 use crate::menu::Target;
+use crate::popup;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
+use crate::workspace::remote::Deed;
 
 /// How to get `git` on this OS.
 pub(crate) fn install_hint() -> &'static str {
@@ -37,9 +38,9 @@ pub(crate) fn install_hint() -> &'static str {
     }
 }
 
-/// The popup over the canvas's bottom-left corner, `w` × `h` pixels: the header (the folder, a
-/// click lists the others; the branch and where it stands with the server; Sync and the other
-/// actions; close), and the body.
+/// The popup, `w` × `h` pixels: the header (the folder, a click lists the others; the branch
+/// and where it stands with the server; Sync and the other actions; full screen; close), and the
+/// body.
 pub(crate) fn popup(
     ws: &Workspace,
     git: &Git,
@@ -48,32 +49,14 @@ pub(crate) fn popup(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
-    let fg = hsla(ws.theme.palette.foreground, 1.0);
-    let folder = git.repo().map_or(&git.folder, |r| &r.root);
-    let (name, path) = (git.name(), SharedString::from(folder.display().to_string()));
-    let repo = matches!(git.found, Found::Repo(_)) && !git.gone;
-    let tile = div()
-        .flex()
-        .items_center()
-        .justify_center()
-        .flex_shrink_0()
-        .size(px(34.0))
-        .rounded(px(9.0))
-        .bg(ui.accent.opacity(0.14))
-        .child(
-            Icon::new(IconName::FolderGit2)
-                .size(px(17.0))
-                .text_color(ui.accent),
-        );
+    let (name, path) = (git.name(), SharedString::from(git.place()));
+    let repo = git.has_repo() && !git.gone;
     let title = div()
         .id("git-folder")
         .flex()
         .items_center()
         .gap(px(4.0))
         .min_w(px(0.0))
-        .text_size(px(14.0))
-        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-        .text_color(fg)
         .cursor_pointer()
         .hover(move |st| st.text_color(ui.accent))
         .child(div().truncate().child(name))
@@ -87,108 +70,25 @@ pub(crate) fn popup(
             ws.open_menu(Target::GitFolders, e.position(), window, cx)
         }))
         .test_support();
-    let header = div()
-        .id("git-popup-header")
-        .flex()
-        .items_center()
-        .flex_shrink_0()
-        .gap(px(10.0))
-        .px(px(12.0))
-        .py(px(10.0))
-        .child(tile)
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .min_w(px(0.0))
-                .child(title)
-                .when(repo, |el| el.child(branch_line(ws, git, cx))),
-        )
-        .child(div().flex_1())
-        .when(repo, |el| el.children(actions(ws, git, cx)))
-        .child(
-            icon_button("git-close", IconName::Close, ui, 1.0)
-                .tooltip(|window, cx| Tooltip::new("Close (Esc)").build(window, cx))
-                .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.close_git(window, cx)))
-                .test_support(),
-        );
-    div()
-        .id("git-popup")
-        .w(px(w))
-        .h(px(h))
-        .flex()
-        .flex_col()
-        .overflow_hidden()
-        .bg(ui.surface)
-        .text_color(fg)
-        .border_1()
-        .border_color(ui.hairline)
-        .rounded(px(12.0))
-        .shadow(vec![gpui_kit::BoxShadow {
-            color: ui.shadow,
-            offset: gpui_kit::point(px(0.0), px(12.0)),
-            blur_radius: px(32.0),
-            spread_radius: px(0.0),
-            inset: false,
-        }])
-        // Presses inside never reach the canvas below.
-        .occlude()
-        .child(header)
+    let subtitle = repo.then(|| branch_line(ws, git, cx).into_any_element());
+    let actions = if repo {
+        actions(ws, git, cx)
+    } else {
+        Vec::new()
+    };
+    popup::frame("git-popup", ws, w, h)
+        .child(popup::header(
+            ws,
+            "git",
+            popup::tile(IconName::FolderGit2, ui.accent),
+            title,
+            subtitle,
+            actions,
+            cx,
+        ))
         .child(div().flex_1().min_h(px(0.0)).child(body(ws, git, 1.0, cx)))
         .test_support()
         .into_any_element()
-}
-
-/// How far the resize strips reach out of the popup and into it, pixels: outside it they take
-/// nothing the canvas needs, inside it they leave the diff's scrollbar its width.
-const EDGE_OUT: f32 = 6.0;
-const EDGE_IN: f32 = 2.0;
-
-/// Invisible strips on the popup's free edges, the right and the top, and a square at the corner
-/// between them, that resize it like a window's border (children of the popup's box, which they
-/// stick out of). The left edge rests against the sidebar and the bottom one against the
-/// window's, so they have none.
-pub(crate) fn resize_zones(cx: &mut Context<Workspace>) -> [AnyElement; 3] {
-    let thick = EDGE_OUT + EDGE_IN;
-    // Along an edge, clear of the corner's square.
-    let clear = 2.0 * thick - EDGE_OUT;
-    [
-        zone("git-resize-right", Edges::RIGHT, cx)
-            .right(px(-EDGE_OUT))
-            .w(px(thick))
-            .top(px(clear))
-            .bottom(px(0.0))
-            .cursor_ew_resize()
-            .test_support()
-            .into_any_element(),
-        zone("git-resize-top", Edges::TOP, cx)
-            .top(px(-EDGE_OUT))
-            .h(px(thick))
-            .left(px(0.0))
-            .right(px(clear))
-            .cursor_ns_resize()
-            .test_support()
-            .into_any_element(),
-        zone("git-resize-top-right", Edges::TOP_RIGHT, cx)
-            .top(px(-EDGE_OUT))
-            .right(px(-EDGE_OUT))
-            .size(px(2.0 * thick))
-            .cursor_nesw_resize()
-            .test_support()
-            .into_any_element(),
-    ]
-}
-
-/// A strip that starts the resize by `edges` when pressed.
-fn zone(name: &'static str, edges: Edges, cx: &mut Context<Workspace>) -> Stateful<Div> {
-    div().id(name).absolute().on_mouse_down(
-        MouseButton::Left,
-        cx.listener(move |ws, e: &MouseDownEvent, _, cx| {
-            ws.begin_git_resize(edges, e.position);
-            cx.stop_propagation();
-        }),
-    )
 }
 
 /// Under the folder's name: the branch (a click opens the branch dialog), where it stands with the
@@ -203,12 +103,15 @@ fn branch_line(ws: &Workspace, git: &Git, cx: &mut Context<Workspace>) -> impl I
     };
     let (state, tip) = words::server_state(s);
     // The terminals working in the repository, as their last snapshot saw them: cheap.
-    let terminals = git.repo().map_or(0, |repo| {
-        ws.space
+    let terminals = match (&git.found, git.repo()) {
+        (Found::Home(root), _) => ws.home_terminals_in(root).len(),
+        (_, Some(repo)) => ws
+            .space
             .terminals()
             .filter(|(_, pane)| pane.works_in(&repo.root))
-            .count()
-    });
+            .count(),
+        _ => 0,
+    };
     let dot = || div().text_color(ui.title_dim).child("·");
     div()
         .flex()
@@ -282,14 +185,23 @@ fn actions(ws: &Workspace, git: &Git, cx: &mut Context<Workspace>) -> Vec<AnyEle
     let on_branch = s.branch.clone().filter(|_| s.oid.is_some());
     let publish = s.upstream.is_none() || s.gone;
     let running = git.sync.is_some();
+    // A command running at home runs on: the button says so and doesn't stop it.
+    let at_home = ws
+        .space
+        .remote
+        .as_deref()
+        .filter(|_| git.home.is_some())
+        .map(crate::mirror::computer_of);
     // The running command's button spins, and a click on it cancels it (Fetch and Pull from ⋯
     // spin here too). Tinted while there is something to send or get.
     let sync_button = (on_branch.is_some() || running).then(|| {
         let (label, word, icon) = match (running, publish) {
+            (true, _) if at_home.is_some() => ("Running", "Sync", None),
             (true, _) => ("Cancel", "Sync", None),
             (false, true) => ("Publish branch", "Push", Some(IconName::CloudUpload)),
             (false, false) => ("Sync", "Sync", Some(IconName::ArrowDownUp)),
         };
+        let stuck = at_home.clone();
         let pending = publish || s.ahead > 0 || s.behind > 0;
         let (bg, color) = if pending || running {
             (ui.accent.opacity(0.16), ui.accent)
@@ -322,8 +234,16 @@ fn actions(ws: &Workspace, git: &Git, cx: &mut Context<Workspace>) -> Vec<AnyEle
                 el.child(Spinner::new().with_size(UiSize::Size(px(12.0))))
             })
             .child(label)
-            .tooltip(move |window, cx| Tooltip::new(words::tip(word)).build(window, cx));
-        if running {
+            .tooltip(move |window, cx| match &stuck {
+                Some(computer) => Tooltip::new(format!(
+                    "Running on {computer}: it can't be stopped from here."
+                ))
+                .build(window, cx),
+                None => Tooltip::new(words::tip(word)).build(window, cx),
+            });
+        if running && at_home.is_some() {
+            el.test_support().into_any_element()
+        } else if running {
             el.on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.cancel_git(cx)))
                 .test_support()
                 .into_any_element()
@@ -360,7 +280,9 @@ fn actions(ws: &Workspace, git: &Git, cx: &mut Context<Workspace>) -> Vec<AnyEle
             icon_button("refresh", IconName::RefreshCw, ui, 1.0)
                 .tooltip(|window, cx| Tooltip::new("Refresh").build(window, cx))
                 .on_click(
-                    cx.listener(move |ws, _: &ClickEvent, window, cx| ws.refresh_git(window, cx)),
+                    cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        ws.refresh_git_now(window, cx)
+                    }),
                 )
                 .test_support()
                 .into_any_element(),
@@ -410,7 +332,7 @@ pub(crate) fn body(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace
                 )
                 .into_any_element(),
             Found::NotARepo => centered(ui, z)
-                .child(format!("{} is not a Git repository", git.folder.display()))
+                .child(format!("{} is not a Git repository", git.place()))
                 .child(
                     div()
                         .flex()
@@ -453,7 +375,17 @@ pub(crate) fn body(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace
                         ),
                 )
                 .into_any_element(),
-            Found::Repo(_) => repo_body(ws, git, z, cx),
+            Found::Refused(why) => centered(ui, z)
+                .child(why.clone())
+                .child(
+                    button("retry", "Try again", ui, z)
+                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                            ws.look_up_git(window, cx)
+                        }))
+                        .test_support(),
+                )
+                .into_any_element(),
+            Found::Repo(_) | Found::Home(_) => repo_body(ws, git, z, cx),
         }
     };
     // The wheel scrolls the lists and stops there; with Ctrl it zooms the canvas.
@@ -503,13 +435,18 @@ fn repo_body(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>) -> 
                             el.tooltip(move |window, cx| Tooltip::new(word).build(window, cx))
                         }),
                 )
-                .child(
-                    button("git-abort", "Abort", ui, z)
+                .child(match ws.why_not(Deed::Git("abort")) {
+                    // A Control share can't abort at home: dimmed, the rule's words its tooltip.
+                    Some(why) => button("git-abort", "Abort", ui, z)
+                        .opacity(0.5)
+                        .tooltip(move |window, cx| Tooltip::new(why.clone()).build(window, cx))
+                        .test_support(),
+                    None => button("git-abort", "Abort", ui, z)
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                             ws.abort_operation(window, cx)
                         }))
                         .test_support(),
-                )
+                })
                 .when(conflicts == 0, |el| {
                     el.child(
                         button("git-continue", "Continue", ui, z)

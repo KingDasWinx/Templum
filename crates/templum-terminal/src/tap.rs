@@ -489,6 +489,15 @@ impl<P> Tap<P> {
     }
 }
 
+/// Dropped with alacritty's event loop, as it ends: the terminal ends too. The loop breaks
+/// without `Event::Exit` when a write to the PTY fails, which macOS does once the shell is gone (a
+/// key, an agent's resume typed as the shell ends): Templum never saw such a shell end.
+impl<P> Drop for Tap<P> {
+    fn drop(&mut self) {
+        self.shared.end();
+    }
+}
+
 impl<P: EventedReadWrite> io::Read for Tap<P> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.pending.is_empty() {
@@ -568,6 +577,13 @@ mod tests {
 
     fn shared() -> Arc<Shared> {
         headless(10, 2).1
+    }
+
+    #[test]
+    fn the_event_loops_end_is_the_terminals() {
+        let shared = shared();
+        drop(Tap::new((), shared.clone()));
+        assert!(shared.exited.get().is_some());
     }
 
     fn scan(bytes: &[u8]) -> Arc<Shared> {

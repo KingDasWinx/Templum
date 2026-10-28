@@ -34,6 +34,7 @@ would have opened together with the block's. The canvas and the blocks had no me
 | A folder in an editor's tree | New file…, New folder…, Open a terminal here, Rename…, Delete…, Reveal in file manager |
 | An editor tree's empty space | New file…, New folder…, Refresh |
 | The folder's ▾ in the Git popup's header (a click) | The repositories this workspace's terminals work in, then the workspace's recent folders (each once, the one shown left out), Choose another folder…, Refresh, Open a terminal here (at the view's center; the popup closes) |
+| The folder's ▾ in the Git popup's header on a mirrored workspace (a click) | Home's folders (the workspace's and its terminals', then home's recent folders of the workspace; each once, less the one shown and those inside its repository), Choose another folder… (dimmed: stays on home), Refresh, Open a terminal here (at home; the popup closes) |
 | The ⋯ of the Git popup's top bar (a click) | Fetch, Pull, Push, Recently discarded… (with a data folder), Clone a repository… |
 | The Git popup's Publish branch, with several remotes (a click) | Publish to *remote*, one per remote, as `git remote` lists them |
 | The ▾ beside the Git popup's Commit | Commit (or Commit all changes), and the same & Push |
@@ -49,8 +50,21 @@ would have opened together with the block's. The canvas and the blocks had no me
 | The toolbar's Terminal button (a click) | Default (*its name*), then the shells found; the chosen one opens where a new terminal goes |
 | A column's title | Rename…, Add a card, Delete |
 | A card | Open, Send to ▸, Delete card (asks first) |
-| A workspace tile in the sidebar, or its card on the workspaces screen | Open (disabled for the one shown), Edit…, Stop (disabled while it is the only workspace, or stopped), Delete… (disabled for the last workspace) |
+| A workspace tile in the sidebar, or its card on the Home (also its ⋯) | Open (disabled for the one shown), Edit…, Stop (disabled while it is the only workspace, or stopped), Delete… (disabled for the last workspace) |
 | A drawing (with the Select tool) | Delete |
+
+On a **mirrored workspace** the same menus open, and what home can't do there is dimmed with the rule's words as its
+tooltip ([Templum to Templum](templum-to-templum.md#batch-2b-blocks-wires-and-agents-on-the-canvas)): the canvas menu's
+**AI agent ▸** lists home's agents (before home answered: "Asking *computer*…") and a choice asks which folder of
+home's;
+**Add ▸** has Terminal ▸ (home's shells: Default, then the others home has; "Asking *computer*…" before home answered;
+an older home's Templum has Default only, its other shells dimmed with the rule's words), Kanban board, Checklist, and
+Note and Editor dimmed;
+**Notes…** and **Checklists…** are dimmed. A remote terminal's menu is Copy, Paste (dimmed without a Full share),
+**Hand a task…** (when an agent runs in it) and the block menu's end, with Fullscreen, Connect to ▸, Disconnect from ▸,
+Move to workspace and Close each dimmed when home can't. A card of home's has the end alone. A wire's menu has Rename
+wire… and Disconnect. The toolbar's shells' menu lists home's shells, as Add ▸ Terminal ▸; a drawing's menu doesn't
+open.
 
 Every block's header has a **⋯** (More), shown on hover beside Fullscreen and Close, which opens the block's menu at the
 click, as a right-click does.

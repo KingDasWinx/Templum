@@ -308,20 +308,142 @@ fn an_empty_name_is_refused_in_the_edit_dialog(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+#[cfg(target_os = "macos")]
+const NEW_WORKSPACE: &str = "cmd-shift-n";
+#[cfg(not(target_os = "macos"))]
+const NEW_WORKSPACE: &str = "ctrl-shift-n";
+
+/// The workspaces' names, in the sidebar's order.
+fn names(ws: &Entity<Workspace>, cx: &gpui_kit::App) -> Vec<String> {
+    ws.read(cx).order().iter().map(|s| s.name.clone()).collect()
+}
+
 #[gpui_kit::test]
-fn a_new_workspace_opens_its_edit_dialog_with_the_name_selected(cx: &mut TestAppContext) {
+fn every_new_workspace_button_opens_its_dialog_and_cancel_and_esc_make_nothing(
+    cx: &mut TestAppContext,
+) {
     use gpui_kit::component::WindowExt as _;
+    no_motion(cx);
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let index = crate::session::index_path(data.path());
+    // On the canvas, then on the Home: each of its ways in.
+    for (home, ways) in [
+        (false, &["new-workspace", NEW_WORKSPACE][..]),
+        (true, &["home-new", "new-workspace", NEW_WORKSPACE]),
+    ] {
+        if home {
+            cx.update_window(handle, |_, window, cx| {
+                ws.update(cx, |ws, cx| ws.show_home(window, cx));
+                window.render_frame(cx);
+            })
+            .unwrap();
+        }
+        let written = std::fs::read(&index).ok();
+        for way in ways {
+            for close in ["cancel", "escape"] {
+                cx.update_window(handle, |_, window, cx| {
+                    if way.contains('-') && !way.contains("shift") {
+                        window.click(*way, cx);
+                    } else {
+                        window.press(way, cx);
+                    }
+                    window.render_frame(cx);
+                    assert!(window.has_active_dialog(cx), "{way} opens it");
+                    let ok = window.within("dialog").find("ok");
+                    assert_eq!(ok.label(), Some("Create"), "{way}");
+                    assert!(window.try_find("space-share").is_none(), "nothing to share");
+                    assert_eq!(names(&ws, cx), ["Main"], "{way} makes nothing yet");
+                    if close == "cancel" {
+                        window.within("dialog").click("cancel", cx);
+                    } else {
+                        window.press("escape", cx);
+                    }
+                    window.render_frame(cx);
+                    assert!(!window.has_active_dialog(cx), "{close} closes it");
+                    assert_eq!(names(&ws, cx), ["Main"], "{close} makes nothing");
+                    assert_eq!(ws.read(cx).home_up(), home);
+                })
+                .unwrap();
+            }
+        }
+        assert_eq!(std::fs::read(&index).ok(), written, "nothing written");
+    }
+}
+
+#[gpui_kit::test]
+fn create_makes_the_new_workspace_with_its_defaults_and_shows_it(cx: &mut TestAppContext) {
     no_motion(cx);
     let (handle, ws) = open(cx);
     cx.update_window(handle, |_, window, cx| {
         window.click("new-workspace", cx);
         window.render_frame(cx);
-        assert!(window.has_active_dialog(cx));
-        assert_eq!(ws.read(cx).space.name, "Workspace 2", "shown at once");
-        window.input("Api", cx);
+        window.within("dialog").click("ok", cx);
+        window.render_frame(cx);
+        let ws = ws.read(cx);
+        assert_eq!(ws.active, 1, "shown");
+        assert_eq!(ws.space.name, "Workspace 2");
+        assert_eq!(ws.space.look, Look::default());
+        assert_eq!(ws.space.folder, None);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn create_makes_the_new_workspace_with_what_was_chosen(cx: &mut TestAppContext) {
+    use gpui_kit::assets::IconName;
+    use gpui_kit::component::WindowExt as _;
+    no_motion(cx);
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    cx.update_window(handle, |_, window, cx| {
+        window.press(NEW_WORKSPACE, cx);
+        window.render_frame(cx);
+        // The name is selected: emptied, it is refused, saying why.
+        window.press("backspace", cx);
         window.press("enter", cx);
         window.render_frame(cx);
-        assert_eq!(ws.read(cx).space.name, "Api");
+        assert!(window.has_active_dialog(cx), "it stays open");
+        assert!(window.try_find("space-note").is_some());
+        assert_eq!(names(&ws, cx), ["Main"]);
+        window.input("Api", cx);
+        window.within("dialog").click("space-color-blue", cx);
+        window.within("dialog").click("space-icon-rocket", cx);
+        window.render_frame(cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx));
+        assert_eq!(names(&ws, cx), ["Main", "Api"]);
+        let ws = ws.read(cx);
+        assert_eq!(ws.space.name, "Api", "shown");
+        assert_eq!(ws.space.look.color.as_deref(), Some("blue"));
+        assert_eq!(ws.space.look.icon, Some(IconName::Rocket));
+    })
+    .unwrap();
+    let entry = &written_index(data.path()).workspaces[1];
+    assert_eq!(entry.name, "Api");
+    assert_eq!(entry.icon.as_deref(), Some("rocket"));
+}
+
+#[gpui_kit::test]
+fn create_takes_a_folder_and_refuses_one_that_isnt(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let folder = tempfile::tempdir().unwrap();
+    let gone = folder.path().join("gone");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let why = ws
+                .create_space("Gone", Look::default(), Some(gone.clone()), window, cx)
+                .unwrap_err();
+            assert_eq!(why, format!("{} isn't a folder", gone.display()));
+            assert_eq!(ws.others.len(), 0, "nothing made");
+            let why = ws.create_space("  ", Look::default(), None, window, cx);
+            assert!(why.is_err() && ws.others.is_empty(), "an empty name");
+            let at = Some(folder.path().to_path_buf());
+            ws.create_space("Api", Look::default(), at.clone(), window, cx)
+                .unwrap();
+            assert_eq!((ws.space.name.as_str(), &ws.space.folder), ("Api", &at));
+        })
     })
     .unwrap();
 }
@@ -512,6 +634,158 @@ fn stopping_the_active_workspace_shows_the_one_before(cx: &mut TestAppContext) {
         })
     })
     .unwrap();
+}
+
+/// Four workspaces, Main, w2, w3 and w4, each with a terminal (Main its first run's); Main shown.
+fn four(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            for _ in 0..3 {
+                ws.new_space(window, cx);
+                ws.open(Rect::new(0.0, 0.0, 600.0, 400.0), window, cx);
+            }
+            ws.switch_to(0, window, cx);
+        })
+    })
+    .unwrap();
+}
+
+/// Stops `id` (nothing at work in it: at once); the workspace shown then, and whether the Home is.
+fn stop(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: &str,
+) -> (String, bool) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.stop_space(id, window, cx);
+            assert!(ws.spaces().any(|s| s.id == id && s.stopped), "{id} stopped");
+            (ws.space.id.clone(), ws.home_up())
+        })
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn stopping_the_shown_workspace_shows_the_nearest_running_one_above_else_below(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    four(handle, &ws, cx);
+    // The first has none above: the one below.
+    assert_eq!(stop(handle, &ws, cx, "default"), ("w2".into(), false));
+    // w3 has w2 above it.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.switch_to(2, window, cx))
+    })
+    .unwrap();
+    assert_eq!(stop(handle, &ws, cx, "w3"), ("w2".into(), false));
+    // w4: w3 above is stopped, skipped for w2.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.switch_to(3, window, cx))
+    })
+    .unwrap();
+    assert_eq!(stop(handle, &ws, cx, "w4"), ("w2".into(), false));
+}
+
+#[gpui_kit::test]
+fn stopping_the_shown_workspace_skips_stopped_ones_below(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    four(handle, &ws, cx);
+    stop(handle, &ws, cx, "w2");
+    assert_eq!(stop(handle, &ws, cx, "default"), ("w3".into(), false));
+}
+
+#[gpui_kit::test]
+fn stopping_the_last_running_workspace_shows_the_home(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    four(handle, &ws, cx);
+    for id in ["w2", "w3", "w4"] {
+        stop(handle, &ws, cx, id);
+    }
+    let (held, home) = stop(handle, &ws, cx, "default");
+    assert!(home, "none runs: the Home, not a stopped one started");
+    assert_eq!(held, "default", "the one stopped, held under it");
+    ws.read_with(cx, |ws, cx| {
+        assert!(ws.spaces().all(|s| s.stopped && s.blocks.is_empty()));
+        assert!(
+            ws.order()
+                .iter()
+                .all(|s| ws.counts(s).line() == "Stopped · 1 terminal")
+        );
+        let state = ws.api_state(cx);
+        assert_eq!(state.app.shown, None);
+        assert!(state.workspaces.iter().all(|w| w.stopped && !w.shown));
+    });
+    // Any card starts its workspace.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.switch_to(2, window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(!ws.home_up() && ws.space.id == "w3" && !ws.space.stopped);
+        assert_eq!(ws.space.terminals().count(), 1, "its terminal, back");
+    });
+}
+
+#[gpui_kit::test]
+fn every_workspace_stopped_stays_stopped_after_a_restart(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    second_with_a_terminal(handle, &ws, cx);
+    for id in ["w2", "default"] {
+        stop(handle, &ws, cx, id);
+    }
+    ws.update(cx, |ws, cx| ws.save_canvas_now(cx));
+    let (_, again) = open_welcomed(cx, Some(quiet()), None, Some(data.path().to_path_buf()));
+    again.read_with(cx, |ws, _| {
+        assert!(ws.home_up());
+        assert_eq!(
+            ws.space.id, "default",
+            "the one shown last, held under the Home"
+        );
+        assert!(
+            ws.spaces().all(|s| s.stopped && s.blocks.is_empty()),
+            "none started"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn the_only_workspace_can_be_stopped_landing_on_the_home(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.terminals().count(), 1, "the first run's");
+        assert!(ws.can_stop(&ws.space), "the menu's Stop");
+    });
+    assert_eq!(stop(handle, &ws, cx, "default"), ("default".into(), true));
+    // From the Home's card it starts again.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.switch_to(0, window, cx))
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(!ws.home_up() && !ws.space.stopped);
+        assert_eq!(ws.space.terminals().count(), 1);
+    });
+}
+
+#[gpui_kit::test]
+fn stopping_the_workspace_held_under_the_home_keeps_the_home(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    four(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.show_home(window, cx))
+    })
+    .unwrap();
+    assert_eq!(stop(handle, &ws, cx, "default"), ("default".into(), true));
+    assert_eq!(
+        stop(handle, &ws, cx, "w3"),
+        ("default".into(), true),
+        "a hidden one"
+    );
 }
 
 #[gpui_kit::test]

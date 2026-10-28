@@ -1,5 +1,6 @@
-//! The workspaces sidebar: a tile per workspace (click: show it; right-click: rename, delete),
-//! and + for a new one; the Git button at its foot. See docs/specs/workspaces.md.
+//! The workspaces sidebar: the Home button, a tile per workspace (click: show it; right-click:
+//! rename, delete), and + for a new one; the agents, requests and Git buttons at its foot. See
+//! docs/specs/workspaces.md.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
@@ -7,45 +8,68 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, ClickEvent, Context, ElementId, FontWeight, Hsla, MouseButton, MouseDownEvent,
-    ObjectFit, SharedString, TestSupportExt, div, img, px,
+    ObjectFit, SharedString, TestSupportExt, Window, div, img, px,
 };
 
 use crate::grid::hsla;
 use crate::menu::Target;
 use crate::space_dialog::{Look, tint};
 use crate::theme::{Theme, Ui};
+use crate::workspace::remote::Deed;
 use crate::workspace::{Space, Workspace};
 
 /// The sidebar's width; the canvas gets the rest.
 pub(crate) const WIDTH: f32 = 56.0;
 const TILE: f32 = 40.0;
 
-pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
+pub(crate) fn render(
+    ws: &Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> impl IntoElement {
     let ui = ws.ui;
+    // A request just arrived: the inbox button pulses, a frame at a time, for a few seconds.
+    let now = cx.background_executor().now();
+    let pulse = match ws.inbox_pulse {
+        Some(at) if ws.inbox_pulsing(now) => {
+            window.request_animation_frame();
+            crate::inbox::pulse(now.saturating_duration_since(at))
+        }
+        _ => 0.0,
+    };
     let order = ws.order();
     let tiles: Vec<AnyElement> = order
         .into_iter()
         .enumerate()
         .map(|(i, space)| tile(ws, i, space, cx))
         .collect();
-    let screen = div()
-        .id("workspaces-button")
+    // Shown, it is marked as the workspace shown is.
+    let at_home = ws.home_up();
+    let home = div()
+        .id("home-button")
+        .relative()
         .flex()
         .flex_shrink_0()
         .items_center()
         .justify_center()
         .size(px(TILE))
         .rounded(px(10.0))
+        .border_1()
         .cursor_pointer()
-        .hover(move |s| s.bg(ui.hover))
+        .map(|el| shown_or_not(el, at_home, ui))
         .active(move |s| s.bg(ui.pressed))
         .child(
-            Icon::new(IconName::LayoutGrid)
+            Icon::new(IconName::House)
                 .size(px(16.0))
-                .text_color(ui.title),
+                .text_color(if at_home {
+                    hsla(ws.theme.palette.foreground, 1.0)
+                } else {
+                    ui.title
+                }),
         )
-        .tooltip(|window, cx| Tooltip::new("Workspaces").build(window, cx))
-        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.toggle_screen(window, cx)))
+        .when(at_home, |el| el.child(shown_bar(ui.accent)))
+        .tooltip(|window, cx| Tooltip::new("Home").build(window, cx))
+        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.show_home(window, cx)))
         .test_support();
     let plus = div()
         .id("new-workspace")
@@ -67,7 +91,27 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         .tooltip(|window, cx| Tooltip::new("New workspace").build(window, cx))
         .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.add_space(window, cx)))
         .test_support();
+    let connect = div()
+        .id("connect-templum")
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(TILE))
+        .rounded(px(10.0))
+        .cursor_pointer()
+        .hover(move |s| s.bg(ui.hover))
+        .active(move |s| s.bg(ui.pressed))
+        .child(
+            Icon::new(IconName::Plug)
+                .size(px(16.0))
+                .text_color(ui.title),
+        )
+        .tooltip(|window, cx| Tooltip::new("Connect to a Templum…").build(window, cx))
+        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.connect_templum(window, cx)))
+        .test_support();
     let open = ws.git_open && ws.space.git.is_some();
+    // On a mirror the button is dimmed, with the rule's words, while home can't be asked.
+    let (git_tip, git_dim) = crate::toolbar::gated(ws, Deed::Git("look"), "Git");
     let git = div()
         .id("git-button")
         .flex()
@@ -78,6 +122,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         .rounded(px(10.0))
         .cursor_pointer()
         .when(open, move |el| el.bg(ui.pressed))
+        .when(git_dim, |el| el.opacity(0.4))
         .hover(move |s| s.bg(ui.hover))
         .active(move |s| s.bg(ui.pressed))
         .child(
@@ -85,7 +130,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
                 .size(px(16.0))
                 .text_color(ui.title),
         )
-        .tooltip(|window, cx| Tooltip::new("Git").build(window, cx))
+        .tooltip(move |window, cx| Tooltip::new(git_tip.clone()).build(window, cx))
         .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.toggle_git(window, cx)))
         .test_support();
     div()
@@ -110,27 +155,66 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
                 .min_h(px(0.0))
                 .w_full()
                 .overflow_y_scroll()
-                .child(screen)
+                .child(home)
                 .children(tiles)
-                .child(plus),
+                .child(plus)
+                .child(connect),
         )
-        // Apart, in the corner: Git isn't a workspace.
+        // Apart, in the corner: the agents, requests and Git aren't workspaces.
         .child(
             div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
                 .pt(px(8.0))
                 .mt(px(8.0))
                 .border_t_1()
                 .border_color(ui.hairline)
+                .child(crate::agents_view::button(ws, TILE, cx))
+                .child(crate::inbox::button(ws, pulse, TILE, cx))
+                .child(crate::automations_view::button(ws, TILE, cx))
                 .child(git),
         )
+}
+
+/// What the sidebar shows (the Home or a workspace) has the hover fill and a hairline; the others
+/// get the fill under the pointer.
+fn shown_or_not(
+    el: gpui_kit::Stateful<gpui_kit::Div>,
+    shown: bool,
+    ui: Ui,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    if shown {
+        el.bg(ui.hover).border_color(ui.hairline)
+    } else {
+        el.border_color(gpui_kit::transparent_black())
+            .hover(move |s| s.bg(ui.hover))
+    }
+}
+
+/// The bar at the left of what the sidebar shows, in `color`.
+fn shown_bar(color: Hsla) -> impl IntoElement {
+    div()
+        .id("shown-bar")
+        .absolute()
+        .left(px(-8.0))
+        .top(px(10.0))
+        .w(px(3.0))
+        .h(px(18.0))
+        .rounded_full()
+        .bg(color)
+        .test_support()
 }
 
 /// One workspace: its face, a bar when active (in its color, or the accent), a dot while an
 /// agent runs in it, and one when a terminal there has news. Its color tints it.
 fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) -> AnyElement {
     let ui = ws.ui;
-    let active = i == ws.active;
-    let name = SharedString::from(if space.stopped {
+    // On the Home no workspace is shown.
+    let active = i == ws.active && !ws.home_up();
+    let name = SharedString::from(if let Some(remote) = space.remote.as_deref() {
+        crate::mirror::tile_tip(&space.name, remote)
+    } else if space.stopped {
         format!("{} (stopped)", space.name)
     } else {
         space.name.clone()
@@ -139,7 +223,7 @@ fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) ->
     let color = space.look.color.as_deref().and_then(|c| tint(c, &ws.theme));
     let fg = hsla(ws.theme.palette.foreground, 1.0);
     let inner = div().id(ElementId::Name(format!("workspace-{}", space.id).into()));
-    let inner = crate::spaces_screen::draggable(inner, space, i, ui, cx)
+    let inner = crate::home::draggable(inner, space, i, ui, cx)
         .relative()
         .flex()
         .items_center()
@@ -150,17 +234,8 @@ fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) ->
         .text_size(px(14.0))
         .font_weight(FontWeight::SEMIBOLD)
         .cursor_pointer()
-        .map(|el| {
-            if active {
-                el.bg(ui.hover)
-                    .border_color(ui.hairline)
-                    .text_color(hsla(ws.theme.palette.foreground, 1.0))
-            } else {
-                el.border_color(gpui_kit::transparent_black())
-                    .text_color(ui.title)
-                    .hover(move |s| s.bg(ui.hover))
-            }
-        })
+        .map(|el| shown_or_not(el, active, ui))
+        .text_color(if active { fg } else { ui.title })
         .active(move |s| s.bg(ui.pressed))
         .child(face(
             &space.look,
@@ -170,18 +245,7 @@ fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) ->
             &ws.theme,
             if active { fg } else { ui.title },
         ))
-        .when(active, |el| {
-            el.child(
-                div()
-                    .absolute()
-                    .left(px(-8.0))
-                    .top(px(10.0))
-                    .w(px(3.0))
-                    .h(px(18.0))
-                    .rounded_full()
-                    .bg(color.unwrap_or(ui.accent)),
-            )
-        })
+        .when(active, |el| el.child(shown_bar(color.unwrap_or(ui.accent))))
         .when(space.has_agent(&ws.agents), |el| {
             el.child(
                 div()
@@ -191,6 +255,21 @@ fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) ->
                     .size(px(7.0))
                     .rounded_full()
                     .bg(hsla(ws.theme.palette.ansi[2], 1.0)),
+            )
+        })
+        // Another Templum mirrors it now (docs/specs/templum-to-templum.md); the news dot, if any,
+        // is drawn over it.
+        .children(
+            crate::share_dialog::mirror_mark(ws, &space.id, "workspace-mirrored", 12.0)
+                .map(|mark| mark.absolute().bottom(px(2.0)).right(px(2.0))),
+        )
+        // A remote one: where it mirrors from.
+        .when(space.is_remote(), |el| {
+            el.child(
+                crate::mirror::tile_mark(ui, &space.id)
+                    .absolute()
+                    .bottom(px(2.0))
+                    .right(px(2.0)),
             )
         })
         // A terminal there has news (see alert.rs).
@@ -223,7 +302,10 @@ fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) ->
     div()
         .rounded(px(10.0))
         .when_some(color, |el, c| el.bg(c.opacity(0.18)))
-        .when(space.stopped, |el| el.opacity(0.45))
+        .when(
+            space.stopped || space.remote.as_deref().is_some_and(|r| r.dim()),
+            |el| el.opacity(0.45),
+        )
         .child(inner)
         .into_any_element()
 }

@@ -108,11 +108,8 @@ fn a_hunk_that_changed_since_it_was_read_is_refused(cx: &mut TestAppContext) {
     // A terminal stages the whole file; the panel still shows the read before it.
     git_run(repo.path(), &["add", "a.txt"]);
     click_hunk(handle, &ws, cx, ix, "stage");
-    assert_eq!(
-        notification_count(handle, cx),
-        1,
-        "The file changed; try again"
-    );
+    assert_eq!(notification_count(handle, cx), 1);
+    assert_eq!(told_so_far(), ["The file changed; try again"]);
     assert_eq!(
         git_run(repo.path(), &["diff", "--cached", "--numstat"]),
         "3\t3\ta.txt\n",

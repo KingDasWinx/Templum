@@ -13,14 +13,18 @@ use templum_canvas::{
     BlockId, Direction, Drawing, Edges, Gesture, Point, Rect, STRING_PX, Size, chrome, constrain,
     edge_scroll,
 };
-use templum_terminal::{Button, KeyInput, MouseInput, MouseKind, SelectionKind, Side, Target};
+use templum_terminal::{
+    Button, KeyInput, MouseInput, MouseKind, SelectionKind, Side, Target, key_name, text_names,
+    typed_text,
+};
 
 use crate::git_block;
 use crate::keys::{self, Command};
 use crate::menu;
 
+use super::remote::Deed;
 use super::{
-    CLICK_SLOP, Drag, QUIT_AGAIN, Tool, Workspace, effective, option_types_text, secondary,
+    CLICK_SLOP, Copied, Drag, QUIT_AGAIN, Tool, Workspace, effective, option_types_text, secondary,
     show_notification, undo_key, workspace_digit,
 };
 
@@ -109,7 +113,7 @@ impl Workspace {
         }
     }
 
-    pub(super) fn local(&self, pos: PixelPoint<Pixels>) -> Point {
+    pub(crate) fn local(&self, pos: PixelPoint<Pixels>) -> Point {
         Point::new(
             f32::from(pos.x - self.origin.x),
             f32::from(pos.y - self.origin.y),
@@ -123,6 +127,9 @@ impl Workspace {
     }
 
     pub(crate) fn begin_move(&mut self, id: BlockId, pos: PixelPoint<Pixels>) {
+        if self.why_not(Deed::Move).is_some() {
+            return;
+        }
         // A tile is dropped on another to trade places.
         if self.space.grid.is_some() {
             let at = self.local(pos);
@@ -135,7 +142,7 @@ impl Workspace {
             return;
         }
         let p = self.local(pos);
-        self.drag = Gesture::move_block(&self.space.canvas, id, p).map(|g| Drag::held(g, p));
+        self.drag = Gesture::move_block(&self.space.canvas, id, p).map(|g| Drag::held(g, p, None));
         self.placing(&[id]);
     }
 
@@ -168,6 +175,9 @@ impl Workspace {
     }
 
     pub(crate) fn begin_resize(&mut self, id: BlockId, edges: Edges, pos: PixelPoint<Pixels>) {
+        if self.why_not(Deed::Move).is_some() {
+            return;
+        }
         let p = self.local(pos);
         let min = self
             .space
@@ -180,13 +190,32 @@ impl Workspace {
         self.placing(&[id]);
     }
 
-    /// The Git popup's size as drawn: the one the person set, kept inside the room the window
-    /// leaves it (`git_block::fit`).
+    /// The popups' size as drawn: the room at full screen, else the one the person set, kept
+    /// inside the room the window leaves it (`git_block::fit`).
     pub(crate) fn git_popup_size(&self) -> Size {
+        if self.popup_full {
+            return self.git_room;
+        }
         git_block::fit(self.git_size, self.git_room)
     }
 
-    /// Pressed on the popup's right edge, top edge or the corner between them (`edges`).
+    /// Closes whichever popup is open (only one ever is): its Close button, a press outside it.
+    pub(crate) fn close_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.git_open {
+            self.close_git(window, cx);
+        }
+        if self.inbox_open {
+            self.close_inbox(window, cx);
+        }
+        if self.agents_open {
+            self.close_agents(window, cx);
+        }
+        if self.automations_open {
+            self.close_automations(window, cx);
+        }
+    }
+
+    /// Pressed on a popup's right edge, top edge or the corner between them (`edges`).
     pub(crate) fn begin_git_resize(&mut self, edges: Edges, pos: PixelPoint<Pixels>) {
         self.drag = Some(Drag::GitResize {
             edges,
@@ -321,7 +350,7 @@ impl Workspace {
                 }
             }
             Some(Drag::Wire { to, .. }) => *to = self.space.canvas.camera.to_world(p),
-            // The popup sits at the bottom-left: its right edge grows it to the right, its top
+            // A popup sits at the bottom-left: its right edge grows it to the right, its top
             // edge upward, so the pointer's way is the size's. Kept inside the room as dragged,
             // so the popup never trails a pointer that went past the window. A side not dragged
             // keeps what was set, not what a smaller window draws.
@@ -382,12 +411,16 @@ impl Workspace {
         let dt = scrolled.map_or(0.0, |at| now.duration_since(at).as_secs_f32().min(0.05));
         *scrolled = Some(now);
         self.space.pristine = false;
+        self.api.moved_at = Some(now);
         self.space
             .canvas
             .camera
             .pan_by(Point::new(-v.x * dt, -v.y * dt));
         match &mut self.drag {
-            Some(Drag::Held { gesture, .. }) => {
+            Some(Drag::Held {
+                gesture, carried, ..
+            }) => {
+                *carried = true;
                 self.space.guides = gesture.update(&mut self.space.canvas, pointer).guides;
             }
             _ => self.marquee_to(pointer),
@@ -403,7 +436,24 @@ impl Workspace {
     ) -> Option<(usize, usize, Side)> {
         let block = self.space.canvas.get(id)?;
         let world = self.space.canvas.camera.to_world(self.local(pos));
-        let (row, col, right) = chrome::cell_at(block.rect, world, self.cell.size);
+        // A remote viewer is drawn at the zoom step that fits home's grid in the block.
+        let cell = match self.space.terminal(id).filter(|p| p.remote.is_some()) {
+            Some(pane) => {
+                let zoom = self.space.canvas.camera.zoom();
+                let drawn = super::remote::fit_zoom(
+                    zoom,
+                    chrome::content_rect(block.rect).size(),
+                    pane.grid_size(),
+                    self.cell.size,
+                );
+                Size::new(
+                    self.cell.size.w * drawn / zoom,
+                    self.cell.size.h * drawn / zoom,
+                )
+            }
+            None => self.cell.size,
+        };
+        let (row, col, right) = chrome::cell_at(block.rect, world, cell);
         let side = if right { Side::Right } else { Side::Left };
         Some((row, col, side))
     }
@@ -432,7 +482,13 @@ impl Workspace {
             shift: m.shift,
         };
         self.space.terminal(id).is_some_and(|pane| {
-            let told = pane.term.mouse(&input);
+            // A mirrored terminal's program is at home: its mouse goes there, in the modes the
+            // last frame painted.
+            let told = if pane.remote.is_some() {
+                self.remote_mouse(id, input)
+            } else {
+                pane.term.mouse(&input)
+            };
             if told {
                 pane.scrolled.set(true);
             }
@@ -443,13 +499,20 @@ impl Workspace {
     /// A press in terminal `id`'s body goes to its program when it asked for the mouse (a TUI,
     /// Claude Code full screen), unless Shift is held: Shift keeps selecting text. Its moves and
     /// its release follow it.
-    pub(crate) fn press_program(&mut self, id: BlockId, e: &MouseDownEvent) -> bool {
+    pub(crate) fn press_program(
+        &mut self,
+        id: BlockId,
+        e: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(button) = button_of(e.button).filter(|_| !e.modifiers.shift) else {
             return false;
         };
         let Some(cell) = self.cell_of(id, e.position) else {
             return false;
         };
+        self.tell_mouse(id, window, cx);
         if !self.report(id, cell, Some(button), MouseKind::Press, &e.modifiers) {
             return false;
         }
@@ -514,7 +577,8 @@ impl Workspace {
 
     /// Opens the link under a press in a terminal: a URL in the browser, a file in an editor
     /// beside the terminal (at its line), its repository's root as the editor's folder. False
-    /// when there is none (or the file isn't there).
+    /// when there is none (or the file isn't there). A mirrored terminal's files are home's:
+    /// only its URLs open.
     pub(crate) fn open_link(
         &mut self,
         id: BlockId,
@@ -533,6 +597,7 @@ impl Workspace {
                 cx.open_url(&url);
                 true
             }
+            Some(Target::File { .. }) if pane.remote.is_some() => false,
             Some(Target::File { path, line }) => {
                 let home = std::env::home_dir();
                 let Some(file) =
@@ -569,12 +634,50 @@ impl Workspace {
         }
     }
 
-    pub(crate) fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
+    /// The button let go at `pos` on a selection the person made in a terminal (a drag, a double
+    /// or triple click): it is copied, once, with `terminal.copy_on_select` on, and a quiet
+    /// "Copied" shows there.
+    pub(super) fn copy_on_select(&mut self, pos: PixelPoint<Pixels>, cx: &mut Context<Self>) {
+        if let Some(Drag::Select(id)) = self.drag
+            && self.config.terminal.copy_on_select
+            && let Some(text) = self
+                .space
+                .terminal(id)
+                .and_then(|pane| pane.term.shared().selection_text())
+            && let Some(block) = self.space.canvas.get(id)
+        {
+            let world = self.space.canvas.camera.to_world(self.local(pos));
+            self.space.copied = Some(Copied {
+                block: id,
+                at: Point::new(
+                    world.x - block.rect.x,
+                    world.y - block.rect.y - chrome::TITLE_H,
+                ),
+                // A drag past the output takes empty lines along: not counted.
+                lines: text.trim_end().lines().count(),
+                since: cx.background_executor().now(),
+            });
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn paste_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
-        if let Some(pane) = self.space.focused_terminal() {
-            pane.person_typed();
+        if self
+            .space
+            .focused_terminal()
+            .is_some_and(|pane| pane.remote.is_some())
+        {
+            self.remote_paste(text, window, cx);
+        } else if let Some(pane) = self
+            .space
+            .focused_terminal()
+            .filter(|p| p.follows.is_none())
+        {
+            pane.person_wrote();
             pane.term.paste(&text);
         }
     }
@@ -589,7 +692,12 @@ impl Workspace {
     /// Mouse up: a press on the empty canvas that didn't pan is a click, and leaves no terminal
     /// focused (typing then reaches none; panning keeps the focus) and no block selected; on a
     /// wire, it selects the wire, so Delete removes it.
-    pub(super) fn release(&mut self, pos: PixelPoint<Pixels>, cx: &mut Context<Self>) {
+    pub(super) fn release(
+        &mut self,
+        pos: PixelPoint<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // The Wire tool let go off the canvas (over it, its layer took the drag): its curve goes.
         if matches!(self.drag, Some(Drag::Wire { .. })) {
             cx.notify();
@@ -605,10 +713,14 @@ impl Workspace {
         if self.space.canvas.blocks().iter().any(|b| self.moving(b.id)) {
             cx.notify();
         }
+        // Carried by the wheel, the blocks moved though the pointer didn't: not a click.
+        let carried = matches!(self.drag, Some(Drag::Held { carried: true, .. }));
         if let Some((start, wire)) = self.press {
             let p = self.local(pos);
             let moved = (p.x - start.x).abs().max((p.y - start.y).abs());
-            if moved < CLICK_SLOP {
+            if moved < CLICK_SLOP && !carried {
+                // A held selection nudged under the slop goes back: a click is no move.
+                self.unplace();
                 let unfocused = self.space.focused.take();
                 let had_wire = std::mem::replace(&mut self.space.selected_wire, wire);
                 if unfocused.is_some() || !self.space.selected.is_empty() || had_wire != wire {
@@ -617,6 +729,20 @@ impl Workspace {
                 }
             }
         }
+        // A selection held by a body and let go in place: that block is picked, the selection ends.
+        if let Some(Drag::Held {
+            from,
+            picks: Some(id),
+            ..
+        }) = self.drag
+        {
+            let p = self.local(pos);
+            if (p.x - from.x).abs().max((p.y - from.y).abs()) < CLICK_SLOP && !carried {
+                self.unplace();
+                self.focus_block(id, window, cx);
+            }
+        }
+        self.copy_on_select(pos, cx);
         if let Some(Drag::Ink(mut drawing)) = self.drag.take() {
             // The pen catches up with the pointer: the stroke ends where it was let go.
             drawing.push_point(self.space.canvas.camera.to_world(self.local(pos)), 0.0);
@@ -630,6 +756,11 @@ impl Workspace {
     }
 
     pub(crate) fn run(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
+        // On a mirror, a shortcut for what home can't do says why, once, instead of answering
+        // nothing.
+        if let Some(why) = super::remote::command_deed(command).and_then(|d| self.why_not(d)) {
+            return self.tell_shortcut(why, window, cx);
+        }
         match command {
             Command::NewTerminal => self.new_terminal(window, cx),
             Command::CloseTerminal => self.close_terminal(window, cx),
@@ -644,7 +775,7 @@ impl Workspace {
             // Blocks on the clipboard are pasted on the canvas, unless a field has the keyboard.
             Command::Paste => {
                 if !(self.canvas_has_keys(window) && self.paste_blocks(window, cx)) {
-                    self.paste_clipboard(cx);
+                    self.paste_clipboard(window, cx);
                 }
             }
             Command::PreviousPrompt => self.jump_to_prompt(true, cx),
@@ -673,9 +804,12 @@ impl Workspace {
             Command::NextWorkspace => self.cycle_space(1, window, cx),
             Command::PreviousWorkspace => self.cycle_space(-1, window, cx),
             Command::NewWorkspace => self.add_space(window, cx),
+            Command::ConnectTemplum => self.connect_templum(window, cx),
             Command::ToggleSidebar => self.toggle_sidebar(window, cx),
-            Command::Workspaces => self.toggle_screen(window, cx),
+            Command::Workspaces => self.show_home(window, cx),
             Command::GoToWaiting => self.go_to_waiting(window, cx),
+            Command::AllAgents => self.toggle_agents(window, cx),
+            Command::Automations => self.toggle_automations(window, cx),
             Command::Find => self.open_find(window, cx),
             Command::OpenFile => self.open_file_by_name(window, cx),
             Command::Quit => self.quit(window, cx),
@@ -760,23 +894,6 @@ impl Workspace {
                 command.filter(|c| !matches!(c, Command::Copy | Command::Paste))
             {
                 self.command_key(e, Some(command), window, cx);
-                cx.stop_propagation();
-            }
-            return;
-        }
-        // A balloon's dialog has the keyboard (docs/specs/ask-user.md, Keyboard): its keys first;
-        // what it leaves (shortcuts aside) never reaches the shell of the focused terminal.
-        if let Some(terminal) = self.balloon_keys(window, cx).map(str::to_string) {
-            let typing = self.balloon_typing(window, cx).is_some();
-            if self.question_key(&terminal, &e.keystroke, window, cx) {
-                cx.stop_propagation();
-            } else if let Some(command) =
-                command.filter(|c| !matches!(c, Command::Copy | Command::Paste))
-            {
-                self.command_key(e, Some(command), window, cx);
-                cx.stop_propagation();
-            } else if !typing {
-                // Nor its text, which would go to the terminal's input handler.
                 cx.stop_propagation();
             }
             return;
@@ -895,7 +1012,12 @@ impl Workspace {
             cx.stop_propagation();
             return;
         }
-        let Some(pane) = self.space.focused_terminal() else {
+        // A subagent's block is read-only: its keys go nowhere.
+        let Some(pane) = self
+            .space
+            .focused_terminal()
+            .filter(|p| p.follows.is_none())
+        else {
             return;
         };
         let k = &e.keystroke;
@@ -912,7 +1034,29 @@ impl Workspace {
                     && !option_types_text(&k.key, k.key_char.as_deref(), cfg!(target_os = "macos")),
             shift: k.modifiers.shift,
         };
-        pane.person_typed();
+        // A mirrored terminal is home's: the key goes there by its name, and home presses it as
+        // its own keyboard does. Printable text is the text path's, as a local terminal's: it
+        // ends a dead key's mark there (`replace_text_in_range`) and sends the characters.
+        if pane.remote.is_some() {
+            // Shift+PageUp and Shift+PageDown page through the history the mirror has.
+            if k.modifiers.shift
+                && !k.modifiers.control
+                && !k.modifiers.alt
+                && matches!(k.key.as_str(), "pageup" | "pagedown")
+                && self.remote_page(k.key == "pageup")
+            {
+                cx.stop_propagation();
+                return;
+            }
+            if typed_text(&input).is_none()
+                && let Some(name) = key_name(&input)
+            {
+                self.remote_type(vec![name], window, cx);
+                cx.stop_propagation();
+            }
+            return;
+        }
+        pane.person_keyed(&input);
         if pane.term.key(&input) {
             // Keeps the platform from also feeding key_char to the text-input path.
             cx.stop_propagation();
@@ -996,6 +1140,13 @@ impl Workspace {
         let wire = (self.tool == Tool::Select)
             .then(|| self.wire_at(world))
             .flatten();
+        // The empty canvas inside the selection's box holds the blocks: a drag moves them, a click
+        // ends the selection (`release`).
+        if self.tool == Tool::Select && self.selection_box().is_some_and(|b| b.contains(world)) {
+            self.begin_group_move(e.position, None);
+            self.press = Some((p, wire));
+            return;
+        }
         self.drag = Some(Drag::Canvas(Gesture::pan(p)));
         self.press = Some((p, wire));
     }
@@ -1012,6 +1163,13 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.space.grid.is_some() {
+            return;
+        }
+        // Held by a title, a body or the box, the canvas moves under it, whatever is under the
+        // pointer.
+        if matches!(self.drag, Some(Drag::Held { .. })) {
+            self.on_background_scroll(e, window, cx);
+            cx.stop_propagation();
             return;
         }
         let Some(id) = self.block_under(e.position) else {
@@ -1037,7 +1195,8 @@ impl Workspace {
         self.space.pristine = false;
         // A block held by its title: the wheel moves the canvas under it, a mouse's too, and the
         // block stays under the pointer.
-        if matches!(self.drag, Some(Drag::Held { .. })) {
+        if let Some(Drag::Held { carried, .. }) = &mut self.drag {
+            *carried = true;
             let d = e.delta.pixel_delta(px(self.cell.size.h));
             self.pan_by(Point::new(f32::from(d.x), f32::from(d.y)));
             self.drag_to(e.position, e.modifiers.shift, cx);
@@ -1084,6 +1243,7 @@ impl Workspace {
         &mut self,
         id: BlockId,
         e: &ScrollWheelEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if e.modifiers.control {
@@ -1106,12 +1266,27 @@ impl Workspace {
                 (0..lines.abs() as usize)
                     .all(|_| self.report(id, cell, Some(button), MouseKind::Press, &e.modifiers))
             });
-            if !told && let Some(pane) = self.space.terminal(id) {
+            let remote = self.space.terminal(id).is_some_and(|p| p.remote.is_some());
+            if !told && remote {
+                self.remote_scroll(id, lines as i32, window, cx);
+            } else if !told && let Some(pane) = self.space.terminal(id) {
                 pane.scrolled.set(true);
                 pane.term.scroll(lines as i32);
             }
+            if !told {
+                self.scrolled_history(id, cx);
+            }
             cx.notify();
         }
+    }
+
+    /// Terminal `id` shows its live screen again (its Jump to the bottom), as typing in it does.
+    pub(crate) fn scroll_to_bottom(&mut self, id: BlockId, cx: &mut Context<Self>) {
+        if let Some(pane) = self.space.terminal(id) {
+            pane.term.shared().scroll_to(0);
+        }
+        self.scrolled_history(id, cx);
+        cx.notify();
     }
 }
 
@@ -1165,11 +1340,18 @@ impl EntityInputHandler for Workspace {
         cx: &mut Context<Self>,
     ) {
         self.marked = None;
-        if self.balloon_keys(window, cx).is_some() {
-            return;
-        }
-        if let Some(pane) = self.space.focused_terminal() {
-            pane.person_typed();
+        if self
+            .space
+            .focused_terminal()
+            .is_some_and(|pane| pane.remote.is_some())
+        {
+            self.remote_type(text_names(text), window, cx);
+        } else if let Some(pane) = self
+            .space
+            .focused_terminal()
+            .filter(|p| p.follows.is_none())
+        {
+            pane.person_wrote();
             pane.term.text(text);
         }
         cx.notify();

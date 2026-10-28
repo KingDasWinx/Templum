@@ -800,3 +800,155 @@ fn the_grids_menus_add_blocks(cx: &mut TestAppContext) {
         assert_eq!(ws.space.grid.as_ref().unwrap().tiles.ids().len(), 4);
     });
 }
+
+// On a mirror: grid mode is the mirror's own view of home's blocks.
+
+/// Home's terminals `a`, `b` and `c` with `a` at `rect`, or `b` left out.
+fn home_s(a: Rect, with_b: bool) -> templum_api::model::State {
+    let mut state = super::remote::terminals_of_home(&["a", "b", "c"]);
+    let r = &mut std::sync::Arc::make_mut(&mut state.blocks[0]).rect;
+    (r.x, r.y, r.w, r.h) = (a.x, a.y, a.w, a.h);
+    if !with_b {
+        state.blocks.remove(1);
+    }
+    state
+}
+
+/// On a mirror the shortcut, the block's menu and its button go full screen and back, as on a
+/// local workspace: no call of home's.
+#[gpui_kit::test]
+fn a_mirror_goes_full_screen_by_the_shortcut_the_menu_and_the_button(cx: &mut TestAppContext) {
+    use super::remote::{live_terminals, sent, viewer};
+    let (handle, ws, _dir) = live_terminals(cx, &["a", "b", "c"]);
+    let [a, b, c] = ["a", "b", "c"].map(|h| viewer(&ws, cx, h));
+    let tiles = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.grid.as_ref().map(|g| g.tiles.ids()))
+    };
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(a, window, cx))
+    })
+    .unwrap();
+    press(handle, TOGGLE, cx);
+    assert_eq!(tiles(cx), Some(vec![a]), "the shortcut");
+    press(handle, TOGGLE, cx);
+    assert_eq!(tiles(cx), None);
+    // Copy, Paste, —, Fullscreen.
+    pick(handle, cx, b, 3, None);
+    assert_eq!(tiles(cx), Some(vec![b]), "the menu's Fullscreen");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.leave_grid(window, cx))
+    })
+    .unwrap();
+    let n = c.0 as usize;
+    cx.update_window(handle, |_, window, cx| {
+        window.hover(("block", n), cx);
+        window.render_frame(cx);
+        window.click(("fullscreen", n), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(tiles(cx), Some(vec![c]), "the button");
+    assert!(sent(&ws, cx).is_empty(), "nothing asked of home");
+}
+
+/// Home's state keeps a mirror's tiles where they are: a tile home moves goes back to home's
+/// place when the grid ends, one home closes gives its place to its neighbour, and the last one
+/// going brings the canvas back under its camera.
+#[gpui_kit::test]
+fn home_s_moves_and_closes_keep_a_mirror_s_grid(cx: &mut TestAppContext) {
+    use super::remote::{apply, live_terminals, viewer};
+    let (handle, ws, _dir) = live_terminals(cx, &["a", "b", "c"]);
+    let [a, b, c] = ["a", "b", "c"].map(|h| viewer(&ws, cx, h));
+    let camera = far_camera(&ws, cx);
+    ws.update(cx, |ws, _| ws.space.selected = vec![a, b]);
+    press(handle, TOGGLE, cx);
+    let tile = rect_of(&ws, cx, a);
+    // Home moves a: its tile stays, its place on the canvas is home's.
+    let moved = Rect::new(0.0, 500.0, 400.0, 300.0);
+    apply(handle, &ws, cx, home_s(moved, true));
+    assert_eq!(rect_of(&ws, cx, a), tile, "a tile is the grid's");
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.grid.as_ref().unwrap().homes[&a], moved);
+        assert!(!ws.space.shown(c));
+    });
+    // Home closes b: a fills the grid.
+    apply(handle, &ws, cx, home_s(moved, false));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.grid.as_ref().unwrap().tiles.ids(), [a]);
+    });
+    press(handle, TOGGLE, cx);
+    assert_eq!(rect_of(&ws, cx, a), moved, "back where home has it");
+    // The last tile closed at home: the canvas again, under its camera.
+    ws.update(cx, |ws, _| ws.space.selected = vec![c]);
+    press(handle, TOGGLE, cx);
+    let mut state = home_s(moved, false);
+    state.blocks.pop();
+    apply(handle, &ws, cx, state);
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.grid.is_none());
+        assert_eq!(ws.space.canvas.camera, camera);
+        assert_eq!(ws.space.focused, Some(a));
+    });
+}
+
+/// A tile's menu on a mirror adds home's blocks, as the canvas's does: Add ▸ Terminal ▸ Default
+/// asks home for its default shell, and the terminal home adds takes half of the tile with the keyboard.
+/// The index keeps the canvas's camera, not grid mode's.
+#[gpui_kit::test]
+fn a_mirror_s_tile_adds_home_s_terminal_and_keeps_the_canvas_camera(cx: &mut TestAppContext) {
+    use super::remote::{answer, apply, live_terminals, sent, viewer};
+    let (handle, ws, _dir) = live_terminals(cx, &["a"]);
+    let a = viewer(&ws, cx, "a");
+    let camera = far_camera(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(a, window, cx))
+    })
+    .unwrap();
+    press(handle, TOGGLE, cx);
+    ws.read_with(cx, |ws, _| {
+        let kept = ws.index().workspaces.into_iter().find(|w| w.id == "r1");
+        let kept = kept.unwrap().remote.unwrap().camera.unwrap();
+        assert_eq!((kept.x, kept.y, kept.zoom), (-300.0, -200.0, 0.5));
+    });
+    // Copy, Paste, —, AI agent ▸, Add ▸: Terminal ▸ Default.
+    pick(handle, cx, a, 4, Some(0));
+    cx.update_window(handle, |_, window, cx| {
+        click_innermost_menu_item(window, cx, 0);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let calls = sent(&ws, cx);
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls[0].0, "add_block");
+    answer(handle, &ws, cx, 0, Ok(serde_json::json!({ "block": "d" })));
+    apply(
+        handle,
+        &ws,
+        cx,
+        super::remote::terminals_of_home(&["a", "d"]),
+    );
+    let d = viewer(&ws, cx, "d");
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.grid.as_ref().unwrap().tiles.ids(), [a, d]);
+        assert_eq!(ws.space.focused, Some(d));
+        assert_eq!(ws.space.camera(), camera);
+    });
+}
+
+/// Ctrl+Z of a move in a mirror's grid moves home's block to its place on the canvas, never to
+/// the tile it is drawn in.
+#[gpui_kit::test]
+fn a_move_undone_in_a_mirror_s_grid_sends_home_the_canvas_place(cx: &mut TestAppContext) {
+    use super::remote::{live_terminals, remote_of, viewer};
+    let (handle, ws, _dir) = live_terminals(cx, &["a", "b"]);
+    let a = viewer(&ws, cx, "a");
+    ws.update(cx, |ws, _| ws.space.selected = vec![a]);
+    press(handle, TOGGLE, cx);
+    let tile = rect_of(&ws, cx, a);
+    let back = Rect::new(-500.0, 40.0, 400.0, 300.0);
+    ws.update(cx, |ws, cx| ws.place(vec![(a, back)], Then::New, cx));
+    assert_eq!(rect_of(&ws, cx, a), tile);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(remote_of(ws).held.get(&a), Some(&back), "sent to home");
+    });
+}

@@ -31,7 +31,9 @@ pub(crate) type TabAction =
 
 /// The tabs `titles` of `block`, `active` on screen, at zoom `z`; `renaming` is the tab whose name
 /// is being typed and its field, in the title's place. `actions` are what a click, a ×, and a
-/// double click do, in that order; `new` is the strip's +. Their element ids are
+/// double click do, in that order; `new` is the strip's +. `locked` is why the + and the ×s, and a
+/// double click, do nothing (a mirrored note's tabs are home's): they are dimmed, the words their
+/// tooltip. Their element ids are
 /// `note-tab-{n}-{i}`, `note-tab-close-{n}-{i}` and `(note-tab-new, n)`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn tab_strip(
@@ -43,6 +45,7 @@ pub(crate) fn tab_strip(
     z: f32,
     [show, close, rename]: [TabAction; 3],
     new: fn(&mut Workspace, BlockId, &mut Window, &mut Context<Workspace>),
+    locked: Option<SharedString>,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
@@ -55,6 +58,7 @@ pub(crate) fn tab_strip(
         .map(|(i, title)| {
             let on = i == active;
             let group = SharedString::from(format!("note-tab-group-{n}-{i}"));
+            let words = locked.clone();
             let close = div()
                 .id(name("tab-close", i))
                 .flex_shrink_0()
@@ -75,10 +79,19 @@ pub(crate) fn tab_strip(
                         .size(px(10.0 * z))
                         .text_color(ui.title),
                 )
-                .tooltip(|window, cx| Tooltip::new("Close tab").build(window, cx))
-                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    close(ws, block, i, window, cx)
-                }))
+                .when(locked.is_some(), |el| el.opacity(0.4))
+                .tooltip(move |window, cx| {
+                    let tip = words.clone().unwrap_or_else(|| "Close tab".into());
+                    Tooltip::new(tip).build(window, cx)
+                })
+                .on_click({
+                    let locked = locked.is_some();
+                    cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        if !locked {
+                            close(ws, block, i, window, cx)
+                        }
+                    })
+                })
                 .test_support();
             div()
                 .id(name("tab", i))
@@ -109,13 +122,18 @@ pub(crate) fn tab_strip(
                     None => div().truncate().child(title).into_any_element(),
                 })
                 .child(close)
-                .on_click(cx.listener(move |ws, e: &ClickEvent, window, cx| {
-                    if e.click_count() >= 2 {
-                        rename(ws, block, i, window, cx)
-                    } else {
-                        show(ws, block, i, window, cx)
-                    }
-                }))
+                .on_click({
+                    let locked = locked.is_some();
+                    cx.listener(move |ws, e: &ClickEvent, window, cx| {
+                        if e.click_count() >= 2 {
+                            if !locked {
+                                rename(ws, block, i, window, cx)
+                            }
+                        } else {
+                            show(ws, block, i, window, cx)
+                        }
+                    })
+                })
                 .test_support()
                 .into_any_element()
         })
@@ -135,8 +153,22 @@ pub(crate) fn tab_strip(
                 .size(px(13.0 * z))
                 .text_color(ui.title),
         )
-        .tooltip(|window, cx| Tooltip::new("New note").build(window, cx))
-        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| new(ws, block, window, cx)))
+        .when(locked.is_some(), |el| el.opacity(0.4))
+        .tooltip({
+            let words = locked.clone();
+            move |window, cx| {
+                let tip = words.clone().unwrap_or_else(|| "New note".into());
+                Tooltip::new(tip).build(window, cx)
+            }
+        })
+        .on_click({
+            let locked = locked.is_some();
+            cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                if !locked {
+                    new(ws, block, window, cx)
+                }
+            })
+        })
         .test_support();
     div()
         .id(("note-tabs", n))

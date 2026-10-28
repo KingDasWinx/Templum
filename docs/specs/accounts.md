@@ -436,8 +436,9 @@ named by its name, and its own **in the title bar** switch in Settings ▸ Usage
 
 - **Claude Code:** the status-line relay, which Claude Code runs with its environment, writes the folder its
   `CLAUDE_CONFIG_DIR` names into the file it writes (`"templum_config_dir"`); an account's limits come from the
-  newest relay file of its folder. The `/usage` probe runs for the agent's own folder as today, and every 5 minutes
-  for each Claude Code account that ran since Templum started, with its variable.
+  newest relay file of its folder. The `/usage` probe runs for the agent's own folder and for each Claude Code
+  account with a login (its `.claude.json`), whether it ran this run or not, with its variable, as
+  [usage.md](usage.md#claude-code) says (when it asks).
 - **Codex:** an account's limits come from the rollouts of its own folder's `sessions/`. When several of a Codex's
   folders share one `sessions` (codex2's linked to codex's), its newest rollouts may be either one's: then each one's
   limits come only from the rollouts its own running sessions write (each process's file, as its usage chip finds
@@ -551,8 +552,9 @@ color from the theme. Esc and the ✕ close it without saving.
      - Fresh: "It starts empty: nothing shared with your Claude Code." No item shared.
      - Custom: "Choose item by item." Under it, in a faint panel (`ui.card`, rounded 8, scrolling past 260), card
        37's controls unchanged: **Share everything with** (`account-share-all`) and a row per item, Own or shared,
-       with "Linked by you to …", the Developer Mode words and "Shared once Claude Code writes one" as before. Custom
-       opens on the choices Same or Fresh last made.
+       with "Linked by you to …", the Developer Mode words and "Shared once Claude Code writes one" as before. Those
+       words go under the item's paths, in the room of the row: an item that has them has no list. Custom opens on
+       the choices Same or Fresh last made.
   5. **Notes** (11, `title_dim`), only when one applies: the [not on PATH](#its-command) note; a variable that wins
      over every account's login (as before). Nothing is shown otherwise: the dialog stays short.
 - **Footer** (a hairline over it, 20 at the sides, 12 up and down): at the right **Create claudinho**
@@ -604,7 +606,7 @@ The person was away; each can be changed.
 8. **No `claude2` command in terminals** (replaced by card 65: every account is a command, [Its command](#its-command));
    `claude` in an account's block is it.
 9. **"Any Claude Code" includes its accounts; a card for claude2 is claude2's only.**
-10. **Limits per account**, the relay naming its folder; the `/usage` probe only for accounts that ran this run.
+10. **Limits per account**, the relay naming its folder; the `/usage` probe for every account with a login.
 11. **Log in types the agent's own login command** in a block of the account; Templum never touches the login.
 12. **The settings live in Settings ▸ Agents**, under the agents, rather than a section of their own: an account is an
     agent there too.

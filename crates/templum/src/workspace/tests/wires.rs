@@ -104,6 +104,85 @@ fn ctrl_z_takes_a_wire_back_and_ctrl_shift_z_makes_it_again(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
+fn connect_names_a_wire_in_one_ctrl_z_step(cx: &mut TestAppContext) {
+    use super::templum_agent::control;
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = three_blocks(handle, &ws, cx);
+    let wire = Wire::new(kanban, note).unwrap();
+    let [a, b] = uids(&ws, cx, [kanban, note]);
+    let steps = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.undo.len())
+    };
+    let label = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.label(wire).map(str::to_string))
+    };
+    let undo = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| assert!(ws.undo_canvas(false, window, cx)))
+        })
+        .unwrap()
+    };
+    let (failed, text) = control(handle, &ws, cx, "connect", json!({"a": a, "b": b}));
+    assert!(!failed, "{text}");
+    assert_eq!(wires(&ws, cx), [wire]);
+    let n = steps(&ws, cx);
+    // Wired already: the label renames, one step.
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "connect",
+        json!({"a": a, "b": b, "label": "deploys"}),
+    );
+    assert!(!failed, "{text}");
+    assert_eq!(
+        text,
+        format!("Named the wire between {a} and {b} \"deploys\".")
+    );
+    assert_eq!(label(&ws, cx).as_deref(), Some("deploys"));
+    assert_eq!(steps(&ws, cx), n + 1);
+    undo(&ws, cx);
+    assert_eq!(label(&ws, cx), None);
+    assert_eq!(wires(&ws, cx), [wire]);
+    // Blank takes the name off.
+    control(
+        handle,
+        &ws,
+        cx,
+        "connect",
+        json!({"a": a, "b": b, "label": "deploys"}),
+    );
+    let (_, text) = control(
+        handle,
+        &ws,
+        cx,
+        "connect",
+        json!({"a": a, "b": b, "label": " "}),
+    );
+    assert_eq!(
+        text,
+        format!("Took the name off the wire between {a} and {b}.")
+    );
+    assert_eq!(label(&ws, cx), None);
+    // Not wired: the wire is the step, the name is kept by its key.
+    control(handle, &ws, cx, "disconnect", json!({"a": a, "b": b}));
+    let n = steps(&ws, cx);
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "connect",
+        json!({"a": a, "b": b, "label": "feeds"}),
+    );
+    assert!(!failed, "{text}");
+    assert_eq!(text, format!("Connected {a} and {b} as \"feeds\"."));
+    assert_eq!(label(&ws, cx).as_deref(), Some("feeds"));
+    assert_eq!(steps(&ws, cx), n + 1);
+    undo(&ws, cx);
+    assert!(wires(&ws, cx).is_empty());
+}
+
+#[gpui_kit::test]
 fn closing_a_block_takes_its_wires_and_undoing_brings_them_back(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
@@ -431,6 +510,29 @@ fn the_wire_tool_let_go_off_the_canvas_wires_nothing(cx: &mut TestAppContext) {
 /// a window position.
 fn on_the_wire(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> (f32, f32) {
     at(ws, cx, (480.0, 180.0))
+}
+
+/// The wire between two selected blocks runs inside their box: a click on it selects the wire.
+#[gpui_kit::test]
+fn a_click_on_a_wire_inside_the_selection_box_selects_the_wire(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = apart(handle, &ws, cx);
+    let wire = Wire::new(kanban, note).unwrap();
+    ws.update(cx, |ws, cx| {
+        ws.connect(kanban, note, cx);
+        ws.space.focused = None;
+        ws.space.selected = vec![kanban, note];
+    });
+    let on = on_the_wire(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        click(window, cx, on, 1);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.selected_wire, Some(wire));
+        assert!(ws.space.selected.is_empty());
+    });
 }
 
 #[gpui_kit::test]

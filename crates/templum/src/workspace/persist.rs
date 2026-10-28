@@ -9,17 +9,19 @@ use gpui_kit::{App, Context, Window};
 use templum_canvas::{BlockId, Camera, Point, Rect, Size, chrome};
 
 use crate::agents::AgentEntry;
+use crate::automations::{self, Automations};
 use crate::board::{self, Boards};
 use crate::checklist::{self, Checklist};
 use crate::checklists::{self, Checklists};
 use crate::editor::{self, Editor};
 use crate::git_block::{self, Git};
+use crate::instructions::{self, Instructions};
 use crate::kanban::{self, Kanban};
 use crate::note::{self, Note};
 use crate::notes;
 use crate::session;
 
-use super::{Body, MAX_COLS, MAX_ROWS, Pane, Workspace, show_notification};
+use super::{Body, MAX_COLS, MAX_ROWS, Pane, Space, Workspace, show_notification};
 
 impl Workspace {
     /// Puts a saved canvas back: the camera, then each block back to front, each in its folder.
@@ -296,8 +298,15 @@ impl Workspace {
                 self.restore_terminal(id, t, in_its_folder, cx);
                 Some(id)
             }
-            session::Item::Kanban(k) => clamped_rect(k.rect.into(), kanban::MIN)
-                .map(|rect| self.add_block(rect, Body::Kanban(Kanban { board: k.board }))),
+            session::Item::Kanban(k) => clamped_rect(k.rect.into(), kanban::MIN).map(|rect| {
+                self.add_block(
+                    rect,
+                    Body::Kanban(Kanban {
+                        board: k.board,
+                        remote: false,
+                    }),
+                )
+            }),
             session::Item::Note(n) => {
                 let rect = clamped_rect(n.rect.into(), note::MIN)?;
                 let mut ids = n.notes.clone();
@@ -342,6 +351,8 @@ impl Workspace {
                 let checklist = Checklist {
                     list,
                     editing: None,
+                    scroll: Default::default(),
+                    remote: false,
                 };
                 Some(self.add_block(rect, Body::Checklist(checklist)))
             }
@@ -406,6 +417,11 @@ impl Workspace {
     /// Every session::EVERY: reads the processes and writes each workspace's file in the
     /// background, when its snapshot differs from the last one written.
     pub(super) fn snapshot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The API's tokens' last uses, told by its server since the last one.
+        self.keep_api_uses(cx.background_executor().now());
+        // A token that expired takes its automations with it.
+        let names = self.token_names();
+        self.api_cut_rules(&names, cx);
         let Some(dir) = self.data_dir.clone().filter(|_| !self.first_run_welcome()) else {
             return;
         };
@@ -422,7 +438,7 @@ impl Workspace {
         // A stopped workspace's file holds its canvas until it starts: it isn't written.
         let jobs: Vec<_> = self
             .spaces()
-            .filter(|s| !s.stopped)
+            .filter(|s| !s.stopped && !s.is_remote())
             .map(|s| {
                 let layout = s.layout(known.clone(), accounts.clone(), cx);
                 // A frozen workspace's file is never written, but its terminals are read.
@@ -437,8 +453,14 @@ impl Workspace {
         let checklists = (!self.checklists_frozen
             && self.checklists_saved.as_ref() != Some(&self.checklists))
         .then(|| self.checklists.clone());
+        let standing = (!self.standing_frozen
+            && self.standing_saved.as_ref() != Some(&self.standing))
+        .then(|| self.standing.clone());
+        let routines = (!self.automations_frozen
+            && self.automations_saved.as_ref() != Some(&self.automations))
+        .then(|| self.automations.clone());
         cx.spawn_in(window, async move |ws, cx| {
-            let (done, boards, notes, checklists) = cx
+            let (done, boards, notes, checklists, standing, routines) = cx
                 .background_executor()
                 .spawn(async move {
                     let notes = notes.map(|n| {
@@ -466,23 +488,37 @@ impl Workspace {
                         let written = checklists::save(&dir, &c, generation);
                         (c, written)
                     });
-                    (done, boards, notes, checklists)
+                    let standing = standing.map(|s| {
+                        let written = instructions::save(&dir, &s, generation);
+                        (s, written)
+                    });
+                    let routines = routines.map(|r| {
+                        let written = automations::save(&dir, &r, generation);
+                        (r, written)
+                    });
+                    (done, boards, notes, checklists, standing, routines)
                 })
                 .await;
             ws.update_in(cx, |ws, window, cx| {
-                ws.snapshot_done(done, boards, notes, checklists, window, cx)
+                ws.snapshot_done(
+                    done, boards, notes, checklists, standing, routines, window, cx,
+                )
             })
             .ok();
         })
         .detach();
     }
 
+    // One argument for each app-wide file a snapshot writes.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn snapshot_done(
         &mut self,
         done: Vec<SpaceSnapshot>,
         boards: Option<(Boards, std::io::Result<()>)>,
         notes: Option<(notes::Notes, std::io::Result<()>)>,
         checklists: Option<(Checklists, std::io::Result<()>)>,
+        standing: Option<(Instructions, std::io::Result<()>)>,
+        routines: Option<(Automations, std::io::Result<()>)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -513,6 +549,22 @@ impl Workspace {
             Some((_, Err(err))) => failed = Some(err),
             None => {}
         }
+        match standing {
+            Some((standing, Ok(()))) => {
+                wrote = true;
+                self.standing_saved = Some(standing);
+            }
+            Some((_, Err(err))) => failed = Some(err),
+            None => {}
+        }
+        match routines {
+            Some((routines, Ok(()))) => {
+                wrote = true;
+                self.automations_saved = Some(routines);
+            }
+            Some((_, Err(err))) => failed = Some(err),
+            None => {}
+        }
         let homes = crate::agents::homes(&self.agents);
         for (id, terminals, saved, written) in done {
             let gone = self
@@ -521,19 +573,8 @@ impl Workspace {
                 .unwrap_or_default();
             for terminal in gone {
                 self.agent_left(&terminal, cx);
+                self.subagents_done(&terminal, None, window, cx);
             }
-            // An account found running: `/usage` asks its limits from now on.
-            let ran: Vec<String> = self
-                .space_by_id_mut(&id)
-                .map(|space| {
-                    space
-                        .terminals()
-                        .filter_map(|(_, p)| p.seen.agent.clone().filter(|_| p.seen.pid.is_some()))
-                        .filter(|a| homes.iter().any(|h| h.id == *a))
-                        .collect()
-                })
-                .unwrap_or_default();
-            self.accounts_ran.extend(ran);
             match written {
                 None => {}
                 Some(Ok(())) => {
@@ -567,6 +608,15 @@ impl Workspace {
     /// When the window closes or Templum quits: the last snapshot of every workspace, read and
     /// written at once.
     pub(super) fn save_canvas_now(&mut self, cx: &App) {
+        // A card dialog still open: what was typed in it is kept as a draft.
+        // A mirrored workspace's card keeps no draft here: the mirror writes nothing of home's.
+        if let Some(work) = &self.card_work
+            && self
+                .space_named(work.borrow().space())
+                .is_some_and(|s| !s.is_remote())
+        {
+            work.borrow().keep(&mut self.boards);
+        }
         // A first run's welcome still open: the next start is a first run too.
         let Some(dir) = self.data_dir.clone().filter(|_| !self.first_run_welcome()) else {
             return;
@@ -586,6 +636,18 @@ impl Workspace {
                 Err(err) => eprintln!("templum: couldn't save the checklists: {err}"),
             }
         }
+        if !self.standing_frozen && self.standing_saved.as_ref() != Some(&self.standing) {
+            match instructions::save(&dir, &self.standing, generation) {
+                Ok(()) => self.standing_saved = Some(self.standing.clone()),
+                Err(err) => eprintln!("templum: couldn't save the instructions: {err}"),
+            }
+        }
+        if !self.automations_frozen && self.automations_saved.as_ref() != Some(&self.automations) {
+            match automations::save(&dir, &self.automations, generation) {
+                Ok(()) => self.automations_saved = Some(self.automations.clone()),
+                Err(err) => eprintln!("templum: couldn't save the automations: {err}"),
+            }
+        }
         if !self.notes_frozen && self.notes_saved.as_ref() != Some(&self.notes) {
             match notes::save(&dir, &self.notes, generation) {
                 Ok(()) => self.notes_saved = Some(self.notes.clone()),
@@ -598,7 +660,7 @@ impl Workspace {
         }
         let (known, accounts) = (self.known_agents(), self.known_accounts());
         for space in std::iter::once(&mut self.space).chain(&mut self.others) {
-            if space.frozen || space.stopped {
+            if space.frozen || space.stopped || space.is_remote() {
                 continue;
             }
             let (saved, _) = space
@@ -611,23 +673,35 @@ impl Workspace {
                 Err(err) => eprintln!("templum: couldn't save the canvas: {err}"),
             }
         }
+        // A remote workspace's camera is kept in the index, which nothing else writes on a pan.
+        if !self.index_frozen
+            && self.spaces().any(Space::is_remote)
+            && let Err(err) = session::save_index(&dir, &self.index())
+        {
+            eprintln!("templum: couldn't save the workspace list: {err}");
+        }
     }
 
     /// A saved rect made safe: None with a number that isn't finite; its size kept between the
     /// smallest block and MAX_COLS x MAX_ROWS cells.
     pub(super) fn restorable(&self, r: Rect) -> Option<Rect> {
-        if ![r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()) {
-            return None;
-        }
-        let min = chrome::min_block_size(self.cell.size);
-        let max = chrome::block_size(MAX_COLS, MAX_ROWS, self.cell.size);
-        Some(Rect::new(
-            r.x,
-            r.y,
-            r.w.clamp(min.w, max.w),
-            r.h.clamp(min.h, max.h),
-        ))
+        restorable_rect(r, self.cell.size)
     }
+}
+
+/// `Workspace::restorable` for a cell of `cell`.
+pub(super) fn restorable_rect(r: Rect, cell: Size) -> Option<Rect> {
+    if ![r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let min = chrome::min_block_size(cell);
+    let max = chrome::block_size(MAX_COLS, MAX_ROWS, cell);
+    Some(Rect::new(
+        r.x,
+        r.y,
+        r.w.clamp(min.w, max.w),
+        r.h.clamp(min.h, max.h),
+    ))
 }
 
 /// How soon a restored shell that ends, having run nothing, couldn't start.

@@ -11,10 +11,12 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, Entity, Hsla, Window, div, px};
 use templum_git::trash::Kept;
 
-use crate::workspace::Workspace;
+use crate::workspace::{GitAt, Workspace};
 
+/// `at` is the Git whose trash is listed: a Restore acts on that one only.
 pub(crate) fn open(
     ws: Entity<Workspace>,
+    at: GitAt,
     kept: Vec<Kept>,
     dim: Hsla,
     window: &mut Window,
@@ -35,7 +37,7 @@ pub(crate) fn open(
                 .max_h(px(360.0))
                 .overflow_y_scroll()
                 .children(kept.iter().enumerate().map(|(i, k)| {
-                    let (ws, entry) = (ws.clone(), k.id.clone());
+                    let (ws, at, entry) = (ws.clone(), at.clone(), k.id.clone());
                     div()
                         .flex()
                         .items_center()
@@ -60,9 +62,9 @@ pub(crate) fn open(
                                 .small()
                                 .on_click(move |_, window, cx| {
                                     window.close_dialog(cx);
-                                    let entry = entry.clone();
+                                    let (at, entry) = (at.clone(), entry.clone());
                                     ws.update(cx, |ws, cx| {
-                                        ws.restore_discarded(entry, false, window, cx)
+                                        ws.restore_discarded(at, entry, false, window, cx)
                                     });
                                 }),
                         )

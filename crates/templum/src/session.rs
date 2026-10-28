@@ -118,6 +118,14 @@ pub(crate) struct Index {
         deserialize_with = "usable_size"
     )]
     pub git_size: Option<SavedSize>,
+    /// The card dialog's description height the person dragged it to, pixels; none until they
+    /// do, and the field grows with its text. Kept as dragged, like `git_size`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "usable_height"
+    )]
+    pub description_h: Option<f32>,
 }
 
 /// A width and a height, pixels.
@@ -134,6 +142,15 @@ fn usable_size<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SavedSize>, D::
         serde_json::from_value::<SavedSize>(serde_json::Value::deserialize(d)?)
             .ok()
             .filter(|s| s.w > 0.0 && s.h > 0.0 && s.w.is_finite() && s.h.is_finite()),
+    )
+}
+
+/// A height above zero; anything else is none, as `usable_size`.
+fn usable_height<'de, D: Deserializer<'de>>(d: D) -> Result<Option<f32>, D::Error> {
+    Ok(
+        serde_json::from_value::<f32>(serde_json::Value::deserialize(d)?)
+            .ok()
+            .filter(|h| *h > 0.0 && h.is_finite()),
     )
 }
 
@@ -182,6 +199,55 @@ pub(crate) struct IndexEntry {
         deserialize_with = "any_true"
     )]
     pub stopped: bool,
+    /// When it was last opened (shown), Unix seconds: the Home's "Opened 3 h ago". A value that
+    /// doesn't read is none.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "any_time"
+    )]
+    pub opened: Option<u64>,
+    /// A workspace of another computer (docs/specs/templum-to-templum.md, Persistence on the
+    /// mirror): no `<id>.json` is ever written for it. A value that doesn't read is none.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "any_remote"
+    )]
+    pub remote: Option<RemoteEntry>,
+}
+
+/// Where a remote's key is kept.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Keeping {
+    Keyring,
+    File,
+    #[default]
+    None,
+}
+
+/// What the index keeps of a remote workspace: where it connects and how, never a secret (the
+/// token is in the keyring, under `entry`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct RemoteEntry {
+    /// The code's address.
+    pub url: String,
+    /// `pinned`, `public` or `loopback`.
+    pub way: String,
+    pub pin: Option<String>,
+    /// Home's workspace id.
+    pub home: Option<String>,
+    /// The keyring entry's name.
+    pub entry: String,
+    pub key: Keeping,
+    pub trust_added_authority: bool,
+    /// The Cloudflare Access service token's Client ID.
+    pub access_id: Option<String>,
+    /// `http://host:port`, without credentials.
+    pub proxy: Option<String>,
+    pub camera: Option<SavedCamera>,
 }
 
 // The keys a workspace's look added: a value Templum can't use (a typo, a newer version's) is
@@ -211,6 +277,14 @@ fn any_folder<'de, D: Deserializer<'de>>(d: D) -> Result<Option<PathBuf>, D::Err
     Ok(any_string(d)?.map(PathBuf::from))
 }
 
+fn any_remote<'de, D: Deserializer<'de>>(d: D) -> Result<Option<RemoteEntry>, D::Error> {
+    Ok(serde_json::from_value(serde_json::Value::deserialize(d)?).ok())
+}
+
+fn any_time<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    Ok(serde_json::Value::deserialize(d)?.as_u64())
+}
+
 fn any_true<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     Ok(serde_json::Value::deserialize(d)? == serde_json::Value::Bool(true))
 }
@@ -238,6 +312,7 @@ impl Index {
             active: 0,
             sidebar: true,
             git_size: None,
+            description_h: None,
         }
     }
 }
@@ -277,9 +352,9 @@ pub(crate) fn load_index(dir: &Path) -> Loaded<Index> {
             if index.workspaces.is_empty() {
                 return Loaded::Saved(Index::first_run());
             }
+            // The one shown last may be stopped (every workspace was): Templum opens on the Home,
+            // which holds it stopped.
             index.active = index.active.min(index.workspaces.len() - 1);
-            // The one shown is never stopped.
-            index.workspaces[index.active].stopped = false;
             Loaded::Saved(index)
         }
         other => other,
@@ -715,6 +790,35 @@ impl InkItem {
             width,
             color,
         })
+    }
+}
+
+/// The API's drawing is the canvas file's, field for field: the file's format stays the file's.
+impl From<&InkItem> for templum_api::model::DrawingView {
+    fn from(item: &InkItem) -> Self {
+        templum_api::model::DrawingView {
+            kind: item.kind.clone(),
+            color: item.color.clone(),
+            width: item.width,
+            highlight: item.highlight,
+            points: item.points.clone(),
+            from: item.from,
+            to: item.to,
+        }
+    }
+}
+
+impl From<&templum_api::model::DrawingView> for InkItem {
+    fn from(view: &templum_api::model::DrawingView) -> Self {
+        InkItem {
+            kind: view.kind.clone(),
+            color: view.color.clone(),
+            width: view.width,
+            highlight: view.highlight,
+            points: view.points.clone(),
+            from: view.from,
+            to: view.to,
+        }
     }
 }
 
@@ -1715,7 +1819,50 @@ mod tests {
             active: 1,
             sidebar: false,
             git_size: None,
+            description_h: None,
         }
+    }
+
+    #[test]
+    fn a_remote_entry_round_trips_and_an_odd_one_is_none() {
+        let d = tempfile::tempdir().unwrap();
+        let mut index = two();
+        index.workspaces[1].remote = Some(RemoteEntry {
+            url: "https://192.168.1.5:7411".into(),
+            way: "pinned".into(),
+            pin: Some("ab".repeat(32)),
+            home: Some("w3".into()),
+            entry: "remote-ab12cd34".into(),
+            key: Keeping::Keyring,
+            camera: Some(SavedCamera {
+                x: 10.0,
+                y: -5.0,
+                zoom: 0.5,
+            }),
+            ..RemoteEntry::default()
+        });
+        save_index(d.path(), &index).unwrap();
+        let text = std::fs::read_to_string(index_path(d.path())).unwrap();
+        assert!(
+            !text.contains("tpl_") && text.contains("\"key\": \"keyring\""),
+            "{text}"
+        );
+        assert_eq!(load_index(d.path()), Loaded::Saved(index));
+        // A plain entry writes no "remote"; an odd value reads as none; an older index has none.
+        let plain = serde_json::to_string(&two().workspaces[0]).unwrap();
+        assert!(!plain.contains("remote"), "{plain}");
+        for odd in ["7", "null", "\"x\"", "[1]"] {
+            let entry = format!(r#"{{"id":"r1","name":"x","remote":{odd}}}"#);
+            assert_eq!(
+                serde_json::from_str::<IndexEntry>(&entry).unwrap().remote,
+                None
+            );
+        }
+        let old = r#"{"id":"w2","name":"x"}"#;
+        assert_eq!(
+            serde_json::from_str::<IndexEntry>(old).unwrap().remote,
+            None
+        );
     }
 
     #[test]
@@ -1749,6 +1896,31 @@ mod tests {
             };
             assert_eq!(read.git_size, None, "{bad}");
             assert_eq!(read.workspaces.len(), 1, "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_card_descriptions_height_reads_back_and_one_that_cant_be_used_is_none() {
+        let d = tempfile::tempdir().unwrap();
+        let mut index = two();
+        index.description_h = Some(312.5);
+        save_index(d.path(), &index).unwrap();
+        assert_eq!(load_index(d.path()), Loaded::Saved(index));
+        save_index(d.path(), &two()).unwrap();
+        let text = std::fs::read_to_string(index_path(d.path())).unwrap();
+        assert!(!text.contains("description_h"), "{text}");
+        for bad in [r#""tall""#, "null", "-40", "0", "[1]"] {
+            std::fs::write(
+                index_path(d.path()),
+                format!(
+                    r#"{{"version":1,"workspaces":[{{"id":"a","name":"A"}}],"description_h":{bad}}}"#
+                ),
+            )
+            .unwrap();
+            let Loaded::Saved(read) = load_index(d.path()) else {
+                panic!("{bad}: the list was set aside");
+            };
+            assert_eq!(read.description_h, None, "{bad}");
         }
     }
 
@@ -1813,7 +1985,10 @@ mod tests {
         assert_eq!((main.icon.as_deref(), main.color.as_deref()), (None, None));
         assert_eq!(side.icon.as_deref(), Some("rocket"));
         assert_eq!(side.color.as_deref(), Some("accent"));
-        assert!(!side.stopped, "the active one is never stopped");
+        assert!(
+            side.stopped,
+            "the active one too: every workspace was stopped"
+        );
     }
 
     #[test]

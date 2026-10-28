@@ -7,21 +7,21 @@ use std::time::Duration;
 use gpui_kit::{Context, Window};
 use templum_canvas::{BlockId, Rect, Size, chrome};
 use templum_mcp::{Reply, tools};
-use templum_terminal::Agent;
 
 use super::bus::{Outcome, target};
 use super::delegate::{TASK_LEAD, answer_how};
 use super::ops::Place;
-use super::{AGENT_COLS, AGENT_ROWS, Handed, Prompt, Space, Workspace};
+use super::{AGENT_COLS, AGENT_ROWS, AgentState, Handed, Prompt, Space, Workspace};
 use crate::agents::AgentEntry;
 
 /// How often a spawned agent's readiness for its prompt is looked at.
 pub(super) const READY_LOOK: Duration = Duration::from_secs(1);
 /// Who opens an agent: a block's agent with `spawn_agent` (its terminal's `TEMPLUM_TERMINAL` and
-/// its block), or the Templum Agent.
+/// its block), the Templum Agent, or an automation or a token of the API (its task's asker and its signature).
 pub(super) enum Opener {
     Block { terminal: String, id: BlockId },
     TemplumAgent,
+    Automation { asker: String, by: String },
 }
 
 /// How long after the spawn a shell may take to start its agent (its startup files): a snapshot
@@ -118,15 +118,18 @@ impl Workspace {
                 )
                 .0
             };
-        self.in_worktree(folder, worktree, open, window, cx)
+        self.in_worktree(folder, worktree, None, open, window, cx)
     }
 
     /// `open` in `folder`, at once; with `worktree`, in a new Git worktree of that name that git
-    /// makes on the background executor, the call answered once `open` ran there.
+    /// makes on the background executor, the call answered once `open` ran there. With `roots` (a
+    /// token limited to some workspaces), the repository's main tree, as git reports it, must lie
+    /// inside one of them, or nothing is made.
     pub(super) fn in_worktree(
         &mut self,
         folder: PathBuf,
         worktree: Option<String>,
+        roots: Option<Vec<PathBuf>>,
         open: impl FnOnce(&mut Self, &Path, &mut Window, &mut Context<Self>) -> Reply + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -140,9 +143,15 @@ impl Workspace {
                 .background_executor()
                 .spawn(async move {
                     match templum_git::Repo::discover(&program, &folder) {
-                        Ok(Some(repo)) => repo
-                            .add_worktree(&name)
-                            .map_err(|e| format!("Couldn't make the worktree: {}", e.first_line())),
+                        Ok(Some(repo)) => match roots
+                            .as_deref()
+                            .map(|r| super::api::main_tree_inside(&repo, r))
+                        {
+                            Some(Err(why)) => Err(why),
+                            _ => repo.add_worktree(&name).map_err(|e| {
+                                format!("Couldn't make the worktree: {}", e.first_line())
+                            }),
+                        },
                         Ok(None) => Err(format!(
                             "{} isn't in a Git repository: a worktree needs one.",
                             folder.display()
@@ -238,6 +247,8 @@ impl Workspace {
                 templum_agent::ASKER.to_string(),
                 Some(templum_agent::ASKER.to_string()),
             ),
+            // Wired to nothing, closed by the person only.
+            Opener::Automation { asker, by } => (by.clone(), asker.clone(), None),
         };
         let opened = self
             .in_space(space, |ws| {
@@ -245,7 +256,7 @@ impl Workspace {
                 let center = ws.space.camera().to_world(ws.center(window));
                 let near = match place {
                     Place::Near(id) => Some(id),
-                    Place::Free => None,
+                    Place::Free | Place::At(_) => None,
                 };
                 let rect = ws.space.spot(&place, size, center)?;
                 let kept = (
@@ -285,8 +296,8 @@ impl Workspace {
         };
         let wired = match &opener {
             Opener::Block { .. } => ", connected to you".to_string(),
-            Opener::TemplumAgent if wire_to.is_empty() => String::new(),
-            Opener::TemplumAgent => {
+            Opener::TemplumAgent | Opener::Automation { .. } if wire_to.is_empty() => String::new(),
+            Opener::TemplumAgent | Opener::Automation { .. } => {
                 let home = self.space_named(space);
                 let uids: Vec<String> = wire_to
                     .iter()
@@ -303,7 +314,7 @@ impl Workspace {
             Opener::Block { .. } => {
                 format!("Opened {what} as {uid} in {}{wired}{on}.", folder.display())
             }
-            Opener::TemplumAgent => {
+            Opener::TemplumAgent | Opener::Automation { .. } => {
                 format!("Opened {what} as {uid} in {}{on}{wired}.", folder.display())
             }
         };
@@ -328,6 +339,7 @@ impl Workspace {
             );
             let handed = Handed {
                 id,
+                text: Handed::text_of(prompt),
                 // Its session starts with its task: all it spends is the task's.
                 usage: Some(templum_usage::Session {
                     cost_usd: Some(0.0),
@@ -337,12 +349,7 @@ impl Workspace {
                 ..Handed::new(&asker, Duration::from_secs(tools::TASK_WAIT))
             };
             if let Some(pane) = self.pane_mut(&terminal) {
-                pane.prompt = Some(Prompt {
-                    text,
-                    screen: None,
-                    gated: entry.builtin == Some(Agent::CLAUDE)
-                        || entry.builtin == Some(Agent::CODEX),
-                });
+                pane.prompt = Some(Prompt::new(text, entry.builtin));
                 pane.handed = Some(handed);
             }
             // Every agent is looked at, hooks or not: Codex's SessionStart comes only with its
@@ -386,7 +393,7 @@ impl Workspace {
 
     /// Looks, every READY_LOOK, whether the agent in `terminal` is ready for its prompt, until it
     /// is typed, its block is gone, a snapshot dropped it, or a minute (STARTS_WITHIN) passed.
-    fn watch_ready(&self, terminal: String, cx: &mut Context<Self>) {
+    pub(super) fn watch_ready(&self, terminal: String, cx: &mut Context<Self>) {
         cx.spawn(async move |ws, cx| {
             loop {
                 cx.background_executor().timer(READY_LOOK).await;
@@ -402,9 +409,10 @@ impl Workspace {
     }
 
     /// One look: once a snapshot saw the agent's process, it is still in front of its shell, its
-    /// screen is as it was a look ago, and (Claude Code, Codex; not on Windows) it takes typing,
-    /// its prompt is typed. A minute (STARTS_WITHIN) after the spawn it is dropped instead, its
-    /// task ending with the screen. False once there is nothing more to look for.
+    /// screen is as it was a look ago, it doesn't wait for its person (a hook said so), and
+    /// (Claude Code, Codex; not on Windows) it takes typing, its prompt is typed. A minute
+    /// (STARTS_WITHIN) after it was handed it is dropped instead, its task ending with the screen.
+    /// False once there is nothing more to look for.
     fn look_ready(&mut self, terminal: &str, cx: &mut Context<Self>) -> bool {
         let Some(pane) = self.pane_mut(terminal) else {
             return false;
@@ -414,12 +422,15 @@ impl Workspace {
         }
         let late = pane.handed.as_ref();
         if late.is_some_and(|h| h.since.elapsed() >= STARTS_WITHIN) {
-            pane.prompt = None;
+            let (what, after) = match pane.prompt.take().is_some_and(|p| p.delegated) {
+                true => ("task", "it was handed"),
+                false => ("prompt", "it opened"),
+            };
             let lines = pane.tail();
             let tail = tools::tail(&lines, tools::MAX_TEXT);
             let uid = self.uid_of(terminal);
             let why = format!(
-                "{uid} never got its prompt: a minute after it opened, it still asks its person \
+                "{uid} never got its {what}: a minute after {after}, it still asks its person \
                  something (trusting its folder, Codex's hooks), or its input wasn't ready. Look \
                  at its block. The last lines of its screen:\n{tail}"
             );
@@ -430,15 +441,19 @@ impl Workspace {
         let screen = seen.then(|| pane.screen());
         // Windows' console doesn't pass the cursor's mode on: its still screen alone tells.
         let typing = cfg!(windows) || pane.term.shared().modes().typing;
+        // A dialog its hooks told of would take the prompt for its answer.
+        let asks = matches!(pane.state, Some(AgentState::NeedsYou(_)));
+        let task = pane.handed.as_ref().map(|h| h.id);
         let Some(prompt) = pane.prompt.as_mut() else {
             return false;
         };
-        if screen.is_none() || prompt.screen != screen || (prompt.gated && !typing) {
+        if screen.is_none() || prompt.screen != screen || (prompt.gated && !typing) || asks {
             prompt.screen = screen;
             return true;
         }
         let text = pane.prompt.take().map(|p| p.text).unwrap_or_default();
-        self.send_task(terminal, &text, true, cx);
+        // No call waits to say how it went: a task not taken comes back as its end does.
+        drop(self.send_task(terminal, &text, task, cx));
         false
     }
 }

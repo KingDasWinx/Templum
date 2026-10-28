@@ -48,7 +48,7 @@ Read once at start from the running executable (`templum-update`'s `install.rs`)
 | AppImage | `APPIMAGE` and `APPDIR` (set by the AppImage runtime), the executable inside `APPDIR` | `templum_<v>_<arch>.AppImage` | renamed over the AppImage |
 | `.deb` | an executable under `/usr` and `/var/lib/dpkg/info/templum.list` | `templum_<v>_<amd64\|arm64>.deb` | `sudo apt install ./<deb>` typed in a terminal |
 | pacman | an executable under `/usr` and `/var/lib/pacman/local/templum-<version>` | `PKGBUILD` and `templum_<v>_x86_64.tar.gz` | `makepkg -si` typed in a terminal |
-| Another package manager | an executable under `/usr` without either | — | told only |
+| Another package manager | an executable under `/usr` without either (the AUR's `templum-bin`: its folder is `templum-bin-<version>`) | — | told only |
 | Linux, portable | anything else on Linux | `templum-<arch>-unknown-linux-gnu.tar.gz` (its `templum`) | renamed over the executable |
 | Windows installer (NSIS) | `uninstall.exe` beside the executable | `templum_<v>_x64-setup.exe` | run with `/P /R /NS` after Templum quits |
 | Windows installer (MSI) | an executable under `Program Files` | `templum_<v>_x64_en-US.msi` | `msiexec /i <msi> /passive` after Templum quits |

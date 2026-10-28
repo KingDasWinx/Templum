@@ -11,7 +11,13 @@ use super::history::{Change, Then};
 use super::{Drag, Space, Workspace};
 
 /// The longest a label is, in characters.
-pub(crate) const LABEL_MAX: usize = 60;
+pub(crate) const LABEL_MAX: usize = templum_mcp::control::LABEL_MOST;
+
+/// `text` as a label: on one line, at most LABEL_MAX characters; None when blank.
+pub(super) fn tidy_label(text: &str) -> Option<String> {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!text.is_empty()).then(|| text.chars().take(LABEL_MAX).collect())
+}
 
 /// A label's key from its wire's ends' block ids, in either order.
 pub(crate) fn label_key(a: &str, b: &str) -> (String, String) {
@@ -22,7 +28,14 @@ pub(crate) fn label_key(a: &str, b: &str) -> (String, String) {
 impl Space {
     /// The key of `wire`'s label; None while one of its blocks has no id.
     pub(crate) fn label_key(&self, wire: Wire) -> Option<(String, String)> {
-        Some(label_key(self.uids.get(&wire.a)?, self.uids.get(&wire.b)?))
+        // A remote workspace's blocks are named by home's ids.
+        let id = |b: BlockId| {
+            self.uids
+                .get(&b)
+                .cloned()
+                .or_else(|| self.remote.as_ref()?.home_of(b))
+        };
+        Some(label_key(&id(wire.a)?, &id(wire.b)?))
     }
 
     /// `wire`'s label, if it has one.
@@ -47,7 +60,7 @@ impl Space {
     }
 
     /// False when they weren't wired.
-    fn remove_wire(&mut self, wire: Wire) -> bool {
+    pub(super) fn remove_wire(&mut self, wire: Wire) -> bool {
         let before = self.wires.len();
         self.wires.retain(|w| *w != wire);
         if self.selected_wire == Some(wire) {
@@ -89,6 +102,9 @@ impl Workspace {
     /// Wires `a` and `b`, a step Ctrl+Z takes back. False, silently, when they can't be: one
     /// block, already wired, or one isn't on the canvas.
     pub(crate) fn connect(&mut self, a: BlockId, b: BlockId, cx: &mut Context<Self>) -> bool {
+        if self.on_remote() {
+            return Wire::new(a, b).is_some_and(|wire| self.remote_wire(wire, true, cx));
+        }
         self.set_wire(Wire { a, b }, true, Then::New, cx)
     }
 
@@ -99,9 +115,10 @@ impl Workspace {
         if !self.space.wires.contains(&wire) {
             return false;
         }
-        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        let label = (!text.is_empty()).then(|| text.chars().take(LABEL_MAX).collect());
-        self.set_label(wire, label, Then::New, cx)
+        if self.on_remote() {
+            return self.remote_label(wire, tidy_label(text), cx);
+        }
+        self.set_label(wire, tidy_label(text), Then::New, cx)
     }
 
     /// Gives `wire` `label` (None: none); the change that takes it back is kept as `then` says.
@@ -113,6 +130,9 @@ impl Workspace {
         then: Then,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.on_remote() {
+            return false;
+        }
         let Some(key) = self.space.label_key(wire) else {
             return false;
         };
@@ -165,6 +185,9 @@ impl Workspace {
 
     /// Unwires them, a step Ctrl+Z takes back. False when they weren't wired.
     pub(crate) fn disconnect(&mut self, wire: Wire, cx: &mut Context<Self>) -> bool {
+        if self.on_remote() {
+            return self.remote_wire(wire, false, cx);
+        }
         self.set_wire(wire, false, Then::New, cx)
     }
 
@@ -183,7 +206,7 @@ impl Workspace {
     /// The wires' labels to draw: each at its curve's middle (world units), in its wire's color.
     /// Grid mode hides them.
     pub(super) fn wire_labels(&self) -> Vec<(Point, String, Hsla)> {
-        if self.space.grid.is_some() {
+        if self.space.grid.is_some() || self.space.labels.is_empty() {
             return Vec::new();
         }
         self.space
@@ -305,6 +328,9 @@ impl Workspace {
         then: Then,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.on_remote() {
+            return false;
+        }
         let done = if on {
             self.space.add_wire(wire.a, wire.b).is_some()
         } else {

@@ -2,7 +2,8 @@
 
 - **Date:** 2026-10-18
 - **Status:** Batches 1 and 2 implemented (kanban card 43); batches 3 and 4 planned:
-  [docs/plans/2026-10-18-templum-agent.md](../plans/2026-10-18-templum-agent.md)
+  [docs/plans/2026-10-18-templum-agent.md](../plans/2026-10-18-templum-agent.md); its look:
+  [templum-agent-look.md](templum-agent-look.md) (kanban card 143)
 - **Builds on:** [connections.md](connections.md) (the bus, the MCP server, tasks handed over, spawning, the
   balloon's rules), [agents.md](agents.md) (the agents and `[agents]`), [kanban.md](kanban.md),
   [checklist.md](checklist.md), [cockpit.md](cockpit.md) (block kinds, the toolbar, notes),
@@ -78,6 +79,9 @@ Later batches add their own criteria ([Delivery](#delivery)).
 
 ## What a person sees
 
+The look (sizes, colors, motion) is in [templum-agent-look.md](templum-agent-look.md); this section says what each
+piece does.
+
 ### The pill
 
 The pill is the Templum Agent's input, floating over the canvas at the bottom center, 8 px above the toolbar (above
@@ -87,7 +91,7 @@ the stroke options when a drawing tool shows them). It shows wherever the toolba
 | State | What it looks like |
 |---|---|
 | At rest | 300 × 36 px, radius 18, the theme's `popover` fill, a `hairline` border and the unfocused block's shadow (y 4, blur 12). Lucide's `sparkles` icon (16 px, `accent`), "Ask Templum" in `title_dim`, and the shortcut as dim keys (`Ctrl` `⇧` `Space`) on the right |
-| Typing | It grows to 640 px (at most the canvas's width − 32) over 0.18 s, the border turns `accent` (the focused block's ring) and it becomes a text field of 1 to 8 lines (gpui-kit `InputState::auto_grow(1, 8)`), placeholder "Ask Templum to build, run or tidy your canvas…". On the right, the engine chip ("Claude Code · opus" in `title_dim`; a click opens Settings ▸ Templum Agent) and the send button, an arrow up in an `accent` circle, shown while there is text |
+| Typing | It grows to 640 px (at most the canvas's width − 32) over 0.18 s, the border turns `accent` (the focused block's ring) and it becomes the composer: a text field of 1 to 8 lines (gpui-kit `InputState::auto_grow(1, 8)`), placeholder "Ask Templum to build, run or tidy your canvas…", over a bar with the model chip ("Claude Code · opus"; its menu is the chat's), the keys it answers to, and Send (an arrow up in an `accent` circle, dim and dead without text) or, while the agent works, Stop (Send beside it when text waits) |
 | Working | The icon becomes a small spinning `orbit` (`accent`), and the text, while nothing is typed, is the last action under way ("Opening Codex in api…"). A 2 px `accent` line runs along the pill's bottom edge, a light band sweeping across it every 1.6 s (still, at its middle, when the system asks for less motion) |
 | Asks you | A yellow border (the balloon's yellow, `normal.yellow`), a yellow dot and "Templum Agent asks you: *Close "Codex · api"?*" with **Review**, which opens the chat at the approval |
 | Something new | While the chat is closed and the Templum Agent wrote something since it was last open, a small `accent` dot on the icon |
@@ -107,20 +111,32 @@ the stroke options when a drawing tool shows them). It shows wherever the toolba
 The chat is a floating card that rises from the pill: the pill becomes its footer, the same field morphing in place.
 
 - **Size and place:** 640 px wide (at most the canvas's width − 32), bottom center over the toolbar, as tall as its
-  rows up to 70% of the canvas's height (at least 240 px), radius 14, `popover` fill, `hairline` border, the focused
+  rows up to 70% of the canvas's height (at least 300 px), radius 16, `popover` fill, `hairline` border, the focused
   block's shadow (y 10, blur 30). It rises 12 px and fades in over 0.22 s; with less motion it appears.
 - **It doesn't block the app.** The canvas works around it; a click outside it doesn't close it. Only Esc in its field,
-  its ▾ button or the shortcut close it, and the conversation goes on while it is closed. It sits under the settings
-  panel, the workspaces screen and the welcome, over the blocks and the Git popup; it is window chrome, so the canvas's
-  zoom never scales it.
-- **Its header** (36 px): `sparkles` and "Templum Agent" in `title`, the engine chip, then on the right **Stop** (a
-  `circle-stop`, only while it works), **New chat** (`message-square-plus`) and **▾** (close). Batch 2 adds the run
-  meter between them ([Orchestration](#orchestration)).
-- **Its body** scrolls; it follows new rows while it is at its end, and a small "↓ New" pill brings it back there
-  after the person scrolled up.
-- **An empty conversation** shows three suggestions as chips; a click puts its text in the field:
-  "Set up a workspace for a project, with a kanban and an agent per card", "Catch me up: what's going on?",
-  "Tidy this workspace into a grid".
+  its ▾ button or the shortcut close it, and the conversation goes on while it is closed. It sits under the Git popup,
+  the settings panel and the welcome, over the blocks; it is window chrome, so the canvas's zoom never scales it.
+  It works on a canvas: on the Home, which has none, neither the pill nor the chat is shown.
+- **Full screen:** the header's `maximize-2` button ("Full screen"; `minimize-2`, "Exit full screen", while full) makes
+  the card fill the canvas, 16 px in from every side, in the same layer (under the Git popup); its footer stays at the
+  bottom and its body grows. It stays full when the chat is closed and opened again, for as long as Templum runs (no
+  option). Esc, ▾ and the shortcut work as before; the rise and the fade are the same.
+- **Its header:** `sparkles` (a spinning `orbit` while it works) and "Templum Agent", then on the right the usage
+  chip ([Orchestration](#orchestration); a label, or the tasks drawer's button while tasks run), **New chat**
+  (`message-square-plus`), **Full screen** and **▾** (close). **Stop** and the model chip are in the composer; **Catch
+  me up** is in the tasks drawer.
+- **The model chip** ("Claude Code · opus"), in the composer, is a button: its menu opens upward and lists Default
+  (the agent's own model), the agent's models (Claude Code: haiku, sonnet, opus) with a check on the current one, and
+  **Another model…**, which opens
+  Settings ▸ Templum Agent to type one. A choice writes `templum_agent.model` as Settings does, so it reaches the next
+  start of the engine the same way, and the chip shows the model the engine reports once it has started, and the chosen
+  one until then.
+- **Its body** scrolls; it follows new rows while it is at its end, and a scroll-to-the-end button brings it back
+  there after the person scrolled up (a dot on it while rows came below meanwhile).
+- **An empty conversation** (no rows, or only notes: it comes back after New chat) greets and shows four suggestions as
+  chips; a click puts its text in the field (Catch me up is sent at once): "Set up a workspace for a project, with a
+  kanban and an agent per card", "Catch me up: what's going on?", "Tidy this workspace into a grid", "Open an agent
+  for each card on my board".
 
 ### Rows
 
@@ -128,19 +144,17 @@ The chat is a floating card that rises from the pill: the pill becomes its foote
 |---|---|---|
 | The person's message | Right-aligned bubble, at most 80% wide, `hover` fill, radius 12, plain text | yes |
 | The agent's text | Full width, Markdown through gpui-kit's `TextView` at the window's scale, growing as it streams | yes |
-| Thinking | "Thinking" in `title_dim` with a light band sweeping across it, while the engine thinks before its first text or tool | no |
-| An action | One line: an icon for the tool's kind, then a sentence. Running: a spinner and the tool's title ("Creating a workspace…"). Done: the first line of the tool's answer, which Templum writes ("Created workspace API (w3)."). Failed: a red icon and the refusal under it in dim red. Denied: "You denied this." in `title_dim`. A click shows what it touched (the workspace, then the block: `reveal`) | yes |
+| Thinking | A spinning `orbit` and "Thinking" in `title_dim` with a light band (gpui-kit's shimmer) sweeping across it, while the engine thinks before its first text or tool; a message or notice that comes meanwhile goes above it | no |
+| An action | One line: a status icon, then a sentence. Running: a spinner and the tool's title ("Creating a workspace…"). Done: the first line of the tool's answer, which Templum writes ("Created workspace API (w3)."). Failed: a red icon and the refusal under it in dim red. Denied: "You denied this." in `title_dim`. A click shows what it touched (the workspace, then the block: `reveal`); on a row that touched nothing it opens the row, and its chevron always opens or closes it, to show the whole sentence, the tool's name and its call (not saved; New chat closes them all) | yes |
 | Reads | Consecutive reads (`overview`, `list_*`, `read_*`, and the engine's own Read, Glob, Grep) fold into one dim row, "Looked at the canvas (4)" | yes |
 | An approval | The popup's record once answered: its sentence and "Allowed once", "Allowed for this conversation" or "Denied" | yes |
 | A notice (batch 2) | "● *Codex · card 3* done in 4 min · $0.31": an `accent` dot when done, red when failed, yellow while it waits for its person; a click shows its block | yes |
-| A turn's end | Right-aligned, dim: "14 s · $0.04" (its time and cost when the engine says them) | yes |
+| A turn's end | Left-aligned under the answer, dim: "14 s · $0.04" (its time and cost when the engine says them) | yes |
 | A failure | Red: "The turn failed: *the engine's message*", or "Claude Code stopped: *its last error line*. Your next message starts it again." | yes |
 | A note | Dim and centered: "Stopped by you.", "New conversation." | yes |
 
-Each tool has an icon (lucide, in gpui-kit's assets): workspaces `layout-grid`, terminals `square-terminal`, agents
-`bot`, boards and cards `kanban`, notes `sticky-note`, checklists `list-checks`, wires `cable`, settings `settings`,
-showing `eye`. The sentence of an action comes from Templum, never from the model: the model can't make a row say
-something other than what was done.
+The sentence of an action comes from Templum, never from the model: the model can't make a row say something other
+than what was done.
 
 ### On the canvas
 
@@ -182,8 +196,9 @@ A dangerous call ([The gate](#the-gate)) waits. Templum shows the approval in th
   as a new one does. A wire types nothing: input reaching its terminals doesn't count for it. A terminal's title
   changing doesn't count: an agent animates its own while it works.
 - **Telling the person:** the pill turns yellow (above). When the window is in the background, or the pill can't be
-  seen (the workspaces screen, the welcome, the pill turned off), a system notification "Templum Agent asks: *Close
-  "Codex · api"?*"; clicking it brings the window and opens the chat at the approval. The short sound of
+  seen (the Home, the welcome, the pill turned off), a system notification "Templum Agent asks: *Close
+  "Codex · api"?*"; clicking it brings the window and opens the chat at the approval (from the Home, in the
+  workspace held under it). The short sound of
   [ask-user.md](ask-user.md#telling-the-person) plays, under `[connections] sound`.
 - **A message sent while one waits** denies it with the message as the person's words, and the message is sent too
   (Claude Code's own permission dialogs work this way).
@@ -200,7 +215,7 @@ A section after Connections:
 | Field | Control | Option | Batch |
 |---|---|---|---|
 | Agent | Dropdown: the engines Templum can run; one not installed says "(not installed)" | `templum_agent.agent` (`claude`) | 1; Codex from 3 |
-| Model | Text; empty is the agent's own default. Checked as `spawn_agent` checks a model (1 to 64 letters, digits, `.`, `-`, `_`, `:`, `/`) | `templum_agent.model` | 1 |
+| Model | Dropdown: Default (the agent's own), then the agent's models (Claude Code: haiku, sonnet, opus); under it Another model, a text field for one the list doesn't have, checked as `spawn_agent` checks a model (1 to 64 letters, digits, `.`, `-`, `_`, `:`, `/`). An engine with no list of models shows the text field alone, as Model | `templum_agent.model` | 1 |
 | Effort | Dropdown: Default, then the agent's efforts ([agents.md](agents.md#a-model-and-an-effort)) | `templum_agent.effort` | 1 |
 | Prompt pill | Switch, on: the pill at the bottom of the canvas; off, the shortcut still opens it | `templum_agent.pill` | 1 |
 | Agents at once | Number 1–16, default 4: how many of its tasks may run together | `templum_agent.max_agents` | 2 |
@@ -294,8 +309,11 @@ isn't the person writing. Hand tasks without waiting, end your turn, and go on w
   `user` line with the `tool_result` (its `content` a string for a built-in tool, a list of `{"type":"text"}` for an
   MCP tool; `is_error` absent when false), `rate_limit_event`, and the `result` (`subtype` `success`, `duration_ms`,
   `total_cost_usd`, `result`). Other `system` subtypes (`commands_changed`, `thinking_tokens`) come and are skipped.
-- Every message is replayed, the first too. A message written during a turn isn't taken into it: it waits, and once
-  the turn's `result` is out a new turn starts with its `init` and its replayed `user` line.
+- Every message is replayed, the first too, once, when a turn takes it. A message written during a turn without tools
+  waits, and once the turn's `result` is out a new turn starts with its `init` and its replayed `user` line. Written
+  during a turn with tools (Claude Code 2.1.309, `claude-taken.jsonl`), it is taken into that turn at the next tool
+  answer: its replayed `user` line comes then, with no `init` of its own, and one `result` ends the turn for every
+  message it took. So Templum counts what waits for a turn by the replays, not by the `init`s.
 - The interrupt request, `{"type":"control_request","request_id":"<id>","request":{"subtype":"interrupt"}}` on stdin,
   stops the turn and keeps the process: a `control_response` `success`, a `user` line "[Request interrupted by
   user]", then a `result` with `subtype` `error_during_execution`, `is_error` true and no `result`; the next message
@@ -313,8 +331,8 @@ Each stdout line is one JSON object. Templum reads these and ignores every other
 | `stream_event` `content_block_start` with `content_block.type` `tool_use` (`id`, `name`) | an action row, running |
 | `{"type":"assistant","message":{"content":[…]}}` | a `text` block replaces the streamed text with its whole text; a `tool_use` block (`id`, `name`, `input`) gives its action row its call |
 | `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id","content","is_error"}]}}` | the action is done or failed |
-| a `user` line with the text of a message Templum wrote (the replay) | that message loses its "Queued" |
-| `{"type":"result","subtype","is_error","duration_ms","total_cost_usd","result"}` | the turn ends: its end row; `is_error` adds a failure row |
+| a `user` line with the text of a message Templum wrote (the replay) | that message loses its "Queued" and waits for no turn |
+| `{"type":"result","subtype","is_error","duration_ms","total_cost_usd","result"}` | the turn ends: its end row; `is_error` adds a failure row; an action still running fails; the chat works on only while a message waits for a turn |
 
 - Tool names arrive as `mcp__templum-control__<tool>`; the row strips the prefix. Read, Glob and Grep fold into a reads
   row ("Read `src/main.rs`" in its tooltip).
@@ -391,18 +409,27 @@ conversation". `reason` is an optional string on every Ask tool, shown in the ap
 | Tool | Arguments | Does | Danger | Batch |
 |---|---|---|---|---|
 | `overview` | — | Every workspace: id, name, folder, whether it is shown or stopped; each block's id, kind, title, folder, rect, agent and its state (with what it asks), `opened_by`, whether it is its own; the wires; the boards each kanban shows; what waits for the person. From batch 2, the tasks it handed and their state | – | 1 |
-| `list_agents` | — | The agents Templum can open: id, title, installed, the efforts it takes and whether it takes a model, and the accounts ([accounts.md](accounts.md)) | – | 1 |
+| `list_agents` | — | The agents Templum can open: id, title, installed, the efforts it takes and whether it takes a model, the accounts ([accounts.md](accounts.md)), and `hidden` for one the person hid in the menus | – | 1 |
+| `list_shells` | — | The shells a terminal can run (`add_block`'s `shell`), a name a line: the default first (`  default` ends its line), then each other shell found; names only, never a path | – | 201 |
 | `read_terminal` | `block`, `lines`, `last_command` | As the block server's, any terminal | – | 1 |
 | `list_cards` | `board`, `card` | As the block server's, any board | – | 1 |
 | `read_note`, `read_checklist` | `block` | As the block server's, any block | – | 1 |
 | `create_workspace` | `name`, `folder`, `color` | A new workspace, not shown; its id | – | 1 |
 | `show` | `workspace`, `block` | Shows the workspace, and flies the camera to the block (`reveal`) | – | 1 |
-| `add_block` | `workspace`, `kind` (`terminal`, `note`, `checklist`, `kanban`, `editor`), `folder`, `board` and `columns` (kanban: a board by name or id, made with those columns when there is none), `text` (a note's text; a checklist's name on its first line and an item per line after), `near` (a block) | Opens the block where it covers nothing: beside `near`, else at the workspace's free spot; its id. A terminal runs no command | – | 1 |
-| `create_card`, `edit_card`, `move_card`, `comment_card` | as the block server's | As the block server's on any board; comments are signed "Templum Agent"; `move_card` asks for no comment | – | 1 |
+| `add_block` | `workspace`, `kind` (`terminal`, `note`, `checklist`, `kanban`, `editor`), `folder`, `board` and `columns` (kanban: a board by name or id, made with those columns when there is none), `text` (a note's text; a checklist's name on its first line and an item per line after), `shell` (a terminal's: a name of `list_shells`, the default when left out; another name is refused), `near` (a block), `x` and `y` (its top-left; both or neither, not with `near`) | Opens the block where it covers nothing: beside `near`, else at the workspace's free spot; at `x`, `y` when given, over what is there; its id. A terminal runs no command | – | 1 (`shell`: 201) |
+| `create_card`, `edit_card`, `move_card`, `comment_card` | as the block server's: `create_card` also `labels`; `edit_card` also `title`, `description`, `labels`, `remove_items`; `move_card` also `before` | As the block server's on any board; comments are signed "Templum Agent"; `move_card` asks for no comment | – | 1 (the grown arguments: 171 2d) |
+| `edit_comment`, `delete_comment` | `card`, `comment`, and `text` | Edits or deletes a comment the Templum Agent signed, never the person's or another agent's (through the API they act as the person: edit one by `you`, delete any) | – | 171 2d |
+| `delete_card` | `card`, `reason` | Deletes a card and its comments, a step of that kanban's Ctrl+Z | Ask own | 171 2d |
+| `edit_board` | `board`, then `name` or `delete: true`, `reason` | Renames a board, or deletes it with its cards (the kanbans that showed it show none; a step of Ctrl+Z) | Ask own when a delete takes cards: it runs without asking only on a board it made whose cards (or the column's) it made too; – otherwise | 171 2d |
+| `edit_column` | `board`, `column`, `title`, `before` (a column id, or `end`), `delete: true`, `reason` | Adds a column (`column` left out; `title`, `before` too), renames or moves one, or deletes one with its cards (alone), a step of Ctrl+Z | Ask own when a delete takes cards: it runs without asking only on a board it made whose cards (or the column's) it made too; – otherwise | 171 2d |
+| `show_board` | `block`, then `board`, or `new` (a name, blank for "Board n") with `columns` | Shows a board in a kanban, or makes a new one there (To do, Doing and Done without `columns`) | – | 171 2d |
 | `append_note` | `block`, `text` | As the block server's | – | 1 |
 | `add_items`, `check_item` | as the block server's | As the block server's | – | 1 |
-| `open_agent` | `agent` (an id of `list_agents`), `workspace`, `folder`, `worktree`, `model`, `effort`, `prompt`, `connect` (blocks to wire it to), `near` | Opens the agent as `spawn_agent` does ([connections.md](connections.md#spawning)), in that workspace, beside `near` or at its free spot, wired to `connect`, its `opened_by` `templum-agent`; its prompt typed once it is ready; its id | Asks when `connect` names a terminal not its own | 1 |
-| `connect`, `disconnect` | `a`, `b` | Wires or unwires two blocks of one workspace (a step of Ctrl+Z) | `connect` asks when both are terminals and one isn't its own | 1 |
+| `edit_item`, `delete_item` | `block`, `item`, and `text` | As the block server's, on any checklist block | – for `edit_item`; Ask own for `delete_item` | 171 2e |
+| `edit_checklist` | `block`, then `name`, or `item` with `before` (an item id, or `end`), or both | Renames the checklist a checklist block shows (blank reads "Checklist") or moves one of its items, a step of its Ctrl+Z | – | 205 |
+| `new_checklist` | `block`, `name` | Shows a new checklist ("Checklist" without `name`) in a checklist block that shows none; refused on one that shows one | – | 205 |
+| `open_agent` | `agent` (an id of `list_agents`), `workspace`, `folder`, `worktree`, `model`, `effort`, `prompt`, `connect` (blocks to wire it to), `near`, `x` and `y` (its top-left; both or neither, not with `near`) | Opens the agent as `spawn_agent` does ([connections.md](connections.md#spawning)), in that workspace, beside `near` or at its free spot, wired to `connect`, its `opened_by` `templum-agent`; its prompt typed once it is ready; its id | Asks when `connect` names a terminal not its own | 1 |
+| `connect`, `disconnect` | `a`, `b`; `connect` also `label` (one line, at most 60 characters; blank takes it off) | Wires or unwires two blocks of one workspace (a step of Ctrl+Z); `connect` with a label names the wire, or renames it when the blocks are wired already | `connect` asks when both are terminals and one isn't its own | 1 |
 | `close_block` | `block`, `reason` | Closes the block, a step of Ctrl+Z | Ask own when a program runs in it (an agent, a command); – otherwise | 1 |
 | `send_to_terminal` | `block`, `text`, `enter`, `reason` | As the block server's; a text over 256 KiB is refused before asking (the approval shows it whole) | Ask | 1 |
 | `send_keys` | `block`, `keys`, `reason` | As the block server's: answering an agent's dialog is approving its tool for the person | Ask | 1 |
@@ -413,12 +440,10 @@ conversation". `reason` is an optional string on every Ask tool, shown in the ap
 | `edit_workspace` | `workspace`, `name`, `folder`, `color`, `icon` | Its name, folder and look | – | 3 |
 | `stop_workspace` | `workspace`, `reason` | Stops it ([cockpit.md](cockpit.md#stopping-a-workspace)) | Ask own | 3 |
 | `delete_workspace` | `workspace`, `reason` | Deletes it and its blocks | Ask each; Ask own when empty | 3 |
-| `move_block` | `block`, `x`, `y`, `w`, `h`, `workspace` | Moves or resizes it (a step of Ctrl+Z), or moves it to another workspace | – | 3 |
+| `move_block` | `block`, `x`, `y`, `w`, `h` (built by card 171, the API); `workspace` (batch 3) | Moves or resizes it, a step of that workspace's Ctrl+Z (no block smaller than its kind's least), or moves it to another workspace | – | 1 (`workspace`: 3) |
 | `arrange` | `workspace`, `layout` (`grid`, `row`, `column`), `blocks` | Lays the blocks out without overlap, keeping their sizes | – | 3 |
 | `grid`, `fit` | `on` | Grid mode on or off; the camera to every block | – | 3 |
-| `rename_board`, `add_column`, `rename_column` | … | The board's name and columns | – | 3 |
-| `delete_card`, `delete_column`, `delete_board` | … | Deletes them | Ask own; `delete_board` Ask each | 3 |
-| `replace_note`, `edit_item`, `delete_item`, `delete_note`, `delete_checklist` | … | Card 35's note and checklist edits, on any block | Ask own | 3 |
+| `replace_note`, `delete_note`, `delete_checklist` | … | Card 35's note and checklist edits, on any block | Ask own | 3 |
 | `run` | `workspace`, `folder`, `command`, `background`, `near`, `reason` | A terminal that runs a command (card 35's background terminal) | Ask | 3 |
 | `remove_worktree`, `merge_worktree` | … | Card 35's worktree tools | Ask each | 3 |
 | `read_settings` | — | `config.toml`'s text and where it is | – | 3 |
@@ -451,7 +476,8 @@ arguments can't lower it.
 - **Grants** ("Allow for this conversation") are per tool, any target, and last until New chat or quit; never saved.
 - **What keeps the model from going around it:** the engine has no shell, no file writing and no other MCP server; the
   control server has no command-line verbs; the secret lives only in the engine's environment; approvals are answered
-  only by clicks and keys in Templum's popup, never by a tool, a chat message or a CLI; the approval's facts are written
+  only by clicks and keys in Templum's popup, never by a tool, a chat message or a CLI, but by the API's full tokens,
+  the person's own hand (card 171); the approval's facts are written
   by Templum from the call, and the model's `reason` is shown apart; denying tells it not to try another way.
 - **Its own** is recorded as things are made (the conversation's `own` lists, saved with it, so a restart keeps them
   for the conversation); `opened_by: templum-agent` marks the blocks for good, but only this conversation's own skip
@@ -470,7 +496,8 @@ Whichever card lands first adds the method; the other calls it. Before a task ad
 | `add_block_in(space, NewBlock, Place)` → the block's id | A block of a kind (`NewBlock::{Terminal { folder, command, background }, Note { text }, Checklist { name, items }, Kanban { board }, Editor { folder }}`) at a place (`Place::{Near(BlockId), Free, At(Rect)}`) where it covers nothing | card 35's `create_block` | `add_block`, `run` | card 35 (note, checklist, terminal, a command, background); this card adds `Kanban` and `Editor` |
 | `open_agent_in(space, entry, folder, spawn, place, wire_to, opener)` | `spawn_agent`'s `open_agent` without a caller's block: its rect, its wires, `opened_by`, its model and effort, its prompt as a task of `opener` | `spawn_agent` (and card 35's fork) | `open_agent` | this card, from `spawn.rs` (card 35's fork passes through it) |
 | `stop_agent(block)` | Ends the agent in the block | card 35's `stop_agent` | `stop_agent` | card 35 |
-| `replace_note(block, text)`, `edit_item`, `delete_item` | Card 35's note and checklist edits | card 35 | batch 3 tools | card 35 |
+| `replace_note(block, text)` | Card 35's note edit | card 35 | batch 3 tools | card 35 |
+| `item_text(block, item, text)`, `item_delete(block, item)` | An item's text, an item deleted: one Ctrl+Z step each | `edit_item`, `delete_item` | `edit_item`, `delete_item` | card 35; 171 2e |
 | `remove_worktree`, `merge_worktree` | Card 35's worktree tools | card 35 | batch 3 tools | card 35 |
 | roles, `propose_plan`, schedules | Card 35's saved roles, plans and schedules | card 35 | `open_agent`'s `role`, the plan card and `schedule` ([Later ideas](#later-ideas)) | card 35 |
 | `cards_of(board, card, viewer)`, `card_new(board, NewCard, by)`, `card_edit(card, CardEdit, by)`, `card_move(card, column)`, `card_comment(card, text, by)` | `content.rs`'s card tools with the wire check taken out (`by`: a block's id or `templum-agent`) | the card tools | the card tools | this card (batch 1), unless card 35 did it first |
@@ -494,7 +521,11 @@ The Templum Agent hands work out as an agent block does, with the tasks of
 - **A task's end** comes as the notice connections.md writes (`[task t7 from Codex · api (k9x1d): done in 31 s, …]
   Its answer is in the pasted text.` and the answer), as a notice row in the chat and as a message to the engine: at
   once when it is idle (a new turn), else taken into the turn under way when Claude Code takes queued messages there,
-  else after it. So the Templum Agent wakes up when an agent finishes, without the person.
+  else after it. So the Templum Agent wakes up when an agent finishes, without the person. The chat shows each notice
+  as it comes; only what the engine is told waits, as a terminal's notices do (up to 15 seconds for the next end, 60
+  at most, at once when no other task of its runs), and it hears several as one message under a first line,
+  `[3 tasks ended] They are in the pasted text.` ([notice-batching.md](notice-batching.md)). No draft rule applies: the
+  chat's field isn't the engine's input.
 - **Waiting for its person** sends the waiting notice the same way (once per wait), and the notice row turns yellow;
   clicking it shows the block.
 - **Agents at once:** `open_agent` with a prompt and `delegate` are refused while `templum_agent.max_agents` of its

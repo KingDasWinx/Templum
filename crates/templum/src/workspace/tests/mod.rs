@@ -10,7 +10,7 @@ use templum_canvas::{BlockId, Camera, Point, Rect, chrome};
 
 use crate::config::Edit;
 
-use super::{Workspace, bind_keys};
+use super::{Workspace, bind_keys, told_so_far};
 
 #[cfg(target_os = "macos")]
 const NEW: &str = "cmd-t";
@@ -88,12 +88,16 @@ fn open_as(
     data_dir: Option<std::path::PathBuf>,
 ) -> (AnyWindowHandle, Entity<Workspace>) {
     let (handle, ws) = open_welcomed(cx, command, config_dir, data_dir);
-    // An empty data folder is a first run: the welcome, then the first terminal. The tests
-    // of everything else start where the welcome leaves them.
+    // An empty data folder is a first run: the welcome, then the first terminal; a saved one
+    // opens on the Home. The tests of everything else start on the canvas they leave.
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
             ws.close_welcome(window, cx);
             ws.welcome = None;
+            if ws.home_up() {
+                let held = ws.active;
+                ws.switch_to(held, window, cx);
+            }
         })
     })
     .unwrap();
@@ -101,7 +105,7 @@ fn open_as(
     (handle, ws)
 }
 
-/// `open_as`, with the welcome of a first run still open.
+/// `open_as`, with the welcome of a first run, or the Home of a later start, still open.
 fn open_welcomed(
     cx: &mut TestAppContext,
     command: Option<(String, Vec<String>)>,
@@ -129,7 +133,26 @@ fn open_welcomed(
     // The startup block at rest: tests that measure elements must not depend on how far its
     // pop-in got (new_terminals_pop_in_then_settle checks the animation itself).
     opened.1.update(cx, |ws, _| ws.space.appearing.clear());
+    OPENED.with(|ws| *ws.borrow_mut() = Some(opened.1.downgrade()));
     opened
+}
+
+thread_local! {
+    /// The workspace of the window this test opened last (each test runs on a thread of its own),
+    /// for helpers that are given the window alone; weak, as the test's own handle keeps it alive.
+    static OPENED: std::cell::RefCell<Option<gpui_kit::WeakEntity<Workspace>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The inbox, opened the way the person does (it never opens by itself), if it isn't.
+fn inbox_open(window: &mut Window, cx: &mut gpui_kit::App) {
+    let ws = OPENED
+        .with(|ws| ws.borrow().as_ref().and_then(|ws| ws.upgrade()))
+        .expect("a window was opened");
+    ws.update(cx, |ws, cx| {
+        if !ws.inbox_open {
+            ws.open_inbox(None, window, cx)
+        }
+    });
 }
 
 fn click(window: &mut Window, cx: &mut gpui_kit::App, at: (f32, f32), count: usize) {
@@ -652,6 +675,35 @@ pub(super) fn three_blocks(
     .unwrap()
 }
 
+/// A checklist block "name" with `items` (a leading `[x] ` checks one) in the shown workspace:
+/// (block, checklist).
+pub(super) fn checklist_block(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    name: &str,
+    items: &[&str],
+) -> (BlockId, u64) {
+    let items = crate::checklists::parse_items(&items.join("\n"));
+    let block = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let space = ws.space.id.clone();
+                let new = super::ops::NewBlock::Checklist {
+                    name: name.into(),
+                    items,
+                };
+                ws.add_block_in(&space, new, super::ops::Place::Free, None, window, cx)
+            })
+        })
+        .unwrap()
+        .unwrap();
+    let list = ws.read_with(cx, |ws, _| {
+        ws.space.blocks[&block].checklist().unwrap().list.unwrap()
+    });
+    (block, list)
+}
+
 /// A kanban block on a new board with one card in its first column: (block, board, card).
 pub(super) fn board_with_a_card(
     handle: AnyWindowHandle,
@@ -671,6 +723,22 @@ pub(super) fn board_with_a_card(
         })
     })
     .unwrap()
+}
+
+/// Presses on the element `from`, drags it onto the element `to` and lets go: no sleeps, the
+/// frames the drag needs are drawn by the test window.
+pub(super) fn drop_on(
+    handle: AnyWindowHandle,
+    cx: &mut TestAppContext,
+    from: impl Into<gpui_kit::ElementId>,
+    to: impl Into<gpui_kit::ElementId>,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.drag_to(from, to, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
 }
 
 /// Moves the pointer to `to` (a window position), no button held, and draws.
@@ -698,9 +766,16 @@ pub(super) fn at(ws: &Entity<Workspace>, cx: &mut TestAppContext, p: (f32, f32))
 
 mod accounts;
 mod agents;
+mod agents_view;
+mod api;
+mod api_git;
+mod attachments;
+mod automations;
 mod block_ids;
 mod blocks;
+mod board_tools;
 mod bus;
+mod card_draft;
 mod checklists;
 mod config_reload;
 mod content;
@@ -717,6 +792,7 @@ mod git_hunks;
 mod git_keys;
 mod git_layout;
 mod git_message;
+mod git_mirror;
 mod git_panel;
 mod git_split;
 mod git_status;
@@ -725,15 +801,27 @@ mod git_sync;
 mod git_trash;
 mod grid;
 mod history;
+mod home;
+mod inbox;
+mod instructions;
 mod kanban;
 mod lod;
 mod menus;
+mod mirror_end_to_end;
 mod moving;
 mod navigation;
 mod notes;
+#[cfg(unix)]
+mod notices;
 mod persistence;
+mod popups;
+mod remote;
+mod remote_boards;
+mod remote_content;
+mod remote_notes;
+mod remote_rules;
 mod requests;
-mod screen;
+mod scrollback;
 mod selection;
 mod settings_edits;
 mod settings_panel;
@@ -743,6 +831,7 @@ mod shortcuts;
 mod schedules;
 #[cfg(unix)]
 mod spawn;
+mod subagents;
 mod templum_agent;
 mod terminals;
 mod themes;

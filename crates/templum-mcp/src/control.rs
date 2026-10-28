@@ -10,7 +10,7 @@ use crate::tools::{self, Call, Spawn};
 pub const SERVER: &str = "templum-control";
 
 /// The block server's tools the control server serves as they are, on any block or board.
-pub const SHARED: [&str; 18] = [
+pub const SHARED: [&str; 22] = [
     "read_terminal",
     "list_cards",
     "read_note",
@@ -19,9 +19,13 @@ pub const SHARED: [&str; 18] = [
     "edit_card",
     "move_card",
     "comment_card",
+    "edit_comment",
+    "delete_comment",
     "append_note",
     "add_items",
     "check_item",
+    "edit_item",
+    "delete_item",
     "send_to_terminal",
     "send_keys",
     "notify",
@@ -51,7 +55,11 @@ pub struct AddBlock {
     pub board: Option<String>,
     pub columns: Vec<String>,
     pub text: Option<String>,
+    /// A terminal's shell, by its name in `list_shells`; the default when None.
+    pub shell: Option<String>,
     pub near: Option<String>,
+    /// Its top-left corner on the canvas; not with `near`.
+    pub at: Option<(f32, f32)>,
 }
 
 /// What `open_agent` opens: `spawn_agent`'s agent in a workspace, wired to `connect`.
@@ -61,6 +69,16 @@ pub struct Opening {
     pub spawn: Spawn,
     pub connect: Vec<String>,
     pub near: Option<String>,
+    /// Its top-left corner on the canvas; not with `near`.
+    pub at: Option<(f32, f32)>,
+}
+
+/// Where `edit_column` puts a column, or `edit_checklist` an item: before another one of its
+/// board or checklist (its id), or at the end.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Before {
+    Id(u64),
+    End,
 }
 
 /// A control tool's call, its arguments checked.
@@ -70,6 +88,7 @@ pub enum ControlCall {
     Block(Call),
     Overview,
     ListAgents,
+    ListShells,
     CreateWorkspace {
         name: String,
         folder: Option<String>,
@@ -81,9 +100,11 @@ pub enum ControlCall {
     },
     AddBlock(AddBlock),
     OpenAgent(Opening),
+    /// Wires two blocks; `label` names the wire (blank takes the name off), left out keeps it.
     Connect {
         a: String,
         b: String,
+        label: Option<String>,
     },
     Disconnect {
         a: String,
@@ -91,6 +112,54 @@ pub enum ControlCall {
     },
     CloseBlock {
         block: String,
+    },
+    /// Deletes a card and its comments.
+    DeleteCard {
+        card: u64,
+    },
+    /// Renames a board (`name`), or deletes it with its cards (`delete`): exactly one.
+    EditBoard {
+        board: String,
+        name: Option<String>,
+        delete: bool,
+    },
+    /// No `column`: a new column (at the end, or `before`; with `title` when given). A `column`:
+    /// renamed (`title`), moved (`before`) or both; `delete` goes alone.
+    EditColumn {
+        board: String,
+        column: Option<u64>,
+        title: Option<String>,
+        before: Option<Before>,
+        delete: bool,
+    },
+    /// Renames the checklist the checklist block `block` shows (`name`; blank reads "Checklist"),
+    /// moves its item `item` (`before`), or both.
+    EditChecklist {
+        block: String,
+        name: Option<String>,
+        moved: Option<(u64, Before)>,
+    },
+    /// The checklist block `block`, showing none, shows a new checklist named `name` (none:
+    /// "Checklist").
+    NewChecklist {
+        block: String,
+        name: Option<String>,
+    },
+    /// The kanban `block` shows `board`, or a new board named `new` (blank: "Board n") with
+    /// `columns` (To do, Doing and Done without): exactly one of `board` and `new`.
+    ShowBoard {
+        block: String,
+        board: Option<String>,
+        new: Option<String>,
+        columns: Vec<String>,
+    },
+    /// Moves or resizes a block; what is left out keeps. Sizes are over 0.
+    MoveBlock {
+        block: String,
+        x: Option<f32>,
+        y: Option<f32>,
+        w: Option<f32>,
+        h: Option<f32>,
     },
 }
 
@@ -191,6 +260,12 @@ fn for_it(tool: &Value) -> Value {
     serde_json::from_str(&text).expect("JSON")
 }
 
+/// The farthest a block may be put from the canvas's origin, in canvas units.
+pub const PLACE_MOST: f32 = 10_000_000.0;
+
+/// The longest name of a wire, in characters.
+pub const LABEL_MOST: usize = 60;
+
 /// The longest `reason`, in bytes: the approval draws it whole above its buttons.
 const MAX_REASON: usize = 500;
 
@@ -199,11 +274,77 @@ fn reason() -> Value {
     json!({ "type": "string", "description": "Why, in a few words: the person sees it in the approval." })
 }
 
+/// The number under `key`: null is none, a finite number is some, else Err.
+fn number(args: &Value, key: &str) -> Result<Option<f32>, String> {
+    match &args[key] {
+        Value::Null => Ok(None),
+        value => value
+            .as_f64()
+            .map(|n| n as f32)
+            .filter(|n| n.is_finite())
+            .map(Some)
+            .ok_or_else(|| format!("\"{key}\" is a number")),
+    }
+}
+
+/// A place no canvas reaches is a typo, and would be stored as it is.
+fn within(places: &[(&str, Option<f32>)]) -> Result<(), String> {
+    match places
+        .iter()
+        .find(|(_, place)| place.is_some_and(|p| p.abs() > PLACE_MOST))
+    {
+        Some((key, _)) => Err(format!("\"{key}\" is within ±10000000")),
+        None => Ok(()),
+    }
+}
+
+/// `before` of `edit_column` and `edit_checklist`: an id, or `"end"`; Err when it is neither.
+fn before(args: &Value) -> Result<Option<Before>, ()> {
+    match &args["before"] {
+        Value::Null => Ok(None),
+        Value::String(s) if s.trim().eq_ignore_ascii_case("end") => Ok(Some(Before::End)),
+        Value::String(s) => s
+            .trim()
+            .parse()
+            .map(|id| Some(Before::Id(id)))
+            .map_err(|_| ()),
+        Value::Number(n) => n.as_u64().map(|id| Some(Before::Id(id))).ok_or(()),
+        _ => Err(()),
+    }
+}
+
+/// `x` and `y` of `add_block` and `open_agent`: both or neither, and not with `near`.
+fn place(args: &Value) -> Result<Option<(f32, f32)>, String> {
+    let (x, y) = (number(args, "x")?, number(args, "y")?);
+    within(&[("x", x), ("y", y)])?;
+    let Some((x, y)) = x.zip(y) else {
+        return if x.is_some() || y.is_some() {
+            Err("\"x\" and \"y\" go together".into())
+        } else {
+            Ok(None)
+        };
+    };
+    if args["near"].as_str().is_some_and(|n| !n.trim().is_empty()) {
+        return Err("Give near, or x and y: not both.".into());
+    }
+    Ok(Some((x, y)))
+}
+
 /// `tools/list`'s result.
 pub fn list() -> Value {
     let block = json!({ "type": "string", "description": "A block's id, as overview shows it." });
     let workspace = json!({ "type": "string", "description": "A workspace's name or id (w3), as overview shows it." });
     let none = json!({ "type": "object", "properties": {} });
+    let board =
+        json!({ "type": "string", "description": "A board's name or id, as overview shows it." });
+    let card = json!({ "type": "integer", "description": "A card's id, as list_cards shows it." });
+    let at = |key: &str| {
+        json!({
+            "type": "number",
+            "description": format!("Its top-left corner on the canvas, with {} (canvas units): it goes there, over what is there.",
+                if key == "x" { "y" } else { "x" }),
+        })
+    };
     let blocks = tools::list();
     let blocks = blocks["tools"].as_array().expect("tools");
     let shared = blocks
@@ -244,6 +385,8 @@ pub fn list() -> Value {
         "description": "Blocks of that workspace to wire it to (a kanban, a note), by id.",
     });
     opening["near"] = json!({ "type": "string", "description": "A block to open it beside; else the workspace's free spot." });
+    opening["x"] = at("x");
+    opening["y"] = at("y");
     let own = json!([
         {
             "name": "overview",
@@ -256,7 +399,14 @@ pub fn list() -> Value {
         {
             "name": "list_agents",
             "description": "The agents Templum can open (open_agent's agent): id, title, whether it is \
-                            installed, the efforts it takes and whether it takes a model, and the accounts.",
+                            installed, the efforts it takes and whether it takes a model, and the accounts; \
+                            one the person hid in the menus ends its line with \"hidden\".",
+            "inputSchema": none,
+        },
+        {
+            "name": "list_shells",
+            "description": "The shells a terminal can run (add_block's shell), a name a line: the default first, \
+                            its line ending with \"  default\", then each other shell found.",
             "inputSchema": none,
         },
         {
@@ -287,7 +437,7 @@ pub fn list() -> Value {
         {
             "name": "add_block",
             "description": "Opens a block in a workspace where it covers nothing: beside near, else at the \
-                            workspace's free spot. A terminal runs no command. Says its id.",
+                            workspace's free spot; at x and y when given. A terminal runs no command. Says its id.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -297,7 +447,10 @@ pub fn list() -> Value {
                     "board": { "type": "string", "description": "A kanban's board, by name or id: made with columns when there is none." },
                     "columns": { "type": "array", "items": { "type": "string" }, "description": "A new board's columns." },
                     "text": { "type": "string", "description": "A note's text; a checklist's name on its first line, then an item per line." },
+                    "shell": { "type": "string", "description": "A terminal's shell, by its name in list_shells; the default when left out." },
                     "near": block,
+                    "x": at("x"),
+                    "y": at("y"),
                 },
                 "required": ["workspace", "kind"],
             },
@@ -313,10 +466,19 @@ pub fn list() -> Value {
         },
         {
             "name": "connect",
-            "description": "Wires two blocks of one workspace (the person takes it back with Ctrl+Z).",
+            "description": "Wires two blocks of one workspace (the person takes it back with Ctrl+Z); with label, \
+                            names it.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "a": block, "b": block },
+                "properties": {
+                    "a": block,
+                    "b": block,
+                    "label": {
+                        "type": "string",
+                        "description": "The wire's name, one line, at most 60 characters; blank takes it off. \
+                                        On two blocks already wired it renames their wire.",
+                    },
+                },
                 "required": ["a", "b"],
             },
         },
@@ -327,6 +489,118 @@ pub fn list() -> Value {
                 "type": "object",
                 "properties": { "a": block, "b": block },
                 "required": ["a", "b"],
+            },
+        },
+        {
+            "name": "move_block",
+            "description": "Moves or resizes a block: x and y its top-left corner, w and h its size, in canvas \
+                            units; what you leave out keeps (the person takes it back with Ctrl+Z). Says where \
+                            it is now.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "block": block,
+                    "x": { "type": "number" },
+                    "y": { "type": "number" },
+                    "w": { "type": "number", "description": "Its width, over 0 (a block never gets smaller than its kind's least)." },
+                    "h": { "type": "number", "description": "Its height, over 0 (a block never gets smaller than its kind's least)." },
+                },
+                "required": ["block"],
+            },
+        },
+        {
+            "name": "delete_card",
+            "description": "Deletes a card and its comments (Ctrl+Z on a kanban brings it back). Asks the \
+                            person first when it isn't a card you made.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "card": card, "reason": reason() },
+                "required": ["card"],
+            },
+        },
+        {
+            "name": "edit_board",
+            "description": "Renames a board (name), or deletes it with its cards (delete: true; the kanbans \
+                            that showed it show none; Ctrl+Z on a kanban brings it back). Deleting a board \
+                            asks the person first when it holds a card you didn't make, or a board you \
+                            didn't make.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "board": board,
+                    "name": { "type": "string" },
+                    "delete": { "type": "boolean" },
+                    "reason": reason(),
+                },
+                "required": ["board"],
+            },
+        },
+        {
+            "name": "edit_column",
+            "description": "Adds a column to a board (column left out: at the end, or before another), renames \
+                            one (title), moves one (before: a column of the board, or \"end\") or deletes one \
+                            with its cards (delete: true). Deleting a column \
+                            asks the person first when it holds a card you didn't make, or its board \
+                            isn't one you made.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "board": board,
+                    "column": { "type": "integer", "description": "A column's id, as list_cards shows it." },
+                    "title": { "type": "string" },
+                    "before": {
+                        "type": "string",
+                        "description": "A column of the board (its id) to go before, or \"end\".",
+                    },
+                    "delete": { "type": "boolean" },
+                    "reason": reason(),
+                },
+                "required": ["board"],
+            },
+        },
+        {
+            "name": "show_board",
+            "description": "Shows a board in a kanban block (board), or a new one (new: its name, blank for \
+                            \"Board n\"; columns: its columns, To do, Doing and Done when left out).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "block": block,
+                    "board": board,
+                    "new": { "type": "string" },
+                    "columns": { "type": "array", "items": { "type": "string" } },
+                },
+                "required": ["block"],
+            },
+        },
+        {
+            "name": "edit_checklist",
+            "description": "Renames the checklist a checklist block shows (name; blank reads \"Checklist\"), \
+                            moves one of its items (item, before: an item of the checklist it goes just \
+                            before, or \"end\"), or both: one step of the checklist's Ctrl+Z.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "block": block,
+                    "name": { "type": "string" },
+                    "item": { "type": "integer", "description": "An item's id, as read_checklist shows it." },
+                    "before": {
+                        "type": "string",
+                        "description": "An item of the checklist (its id) to go before, or \"end\".",
+                    },
+                },
+                "required": ["block"],
+            },
+        },
+        {
+            "name": "new_checklist",
+            "description": "Shows a new checklist, named name (\"Checklist\" when left out), in a checklist \
+                            block that shows none. A block that shows one keeps it: add_block opens a block \
+                            with a new one.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "block": block, "name": { "type": "string" } },
+                "required": ["block"],
             },
         },
         {
@@ -343,6 +617,21 @@ pub fn list() -> Value {
     let mut all: Vec<Value> = own.as_array().expect("tools").clone();
     all.extend(shared);
     json!({ "tools": all })
+}
+
+/// Whether the tool `name` only reads: the API's Read tokens may call it.
+pub fn reads(name: &str) -> bool {
+    matches!(
+        name,
+        "overview"
+            | "list_agents"
+            | "list_shells"
+            | "read_terminal"
+            | "list_cards"
+            | "read_note"
+            | "read_checklist"
+            | "wait_for"
+    )
 }
 
 /// `name` is one of the control tools.
@@ -368,6 +657,35 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
             .map(|s| Some(s.to_string()).filter(|s| !s.trim().is_empty()))
             .ok_or_else(|| format!("\"{key}\" is a string")),
     };
+    // A string kept as it is, blank included: a caller's blank name is for the glue to refuse.
+    let string = |key: &str| match &args[key] {
+        Value::Null => Ok(None),
+        value => value
+            .as_str()
+            .map(|s| Some(s.to_string()))
+            .ok_or_else(|| format!("\"{key}\" is a string")),
+    };
+    let flag = |key: &str| match &args[key] {
+        Value::Null => Ok(false),
+        value => value
+            .as_bool()
+            .ok_or_else(|| format!("\"{key}\" is true or false")),
+    };
+    // A board comes as its id or its name.
+    let named = |key: &str| match &args[key] {
+        Value::Number(n) => Ok(n.to_string()),
+        Value::String(s) if !s.trim().is_empty() => Ok(s.trim().to_string()),
+        _ => Err(format!("{name} needs \"{key}\", a board's name or id")),
+    };
+    let id = |key: &str, what: &str| -> Result<Option<u64>, String> {
+        let bad = || format!("\"{key}\" is {what}, as list_cards shows it");
+        match &args[key] {
+            Value::Null => Ok(None),
+            Value::Number(n) => n.as_u64().map(Some).ok_or_else(bad),
+            Value::String(s) => s.trim().parse().map(Some).map_err(|_| bad()),
+            _ => Err(bad()),
+        }
+    };
     let strings = |key: &str| match &args[key] {
         Value::Null => Ok(Vec::new()),
         Value::Array(items) => items
@@ -380,6 +698,7 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
     let call = match name {
         "overview" => ControlCall::Overview,
         "list_agents" => ControlCall::ListAgents,
+        "list_shells" => ControlCall::ListShells,
         "create_workspace" => ControlCall::CreateWorkspace {
             name: text("name")?,
             folder: optional("folder")?,
@@ -394,6 +713,12 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
         }
         "add_block" => ControlCall::AddBlock(AddBlock {
             workspace: text("workspace")?,
+            shell: match (optional("shell")?, args["kind"].as_str()) {
+                (Some(_), Some(kind)) if kind != "terminal" => {
+                    return Err("\"shell\" is a terminal's".into());
+                }
+                (shell, _) => shell,
+            },
             kind: match args["kind"].as_str() {
                 Some("terminal") => Kind::Terminal,
                 Some("note") => Kind::Note,
@@ -415,6 +740,7 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
             columns: strings("columns")?,
             text: optional("text")?,
             near: optional("near")?,
+            at: place(args)?,
         }),
         "open_agent" => {
             text("agent")?;
@@ -431,11 +757,25 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
                 spawn,
                 connect: strings("connect")?,
                 near: optional("near")?,
+                at: place(args)?,
             })
         }
         "connect" => ControlCall::Connect {
             a: text("a")?,
             b: text("b")?,
+            label: match &args["label"] {
+                Value::Null => None,
+                Value::String(label) => {
+                    let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
+                    if label.chars().count() > LABEL_MOST {
+                        return Err(format!(
+                            "\"label\" is at most {LABEL_MOST} characters: a few words."
+                        ));
+                    }
+                    Some(label)
+                }
+                _ => return Err("\"label\" is a string".into()),
+            },
         },
         "disconnect" => ControlCall::Disconnect {
             a: text("a")?,
@@ -444,6 +784,133 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
         "close_block" => ControlCall::CloseBlock {
             block: text("block")?,
         },
+        "delete_card" => ControlCall::DeleteCard {
+            card: id("card", "a card's id")?
+                .ok_or_else(|| format!("{name} needs \"card\", a card's id"))?,
+        },
+        "edit_board" => {
+            let (new_name, delete) = (string("name")?, flag("delete")?);
+            if new_name.is_some() == delete {
+                return Err("edit_board takes name or delete: true".into());
+            }
+            if new_name.as_deref().is_some_and(|n| n.trim().is_empty()) {
+                return Err("A board needs a name.".into());
+            }
+            ControlCall::EditBoard {
+                board: named("board")?,
+                name: new_name.map(|n| n.trim().to_string()),
+                delete,
+            }
+        }
+        "edit_column" => {
+            let (column, title, delete) = (
+                id("column", "a column's id")?,
+                string("title")?,
+                flag("delete")?,
+            );
+            let before = before(args)
+                .map_err(|()| "\"before\" is a column of the board, or \"end\"".to_string())?;
+            if delete {
+                if title.is_some() || before.is_some() {
+                    return Err("delete goes alone: it takes the column and its cards away".into());
+                }
+                if column.is_none() {
+                    return Err("delete needs \"column\"".into());
+                }
+            } else if column.is_some() && title.is_none() && before.is_none() {
+                return Err("edit_column needs title, before or delete for a column".into());
+            }
+            if title.as_deref().is_some_and(|t| t.trim().is_empty()) {
+                return Err("A column needs a title.".into());
+            }
+            ControlCall::EditColumn {
+                board: named("board")?,
+                column,
+                title: title.map(|t| t.trim().to_string()),
+                before,
+                delete,
+            }
+        }
+        "edit_checklist" => {
+            let item = match &args["item"] {
+                Value::Null => None,
+                value => Some(
+                    value
+                        .as_u64()
+                        .or_else(|| value.as_str()?.trim().parse().ok())
+                        .ok_or("\"item\" is an item's id, as read_checklist shows it")?,
+                ),
+            };
+            let new_name = string("name")?;
+            let before = before(args)
+                .map_err(|()| "\"before\" is an item of the checklist, or \"end\"".to_string())?;
+            if new_name.is_none() && item.is_none() && before.is_none() {
+                return Err("edit_checklist takes name, or item with before".into());
+            }
+            let moved = match (item, before) {
+                (Some(item), Some(before)) if before == Before::Id(item) => {
+                    return Err("\"before\" is another item than \"item\"".into());
+                }
+                (Some(item), Some(before)) => Some((item, before)),
+                (None, None) => None,
+                _ => return Err("\"item\" and \"before\" go together".into()),
+            };
+            ControlCall::EditChecklist {
+                block: text("block")?,
+                name: new_name.map(|n| n.trim().to_string()),
+                moved,
+            }
+        }
+        "new_checklist" => ControlCall::NewChecklist {
+            block: text("block")?,
+            name: optional("name")?.map(|n| n.trim().to_string()),
+        },
+        "show_board" => {
+            let (board, new) = (
+                match &args["board"] {
+                    Value::Number(n) => Some(n.to_string()),
+                    _ => optional("board")?,
+                },
+                string("new")?,
+            );
+            if board.is_some() == new.is_some() {
+                return Err("show_board takes board or new".into());
+            }
+            let columns = strings("columns")?;
+            if new.is_none() && !columns.is_empty() {
+                return Err("\"columns\" go with new".into());
+            }
+            ControlCall::ShowBoard {
+                block: text("block")?,
+                board,
+                new: new.map(|n| n.trim().to_string()),
+                columns,
+            }
+        }
+        "move_block" => {
+            let (x, y, w, h) = (
+                number(args, "x")?,
+                number(args, "y")?,
+                number(args, "w")?,
+                number(args, "h")?,
+            );
+            within(&[("x", x), ("y", y)])?;
+            if [x, y, w, h].iter().all(Option::is_none) {
+                return Err("move_block needs x, y, w or h".into());
+            }
+            for (key, size) in [("w", w), ("h", h)] {
+                if size.is_some_and(|size| size <= 0.0) {
+                    return Err(format!("\"{key}\" is a size over 0"));
+                }
+            }
+            ControlCall::MoveBlock {
+                block: text("block")?,
+                x,
+                y,
+                w,
+                h,
+            }
+        }
         _ if SHARED.contains(&name) => {
             let call = tools::parse(name, args)?;
             // The approval shows it whole: a longer one would stall each frame that draws it.
@@ -474,6 +941,7 @@ pub fn title(name: &str) -> &'static str {
     match name {
         "overview" => "Looking at the canvas",
         "list_agents" => "Looking at the agents",
+        "list_shells" => "Looking at the shells",
         "read_terminal" => "Reading a terminal",
         "list_cards" => "Reading a board",
         "read_note" => "Reading a note",
@@ -485,13 +953,24 @@ pub fn title(name: &str) -> &'static str {
         "edit_card" => "Editing a card",
         "move_card" => "Moving a card",
         "comment_card" => "Commenting on a card",
+        "edit_comment" => "Editing a comment",
+        "delete_comment" => "Deleting a comment",
         "append_note" => "Writing in a note",
         "add_items" => "Adding items",
         "check_item" => "Checking an item",
+        "edit_item" => "Editing an item",
+        "delete_item" => "Deleting an item",
         "open_agent" => "Opening an agent",
         "connect" => "Connecting blocks",
         "disconnect" => "Disconnecting blocks",
         "close_block" => "Closing a block",
+        "delete_card" => "Deleting a card",
+        "edit_board" => "Editing a board",
+        "edit_column" => "Editing a column",
+        "show_board" => "Showing a board",
+        "edit_checklist" => "Editing a checklist",
+        "new_checklist" => "Making a checklist",
+        "move_block" => "Moving a block",
         "send_to_terminal" => "Typing into a terminal",
         "send_keys" => "Pressing keys",
         "notify" => "Notifying you",
@@ -507,14 +986,20 @@ pub fn title(name: &str) -> &'static str {
 pub fn rule(call: &ControlCall) -> Rule {
     match call {
         ControlCall::Block(Call::SendToTerminal { .. } | Call::SendKeys { .. }) => Rule::Ask,
-        ControlCall::CloseBlock { .. } => Rule::AskOwnWhenLosing,
+        ControlCall::CloseBlock { .. }
+        | ControlCall::EditBoard { delete: true, .. }
+        | ControlCall::EditColumn { delete: true, .. } => Rule::AskOwnWhenLosing,
         // A wire lets each terminal on it type into the other and answer its dialogs: Templum
         // asks when it would reach a terminal that isn't the Templum Agent's own. A task runs as
         // the person's agent's mode lets it: in bypass or auto, whatever the task says.
         ControlCall::Block(
-            Call::Interrupt { .. } | Call::StopAgent { .. } | Call::Delegate { .. },
+            Call::Interrupt { .. }
+            | Call::StopAgent { .. }
+            | Call::Delegate { .. }
+            | Call::DeleteItem { .. },
         )
         | ControlCall::Connect { .. }
+        | ControlCall::DeleteCard { .. }
         | ControlCall::OpenAgent(_) => Rule::AskOwn,
         _ => Rule::Free,
     }
@@ -539,10 +1024,387 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reads_names_the_tools_that_only_read() {
+        let tools = list();
+        let names: Vec<&str> = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        let reading: Vec<&str> = names.iter().copied().filter(|n| reads(n)).collect();
+        assert_eq!(
+            reading,
+            [
+                "overview",
+                "list_agents",
+                "list_shells",
+                "read_terminal",
+                "wait_for",
+                "list_cards",
+                "read_note",
+                "read_checklist",
+            ]
+        ); // in list()'s order
+        assert!(!reads("send_to_terminal") && !reads("whatever"));
+    }
+
+    #[test]
+    fn move_block_takes_a_place_or_a_size_and_never_asks() {
+        let err = |args: Value| parse("move_block", &args).unwrap_err();
+        assert_eq!(err(json!({"block": "b"})), "move_block needs x, y, w or h");
+        assert_eq!(err(json!({"block": "b", "h": 0})), "\"h\" is a size over 0");
+        assert_eq!(
+            err(json!({"block": "b", "w": -4})),
+            "\"w\" is a size over 0"
+        );
+        assert_eq!(err(json!({"block": "b", "x": "left"})), "\"x\" is a number");
+        assert!(err(json!({"x": 1})).contains("needs \"block\""));
+        assert_eq!(
+            err(json!({"block": "b", "x": 1e12})),
+            "\"x\" is within ±10000000"
+        );
+        assert_eq!(
+            err(json!({"block": "b", "y": -1e8})),
+            "\"y\" is within ±10000000"
+        );
+        assert!(
+            parse(
+                "move_block",
+                &json!({"block": "b", "x": -9_999_999, "y": 1e7})
+            )
+            .is_ok()
+        );
+        let parsed = parse("move_block", &json!({"block": "b", "x": -10.5, "w": 300})).unwrap();
+        assert_eq!(
+            parsed.call,
+            ControlCall::MoveBlock {
+                block: "b".into(),
+                x: Some(-10.5),
+                y: None,
+                w: Some(300.0),
+                h: None
+            }
+        );
+        assert_eq!(rule(&parsed.call), Rule::Free);
+        assert_eq!(title("move_block"), "Moving a block");
+    }
+
+    #[test]
+    fn add_block_and_open_agent_take_a_place() {
+        let err = |name: &str, args: Value| parse(name, &args).unwrap_err();
+        let base = json!({"workspace": "w3", "kind": "terminal"});
+        let with = |extra: Value| {
+            let mut a = base.clone();
+            a.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            a
+        };
+        assert_eq!(
+            err("add_block", with(json!({"x": 10}))),
+            "\"x\" and \"y\" go together"
+        );
+        assert_eq!(
+            err("add_block", with(json!({"x": 1e8, "y": 0}))),
+            "\"x\" is within ±10000000"
+        );
+        assert_eq!(
+            err("add_block", with(json!({"x": "left", "y": 0}))),
+            "\"x\" is a number"
+        );
+        assert_eq!(
+            err("add_block", with(json!({"x": 1, "y": 2, "near": "b7k2m"}))),
+            "Give near, or x and y: not both."
+        );
+        let ControlCall::AddBlock(add) = parse("add_block", &with(json!({"x": -12.5, "y": 40})))
+            .unwrap()
+            .call
+        else {
+            panic!()
+        };
+        assert_eq!(add.at, Some((-12.5, 40.0)));
+        assert_eq!(add.shell, None);
+        let ControlCall::AddBlock(add) = parse("add_block", &with(json!({"shell": "fish"})))
+            .unwrap()
+            .call
+        else {
+            panic!()
+        };
+        assert_eq!(add.shell.as_deref(), Some("fish"));
+        assert_eq!(
+            err(
+                "add_block",
+                json!({"workspace": "w3", "kind": "kanban", "shell": "fish"})
+            ),
+            "\"shell\" is a terminal's"
+        );
+        assert_eq!(
+            err("add_block", with(json!({"shell": 5}))),
+            "\"shell\" is a string"
+        );
+        let opening = json!({"agent": "codex", "workspace": "w3", "x": 1e7, "y": -1e7});
+        let ControlCall::OpenAgent(open) = parse("open_agent", &opening).unwrap().call else {
+            panic!()
+        };
+        assert_eq!(open.at, Some((1e7, -1e7)));
+        assert_eq!(
+            err(
+                "open_agent",
+                json!({"agent": "codex", "workspace": "w3", "y": 3})
+            ),
+            "\"x\" and \"y\" go together"
+        );
+    }
+
+    #[test]
+    fn the_checklist_tools_parse_and_say_what_is_missing() {
+        let err = |name: &str, args: Value| parse(name, &args).unwrap_err();
+        assert_eq!(
+            err("edit_checklist", json!({"block": "c"})),
+            "edit_checklist takes name, or item with before"
+        );
+        assert_eq!(
+            err("edit_checklist", json!({"block": "c", "item": 13})),
+            "\"item\" and \"before\" go together"
+        );
+        assert_eq!(
+            err("edit_checklist", json!({"block": "c", "before": "end"})),
+            "\"item\" and \"before\" go together"
+        );
+        assert_eq!(
+            err(
+                "edit_checklist",
+                json!({"block": "c", "item": 13, "before": 13})
+            ),
+            "\"before\" is another item than \"item\""
+        );
+        assert_eq!(
+            err(
+                "edit_checklist",
+                json!({"block": "c", "item": 13, "before": "first"})
+            ),
+            "\"before\" is an item of the checklist, or \"end\""
+        );
+        assert_eq!(
+            err(
+                "edit_checklist",
+                json!({"block": "c", "item": "x", "before": 1})
+            ),
+            "\"item\" is an item's id, as read_checklist shows it"
+        );
+        assert!(err("new_checklist", json!({})).contains("needs \"block\""));
+        let call = |name: &str, args: Value| parse(name, &args).unwrap().call;
+        assert_eq!(
+            call(
+                "edit_checklist",
+                json!({"block": "c", "name": " Release ", "item": "13", "before": "End"})
+            ),
+            ControlCall::EditChecklist {
+                block: "c".into(),
+                name: Some("Release".into()),
+                moved: Some((13, Before::End)),
+            }
+        );
+        assert_eq!(
+            call("edit_checklist", json!({"block": "c", "name": ""})),
+            ControlCall::EditChecklist {
+                block: "c".into(),
+                name: Some(String::new()),
+                moved: None,
+            },
+            "a blank name reads \"Checklist\""
+        );
+        assert_eq!(
+            call(
+                "edit_checklist",
+                json!({"block": "c", "item": 13, "before": 14})
+            ),
+            ControlCall::EditChecklist {
+                block: "c".into(),
+                name: None,
+                moved: Some((13, Before::Id(14))),
+            }
+        );
+        assert_eq!(
+            call("new_checklist", json!({"block": "c", "name": " "})),
+            ControlCall::NewChecklist {
+                block: "c".into(),
+                name: None,
+            }
+        );
+    }
+
+    #[test]
+    fn the_board_tools_parse_and_say_what_is_missing() {
+        let err = |name: &str, args: Value| parse(name, &args).unwrap_err();
+        assert_eq!(
+            err("edit_board", json!({"board": 1})),
+            "edit_board takes name or delete: true"
+        );
+        assert_eq!(
+            err(
+                "edit_board",
+                json!({"board": 1, "name": "x", "delete": true})
+            ),
+            "edit_board takes name or delete: true"
+        );
+        assert_eq!(
+            err("edit_board", json!({"board": 1, "name": " "})),
+            "A board needs a name."
+        );
+        assert_eq!(
+            err("edit_column", json!({"board": 1, "column": 3})),
+            "edit_column needs title, before or delete for a column"
+        );
+        assert_eq!(
+            err(
+                "edit_column",
+                json!({"board": 1, "column": 3, "title": "x", "delete": true})
+            ),
+            "delete goes alone: it takes the column and its cards away"
+        );
+        assert_eq!(
+            err("edit_column", json!({"board": 1, "delete": true})),
+            "delete needs \"column\""
+        );
+        assert_eq!(
+            err("edit_column", json!({"board": 1, "before": "first"})),
+            "\"before\" is a column of the board, or \"end\""
+        );
+        assert_eq!(
+            err("edit_column", json!({"board": 1, "title": ""})),
+            "A column needs a title."
+        );
+        assert_eq!(
+            err("show_board", json!({"block": "k"})),
+            "show_board takes board or new"
+        );
+        assert_eq!(
+            err(
+                "show_board",
+                json!({"block": "k", "board": "1", "new": "x"})
+            ),
+            "show_board takes board or new"
+        );
+        assert_eq!(
+            err(
+                "show_board",
+                json!({"block": "k", "board": "1", "columns": ["a"]})
+            ),
+            "\"columns\" go with new"
+        );
+        assert_eq!(
+            err("delete_card", json!({})),
+            "delete_card needs \"card\", a card's id"
+        );
+        let call = |name: &str, args: Value| parse(name, &args).unwrap().call;
+        assert_eq!(
+            call("edit_column", json!({"board": 1, "before": "end"})),
+            ControlCall::EditColumn {
+                board: "1".into(),
+                column: None,
+                title: None,
+                before: Some(Before::End),
+                delete: false
+            }
+        );
+        assert_eq!(
+            call(
+                "edit_column",
+                json!({"board": "Sprint", "column": "3", "before": 5, "title": " QA "})
+            ),
+            ControlCall::EditColumn {
+                board: "Sprint".into(),
+                column: Some(3),
+                title: Some("QA".into()),
+                before: Some(Before::Id(5)),
+                delete: false
+            }
+        );
+        assert_eq!(
+            call("show_board", json!({"block": "k", "new": ""})),
+            ControlCall::ShowBoard {
+                block: "k".into(),
+                board: None,
+                new: Some(String::new()),
+                columns: vec![]
+            },
+            "a blank name is \"Board n\""
+        );
+    }
+
+    #[test]
+    fn the_two_servers_share_the_comment_and_item_tools() {
+        assert_eq!(SHARED.len(), 22);
+        for (name, args, said, want) in [
+            (
+                "edit_comment",
+                json!({"card": 4, "comment": 9, "text": "x"}),
+                "Editing a comment",
+                Rule::Free,
+            ),
+            (
+                "delete_comment",
+                json!({"card": 4, "comment": 9}),
+                "Deleting a comment",
+                Rule::Free,
+            ),
+            (
+                "edit_item",
+                json!({"block": "c1", "item": 13, "text": "x"}),
+                "Editing an item",
+                Rule::Free,
+            ),
+            (
+                "delete_item",
+                json!({"block": "c1", "item": 13}),
+                "Deleting an item",
+                Rule::AskOwn,
+            ),
+        ] {
+            assert!(known(name) && crate::tools::known(name), "{name}");
+            let parsed = parse(name, &args).unwrap();
+            assert!(matches!(parsed.call, ControlCall::Block(_)), "{name}");
+            assert_eq!(rule(&parsed.call), want, "{name}");
+            assert_eq!(title(name), said);
+        }
+    }
+
+    #[test]
+    fn connect_takes_a_label_of_one_line() {
+        let label = |l: Value| match parse("connect", &json!({"a": "a1", "b": "b1", "label": l})) {
+            Ok(Parsed {
+                call: ControlCall::Connect { label, .. },
+                ..
+            }) => Ok(label),
+            Ok(other) => panic!("{other:?}"),
+            Err(e) => Err(e),
+        };
+        assert_eq!(
+            label(json!("  two \n words ")),
+            Ok(Some("two words".into()))
+        );
+        assert_eq!(label(json!("  ")), Ok(Some(String::new())));
+        assert_eq!(label(json!(5)), Err("\"label\" is a string".into()));
+        assert_eq!(
+            label(json!("x".repeat(61))),
+            Err("\"label\" is at most 60 characters: a few words.".into())
+        );
+        assert!(matches!(
+            parse("connect", &json!({"a": "a1", "b": "b1"}))
+                .unwrap()
+                .call,
+            ControlCall::Connect { label: None, .. }
+        ));
+    }
+
+    #[test]
     fn every_tool_parses_its_example_and_names_what_is_missing() {
         let examples = [
             ("overview", json!({})),
             ("list_agents", json!({})),
+            ("list_shells", json!({})),
             (
                 "create_workspace",
                 json!({"name": "API", "folder": "~/proj"}),
@@ -560,6 +1422,22 @@ mod tests {
             ("connect", json!({"a": "b7k2m", "b": "k9x1d"})),
             ("disconnect", json!({"a": "b7k2m", "b": "k9x1d"})),
             ("close_block", json!({"block": "b7k2m", "reason": "done"})),
+            ("move_block", json!({"block": "b7k2m", "x": 10, "w": 300})),
+            ("delete_card", json!({"card": 4, "reason": "done"})),
+            ("edit_board", json!({"board": "Sprint", "name": "Sprint 2"})),
+            (
+                "edit_column",
+                json!({"board": "Sprint", "column": 3, "title": "Review", "before": "end"}),
+            ),
+            (
+                "show_board",
+                json!({"block": "k9x1d", "new": "Ops", "columns": ["A", "B"]}),
+            ),
+            (
+                "edit_checklist",
+                json!({"block": "c1", "name": "Release", "item": 13, "before": "end"}),
+            ),
+            ("new_checklist", json!({"block": "c1", "name": "Plan"})),
             (
                 "send_to_terminal",
                 json!({"block": "b7k2m", "text": "ls", "enter": true, "reason": "look"}),
@@ -573,9 +1451,16 @@ mod tests {
             ("edit_card", json!({"card": 4, "priority": "high"})),
             ("move_card", json!({"card": 4, "column": "Done"})),
             ("comment_card", json!({"card": 4, "text": "ok"})),
+            (
+                "edit_comment",
+                json!({"card": 4, "comment": 9, "text": "x"}),
+            ),
+            ("delete_comment", json!({"card": 4, "comment": 9})),
             ("append_note", json!({"block": "n1", "text": "ok"})),
             ("add_items", json!({"block": "c1", "text": "a\nb"})),
             ("check_item", json!({"block": "c1", "item": 2})),
+            ("edit_item", json!({"block": "c1", "item": 13, "text": "x"})),
+            ("delete_item", json!({"block": "c1", "item": 13})),
             ("notify", json!({"text": "done"})),
             ("delegate", json!({"block": "b7k2m", "task": "Take card 4"})),
             ("wait_for", json!({"block": "b7k2m", "event": "idle"})),
@@ -644,6 +1529,7 @@ mod tests {
                 },
                 connect: vec!["k1".into(), "n2".into()],
                 near: None,
+                at: None,
             })
         );
         for refused in [
@@ -762,6 +1648,35 @@ mod tests {
             rule_of("disconnect", json!({"a": "x", "b": "y"})),
             Rule::Free
         );
+        assert_eq!(rule_of("delete_card", json!({"card": 4})), Rule::AskOwn);
+        assert_eq!(
+            rule_of("edit_board", json!({"board": 1, "name": "x"})),
+            Rule::Free
+        );
+        assert_eq!(
+            rule_of("edit_board", json!({"board": 1, "delete": true})),
+            Rule::AskOwnWhenLosing
+        );
+        assert_eq!(rule_of("edit_column", json!({"board": 1})), Rule::Free);
+        assert_eq!(
+            rule_of(
+                "edit_column",
+                json!({"board": 1, "column": 3, "delete": true})
+            ),
+            Rule::AskOwnWhenLosing
+        );
+        assert_eq!(
+            rule_of("show_board", json!({"block": "k", "board": 1})),
+            Rule::Free
+        );
+        assert_eq!(
+            rule_of(
+                "edit_checklist",
+                json!({"block": "c", "item": 13, "before": "end"})
+            ),
+            Rule::Free
+        );
+        assert_eq!(rule_of("new_checklist", json!({"block": "c"})), Rule::Free);
         assert_eq!(
             rule_of("create_card", json!({"board": "S", "title": "x"})),
             Rule::Free

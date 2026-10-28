@@ -2,6 +2,7 @@
 //! workspace's own, home and recent folders, the system's folder picker, and a path to type. See
 //! docs/specs/agents.md.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -19,6 +20,7 @@ use gpui_kit::{
 use templum_canvas::Point;
 
 use crate::theme::Ui;
+use crate::workspace::remote::HomeAgent;
 use crate::workspace::{Workspace, show_notification};
 
 /// A typed path: `~` and `~/…` are the home folder.
@@ -182,6 +184,22 @@ fn row(
 ) -> impl IntoElement {
     let (name, place) = label(folder);
     let folder = folder.to_path_buf();
+    pick_row(id, name, place, tag, ui, move |window, cx| {
+        if open(&folder, window, cx).is_some() {
+            window.close_dialog(cx);
+        }
+    })
+}
+
+/// A row to click: `name` over `place`, and `tag` at the right; `pick` runs on the click.
+fn pick_row(
+    id: impl Into<ElementId>,
+    name: String,
+    place: String,
+    tag: Option<&'static str>,
+    ui: Ui,
+    pick: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
     div()
         .id(id)
         .flex()
@@ -227,12 +245,161 @@ fn row(
                     .child(tag),
             )
         })
-        .on_click(move |_: &ClickEvent, window, cx| {
-            if open(&folder, window, cx).is_some() {
-                window.close_dialog(cx);
-            }
-        })
+        .on_click(move |_: &ClickEvent, window, cx| pick(window, cx))
         .test_support()
+}
+
+/// What a folder chosen in the Open dialog of a mirror does.
+type Go = Rc<dyn Fn(&str, &mut Window, &mut App)>;
+
+/// What the Open dialog of a mirror shows of its one request: it is asking home, or home refused
+/// it and said why.
+#[derive(Default)]
+struct Asking {
+    asking: bool,
+    refused: Option<String>,
+}
+
+/// Asks where home's agent `agent` runs, on the other computer: its workspace's folder and its
+/// terminals' (paths of home's), or a path to type, inside the workspace's folder or whole. Home
+/// opens it with its block's top-left corner at `at`; the dialog stays, saying it is asking, until
+/// home answers, and closes when it opened (a refusal is said in it).
+pub(crate) fn ask_home_folder(
+    ws: &Workspace,
+    agent: HomeAgent,
+    at: Point,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let ui = ws.ui;
+    let agent_title = agent.title.clone();
+    let computer = ws
+        .space
+        .remote
+        .as_deref()
+        .map_or_else(String::new, crate::mirror::computer_of);
+    let folders = ws.home_folders();
+    let state = Rc::new(RefCell::new(Asking::default()));
+    let (entity, space) = (cx.entity(), ws.space.id.clone());
+    let go: Go = {
+        let state = state.clone();
+        Rc::new(move |folder, window, cx| {
+            if std::mem::replace(&mut state.borrow_mut().asking, true) {
+                return;
+            }
+            state.borrow_mut().refused = None;
+            let answered = state.clone();
+            let sent = entity.update(cx, |ws, cx| {
+                if ws.space.id != space {
+                    return Err("Another workspace is shown now: nothing was done.".into());
+                }
+                ws.remote_open_agent(
+                    &agent.id,
+                    folder,
+                    at,
+                    move |ws, result, window, cx| {
+                        answered.borrow_mut().asking = false;
+                        match result {
+                            Ok(()) => {
+                                // The dialog gives the keyboard back to the menu that opened it,
+                                // gone by now: the canvas takes it, where the new block waits.
+                                window.close_dialog(cx);
+                                window.focus(&ws.focus_handle, cx);
+                            }
+                            Err(sentence) => {
+                                answered.borrow_mut().refused = Some(sentence);
+                                window.refresh();
+                            }
+                        }
+                    },
+                    cx,
+                )
+            });
+            if let Err(sentence) = sent {
+                *state.borrow_mut() = Asking {
+                    asking: false,
+                    refused: Some(sentence),
+                };
+            }
+            window.refresh();
+        })
+    };
+    let input = cx.new(|cx| {
+        InputState::new(window, cx).placeholder(format!(
+            "A folder on {computer}: inside the workspace's folder, or whole"
+        ))
+    });
+    let typed = {
+        let (go, input) = (go.clone(), input.clone());
+        move |window: &mut Window, cx: &mut App| {
+            let text = input.read(cx).value().to_string();
+            if !text.trim().is_empty() {
+                go(&text, window, cx);
+            }
+            // The dialog stays: home's answer closes it.
+            false
+        }
+    };
+    let field = input.clone();
+    let title = format!("Open {} on {computer}", agent_title);
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        let rows: Vec<_> = folders
+            .iter()
+            .enumerate()
+            .map(|(i, (path, tag))| {
+                let (name, place) = remote_label(path);
+                let go = go.clone();
+                let path = path.clone();
+                pick_row(
+                    format!("home-folder-{i}"),
+                    name,
+                    place,
+                    *tag,
+                    ui,
+                    move |window, cx| go(&path, window, cx),
+                )
+            })
+            .collect();
+        let status = {
+            let state = state.borrow();
+            if state.asking {
+                Some(format!("Asking {computer}…"))
+            } else {
+                state.refused.clone()
+            }
+        };
+        let typed = typed.clone();
+        alert
+            .confirm()
+            .title(title.clone())
+            .w(px(480.0))
+            .button_props(DialogButtonProps::default().ok_text("Open"))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .children(rows)
+                    .child(Input::new(&field))
+                    .children(
+                        status
+                            .map(|text| div().text_size(px(12.0)).text_color(ui.title).child(text)),
+                    ),
+            )
+            .on_ok(move |_, window, cx| typed(window, cx))
+    });
+    input.update(cx, |input, cx| input.focus(window, cx));
+}
+
+/// A path of home's computer as a row shows it: its last name over the whole path.
+fn remote_label(path: &str) -> (String, String) {
+    let name = path
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|n| !n.is_empty())
+        .unwrap_or(path);
+    (name.to_string(), path.to_string())
 }
 
 /// The system's folder picker; `open` gets the chosen folder.

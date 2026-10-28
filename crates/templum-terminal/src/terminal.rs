@@ -14,14 +14,18 @@ use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
+use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode, viewport_to_point};
 use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::CursorStyle;
 
 use crate::agent::{Detect, agent_of};
-use crate::input::{KeyInput, MouseInput, encode_key, encode_mouse, paste_bytes, typed_bytes};
+use crate::input::{
+    KeyInput, MouseInput, MouseKind, encode_key, encode_mouse, paste_bytes, typed_bytes,
+};
 use crate::palette::{self, Palette};
+use crate::scrollback::Scrollback;
 use crate::tap::{Mark, Pattern, Status, Tap};
 
 /// Called (coalesced) when a terminal has something new to show.
@@ -36,10 +40,15 @@ pub(crate) struct Shared {
     /// and by the UI calls that change the grid; cleared by [`crate::Snapshot::refresh`] under
     /// the lock.
     pub(crate) dirty: AtomicBool,
+    /// Counts every time `dirty` was set: a reader that keeps the count it last read at knows
+    /// whether the grid may differ (see [`SharedTerm::changes`]).
+    changes: AtomicU64,
     title: Mutex<Option<String>>,
     /// When the terminal was made, and when its shell ended: how long the shell lived.
     born: Instant,
-    exited: OnceLock<Instant>,
+    pub(crate) exited: OnceLock<Instant>,
+    /// How its shell ended, as the OS reported it.
+    ended: OnceLock<std::process::ExitStatus>,
     /// Reported to CSI 14 t (text area size) queries.
     size: Mutex<WindowSize>,
     /// PTY input: set right after the event loop exists, since the Term needs the listener first.
@@ -56,6 +65,8 @@ pub(crate) struct Shared {
     /// matched it. `watching` spares the reader thread the lock while there are none.
     watches: Mutex<Vec<(u64, Pattern, Option<String>)>>,
     watching: AtomicBool,
+    /// How many times a viewer was fed (`Feeder::feed`; never a history).
+    fed: AtomicU64,
 }
 
 impl Shared {
@@ -64,9 +75,11 @@ impl Shared {
             notify,
             pending: AtomicBool::new(false),
             dirty: AtomicBool::new(true),
+            changes: AtomicU64::new(0),
             title: Mutex::new(None),
             born: Instant::now(),
             exited: OnceLock::new(),
+            ended: OnceLock::new(),
             size: Mutex::new(size),
             pty: OnceLock::new(),
             palette: Mutex::new(palette),
@@ -75,6 +88,7 @@ impl Shared {
             marks: Mutex::default(),
             watches: Mutex::default(),
             watching: AtomicBool::new(false),
+            fed: AtomicU64::new(0),
         }
     }
 
@@ -116,8 +130,14 @@ impl Shared {
         }
     }
 
-    fn wake(&self) {
+    /// The grid may differ from what was last copied out of it.
+    fn mark_dirty(&self) {
         self.dirty.store(true, Ordering::Release);
+        self.changes.fetch_add(1, Ordering::Release);
+    }
+
+    fn wake(&self) {
+        self.mark_dirty();
         if !self.pending.swap(true, Ordering::AcqRel) {
             (self.notify)();
         }
@@ -126,8 +146,16 @@ impl Shared {
     /// Wakes the UI even before the next re-arm: a hidden workspace's terminals are never re-armed,
     /// and a command's end or a call for attention must still reach the sidebar.
     pub(crate) fn wake_now(&self) {
-        self.dirty.store(true, Ordering::Release);
+        self.mark_dirty();
         (self.notify)();
+    }
+
+    /// The shell ended, or the event loop did (it then reads and writes nothing more): the first
+    /// time is when.
+    pub(crate) fn end(&self) {
+        if self.exited.set(Instant::now()).is_ok() {
+            self.wake_now();
+        }
     }
 
     /// The terminal asks for attention: a bell (no message) or a notification.
@@ -146,7 +174,7 @@ impl Shared {
     }
 
     /// The last OSC 0/2 title, unless blank.
-    fn title(&self) -> Option<String> {
+    pub(crate) fn title(&self) -> Option<String> {
         self.title
             .lock()
             .unwrap()
@@ -178,12 +206,12 @@ impl EventListener for Listener {
                 *s.title.lock().unwrap() = None;
                 s.wake();
             }
+            Event::ChildExit(status) => {
+                let _ = s.ended.set(status);
+            }
             // Exit comes after the child's last output has been read (ChildExit comes before).
             // Uncoalesced: a block off screen is never re-armed, and must still close.
-            Event::Exit => {
-                let _ = s.exited.set(Instant::now());
-                s.wake_now();
-            }
+            Event::Exit => s.end(),
             Event::Wakeup => s.wake(),
             Event::Bell => s.attention(None),
             // Later: OSC 52 clipboard (needs a security review), cursor blinking.
@@ -198,6 +226,131 @@ pub struct SharedTerm(
     pub(crate) Arc<FairMutex<Term<Listener>>>,
     pub(crate) Arc<Shared>,
 );
+
+/// A viewer's grid, fed from another thread: what a PTY reader does for a shell. Cheap to clone.
+#[derive(Clone)]
+pub struct Feeder(SharedTerm);
+
+impl Feeder {
+    /// Shows `bytes` as a program's output: the tap's scanner, vte's parser under the grid's lock,
+    /// then a wake-up for the UI.
+    pub fn feed(&self, bytes: &[u8]) {
+        crate::tap::Scanner::new().scan(bytes, &self.0.1);
+        let mut parser: alacritty_terminal::vte::ansi::Processor =
+            alacritty_terminal::vte::ansi::Processor::new();
+        parser.advance(&mut *self.0.0.lock(), bytes);
+        self.0.1.fed.fetch_add(1, Ordering::Relaxed);
+        self.0.1.wake();
+    }
+
+    /// How many times `feed` ran: the frames of a mirror, never a history.
+    pub fn fed(&self) -> u64 {
+        self.0.1.fed.load(Ordering::Relaxed)
+    }
+
+    /// Puts home's history above the live screen: `text` is what home's `read_terminal` answers,
+    /// its history and then its screen down to the last row written. The screen the viewer shows
+    /// (its rows, its cursor, how far it is scrolled back) stays; a selection goes, and so does
+    /// the history held before. The text is drawn, never run: every control character but a tab
+    /// is dropped (a tab only moves the cursor), and a line longer than the grid wraps as it did
+    /// at home. At most [`VIEWER_HISTORY`] rows stay. False, and nothing changed, in the alternate
+    /// screen: a full-screen program has no history.
+    pub fn fill_history(&self, text: &str) -> bool {
+        let mut term = self.0.0.lock();
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            return false;
+        }
+        let (rows, cols) = (term.screen_lines(), term.columns());
+        let wrap = term.mode().contains(TermMode::LINE_WRAP);
+        let (screen, cursor, offset) = {
+            let grid = term.grid();
+            let screen: Vec<_> = (0..rows).map(|y| grid[Line(y as i32)].clone()).collect();
+            (screen, grid.cursor.clone(), grid.display_offset())
+        };
+        // Home's text ends with its screen down to the last row written, which the live screen
+        // draws: the rows of the text under the history are that many.
+        let used = screen
+            .iter()
+            .rposition(|row| (0..cols).any(|x| row[Column(x)].c != ' '))
+            .map_or(0, |y| y + 1);
+        // From the end, so only the lines kept are cleaned and allocated.
+        let mut lines: Vec<String> = text
+            .lines()
+            .rev()
+            .map(|line| {
+                line.chars()
+                    .filter(|c| !c.is_control() || *c == '\t')
+                    .collect()
+            })
+            .skip_while(String::is_empty)
+            .take(VIEWER_HISTORY + rows)
+            .collect();
+        lines.reverse();
+        let mut parser: alacritty_terminal::vte::ansi::Processor =
+            alacritty_terminal::vte::ansi::Processor::new();
+        term.grid_mut().update_history(VIEWER_HISTORY);
+        parser.advance(&mut *term, b"\x1b[3J\x1b[H\x1b[J\x1b[0m\x1b[?7h");
+        parser.advance(&mut *term, lines.join("\r\n").as_bytes());
+        if !lines.is_empty() {
+            // The cursor is on the text's last row: `CSI S` on the whole screen pushes the rows
+            // above the live screen's into the history.
+            let above = (term.grid().cursor.point.line.0.max(0) as usize + 1).saturating_sub(used);
+            if above > 0 {
+                parser.advance(&mut *term, format!("\x1b[{above}S").as_bytes());
+            }
+        }
+        parser.advance(&mut *term, if wrap { b"\x1b[?7h" } else { b"\x1b[?7l" });
+        let grid = term.grid_mut();
+        for (y, row) in screen.into_iter().enumerate() {
+            grid[Line(y as i32)] = row;
+        }
+        grid.cursor = cursor;
+        term.scroll_display(Scroll::Delta(offset as i32));
+        term.selection = None;
+        drop(term);
+        self.0.touched();
+        self.0.1.wake();
+        true
+    }
+
+    /// Forgets the history `fill_history` put above the screen.
+    pub fn drop_history(&self) {
+        let mut term = self.0.0.lock();
+        let mut parser: alacritty_terminal::vte::ansi::Processor =
+            alacritty_terminal::vte::ansi::Processor::new();
+        parser.advance(&mut *term, b"\x1b[3J");
+        term.grid_mut().update_history(0);
+        term.selection = None;
+        drop(term);
+        self.0.touched();
+        self.0.1.wake();
+    }
+
+    /// Whether both feed the same viewer.
+    pub fn same_viewer(&self, other: &Feeder) -> bool {
+        Arc::ptr_eq(&self.0.0, &other.0.0)
+    }
+
+    /// Gives the grid `cols` × `rows` when it has another size; the size the window reports
+    /// follows.
+    pub fn resize(&self, cols: u16, rows: u16) {
+        if self.0.grid_size() == (cols, rows) {
+            return;
+        }
+        {
+            let mut size = self.0.1.size.lock().unwrap();
+            *size = window_size(cols, rows, (size.cell_width, size.cell_height));
+        }
+        self.0
+            .0
+            .lock_unfair()
+            .resize(TermSize::new(cols as usize, rows as usize));
+        self.0.touched();
+    }
+}
+
+/// The rows of home's history a mirror's viewer keeps above its screen.
+pub const VIEWER_HISTORY: usize = 2000;
 
 /// Settings a running terminal can change: the history length and the default cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -234,6 +387,8 @@ impl TermOptions {
 pub struct Modes {
     /// Mouse events (clicks, the wheel; maybe moves).
     pub mouse: bool,
+    /// Every motion, not only clicks and drags (`?1003`).
+    pub mouse_moves: bool,
     /// Keys in the kitty keyboard protocol.
     pub kitty_keys: bool,
     /// The alternate screen: it runs full screen.
@@ -241,6 +396,27 @@ pub struct Modes {
     /// It reads typed input: it brackets pastes and shows its cursor. Claude Code and Codex hide
     /// it in their dialogs.
     pub typing: bool,
+}
+
+impl Modes {
+    pub(crate) fn of(mode: TermMode) -> Modes {
+        Modes {
+            mouse: mode.intersects(TermMode::MOUSE_MODE),
+            mouse_moves: mode.contains(TermMode::MOUSE_MOTION),
+            kitty_keys: mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL),
+            full_screen: mode.contains(TermMode::ALT_SCREEN),
+            typing: mode.contains(TermMode::BRACKETED_PASTE | TermMode::SHOW_CURSOR),
+        }
+    }
+
+    /// Whether the program asked for this event: a move with no button needs every motion,
+    /// anything else any mouse mode.
+    pub fn wants(&self, e: &MouseInput) -> bool {
+        match (e.kind, e.button) {
+            (MouseKind::Move, None) => self.mouse_moves,
+            _ => self.mouse,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -263,13 +439,29 @@ impl SharedTerm {
     }
 
     pub fn modes(&self) -> Modes {
-        let mode = *self.0.lock_unfair().mode();
-        Modes {
-            mouse: mode.intersects(TermMode::MOUSE_MODE),
-            kitty_keys: mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL),
-            full_screen: mode.contains(TermMode::ALT_SCREEN),
-            typing: mode.contains(TermMode::BRACKETED_PASTE | TermMode::SHOW_CURSOR),
-        }
+        Modes::of(*self.0.lock_unfair().mode())
+    }
+
+    /// Where its view is in its history. None while the PTY thread holds the grid: painting never
+    /// waits for it, and [`crate::Snapshot::scrollback`] has the last one read.
+    pub fn scrollback(&self) -> Option<Scrollback> {
+        self.0.try_lock_unfair().map(|term| Scrollback::of(&term))
+    }
+
+    /// Scrolls the view to `below` lines back from the live screen (0: the live screen), as far
+    /// as the history goes.
+    pub fn scroll_to(&self, below: usize) {
+        let mut term = self.0.lock_unfair();
+        let delta = below as i32 - term.grid().display_offset() as i32;
+        term.scroll_display(Scroll::Delta(delta));
+        drop(term);
+        self.touched();
+    }
+
+    /// The grid's columns and screen lines now.
+    pub fn grid_size(&self) -> (u16, u16) {
+        let term = self.0.lock_unfair();
+        (term.columns() as u16, term.screen_lines() as u16)
     }
 
     /// Starts a selection at a viewport cell (row 0 = top visible line).
@@ -324,7 +516,19 @@ impl SharedTerm {
 
     /// The UI changed the grid (a scroll, the selection, a resize): the next refresh reads it.
     pub(crate) fn touched(&self) {
-        self.1.dirty.store(true, Ordering::Release);
+        self.1.mark_dirty();
+    }
+
+    /// How many times the grid may have changed (output, a scroll, the selection, a resize, a
+    /// title): equal counts, equal screens. Read it before the grid, so a change during the read
+    /// is counted again.
+    pub fn changes(&self) -> u64 {
+        self.1.changes.load(Ordering::Acquire)
+    }
+
+    /// Whether both are the same terminal.
+    pub fn same(&self, other: &SharedTerm) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 
     /// False while a wake-up waits to be re-armed (tests).
@@ -333,13 +537,32 @@ impl SharedTerm {
     }
 
     /// The last `count` lines of the history and the screen, as text, without the blank rows
-    /// under the last one written. A wrapped line is one line.
+    /// under the last one written. A wrapped line is one line. A suggestion where the cursor
+    /// waits for typing isn't typed, and is left out (an agent reading it took it for its
+    /// person's text): its row is then a line of its own.
     pub fn lines(&self, count: usize) -> Vec<String> {
         let term = self.0.lock_unfair();
         let (top, bottom) = (term.topmost_line().0, term.bottommost_line().0);
         // The blank rows under the cursor are at most a screen: read that much more.
         let from = (bottom + 1 - (count + term.screen_lines()) as i32).max(top);
-        let mut lines = text_between(&term, from, bottom);
+        let mut lines = match suggestion(&term).filter(|(line, _)| line.0 >= from) {
+            Some((line, cols)) => {
+                let part = |a: usize, b: usize| {
+                    term.bounds_to_string(
+                        GridPoint::new(line, Column(a)),
+                        GridPoint::new(line, Column(b)),
+                    )
+                };
+                let head = (cols.start > 0).then(|| part(0, cols.start - 1));
+                let tail = (cols.end < term.columns()).then(|| part(cols.end, term.columns() - 1));
+                let mut lines = text_between(&term, from, line.0 - 1);
+                let row = head.unwrap_or_default() + &tail.unwrap_or_default();
+                lines.push(row.trim_end().to_string());
+                lines.extend(text_between(&term, line.0 + 1, bottom));
+                lines
+            }
+            None => text_between(&term, from, bottom),
+        };
         while lines.last().is_some_and(String::is_empty) {
             lines.pop();
         }
@@ -395,6 +618,22 @@ fn text_between<T>(term: &Term<T>, top: i32, bottom: i32) -> Vec<String> {
     text.lines()
         .map(|line| line.trim_end().to_string())
         .collect()
+}
+
+/// The suggestion an input draws where its shown cursor waits for typing, not typed yet: the
+/// faint run of cells from the cursor on, its line and columns. Claude Code's placeholder
+/// (`Try "fix lint errors"`), Codex's (`Ask Codex to do anything`), a completion after what was
+/// typed.
+fn suggestion<T>(term: &Term<T>) -> Option<(Line, std::ops::Range<usize>)> {
+    if !term.mode().contains(TermMode::SHOW_CURSOR) {
+        return None;
+    }
+    let at = term.grid().cursor.point;
+    let row = &term.grid()[at.line];
+    let end = (at.column.0..term.columns())
+        .find(|&col| !row[Column(col)].flags.contains(Flags::DIM))
+        .unwrap_or(term.columns());
+    (end > at.column.0).then_some((at.line, at.column.0..end))
 }
 
 /// A terminal's processes, to read from any thread with [`inspect`].
@@ -873,7 +1112,8 @@ pub struct Terminal {
     #[cfg(unix)]
     master: Option<std::fs::File>,
     shared: Arc<Shared>,
-    pty: EventLoopSender,
+    /// Its PTY's input; None for a viewer, which runs nothing ([`Terminal::viewer`]).
+    pty: Option<EventLoopSender>,
     cols: u16,
     rows: u16,
     shell_name: String,
@@ -906,12 +1146,7 @@ impl Terminal {
             // Not the terminal Templum was started from.
             ("TERM_PROGRAM".into(), "templum".into()),
         ]);
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let id = format!(
-            "{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        );
+        let id = next_id();
         env.insert("TEMPLUM_TERMINAL".into(), id.clone());
         // Read again for each terminal: a program installed since Templum started is found.
         if let Some(path) = crate::path_var().and_then(|p| p.into_string().ok()) {
@@ -958,6 +1193,10 @@ impl Terminal {
         let master = pty.file().try_clone().ok();
         #[cfg(windows)]
         let pid = pty.child_watcher().pid().map(|pid| pid.get());
+        #[cfg(target_os = "linux")]
+        if let Some(pid) = pid {
+            crate::scope::move_to_scope(pid, id.clone(), shell_name.clone());
+        }
         let term = Arc::new(FairMutex::new(Term::new(
             opts.options.config(),
             &TermSize::new(opts.cols as usize, opts.rows as usize),
@@ -974,7 +1213,7 @@ impl Terminal {
             #[cfg(unix)]
             master,
             shared,
-            pty,
+            pty: Some(pty),
             cols: opts.cols,
             rows: opts.rows,
             shell_name,
@@ -982,6 +1221,53 @@ impl Terminal {
             input: AtomicBool::new(false),
             inputs: AtomicU64::new(0),
         })
+    }
+
+    /// A terminal that runs nothing: it shows what Templum feeds it ([`Terminal::feed`]), and
+    /// keys, pastes and resizes reach no program. `name` is its title until what it shows sets
+    /// one.
+    pub fn viewer(
+        name: &str,
+        (cols, rows): (u16, u16),
+        palette: Palette,
+        options: TermOptions,
+        notify: Notify,
+    ) -> Self {
+        let shared = Arc::new(Shared::new(
+            notify,
+            window_size(cols, rows, (0, 0)),
+            palette,
+        ));
+        let term = Term::new(
+            options.config(),
+            &TermSize::new(cols as usize, rows as usize),
+            Listener(shared.clone()),
+        );
+        Self {
+            term: SharedTerm(Arc::new(FairMutex::new(term)), shared.clone()),
+            pid: None,
+            #[cfg(unix)]
+            master: None,
+            shared,
+            pty: None,
+            cols,
+            rows,
+            shell_name: name.to_string(),
+            id: next_id(),
+            input: AtomicBool::new(false),
+            inputs: AtomicU64::new(0),
+        }
+    }
+
+    /// Shows `bytes` in a viewer, as a program's output: whole lines, escape sequences and all.
+    /// Its watches hear them.
+    pub fn feed(&self, bytes: &[u8]) {
+        self.feeder().feed(bytes);
+    }
+
+    /// A handle that feeds and resizes this viewer from any thread.
+    pub fn feeder(&self) -> Feeder {
+        Feeder(self.term.clone())
     }
 
     /// The terminal's `TEMPLUM_TERMINAL`.
@@ -1006,6 +1292,19 @@ impl Terminal {
 
     pub fn exited(&self) -> bool {
         self.shared.exited.get().is_some()
+    }
+
+    /// Its shell was killed (SIGKILL, Unix) rather than ending: what systemd-oomd does to the
+    /// scope of a terminal that uses too much memory (on Linux each terminal has its own).
+    /// Templum itself never kills a shell whose block is still open.
+    pub fn killed(&self) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt as _;
+            self.shared.ended.get().and_then(|s| s.signal()) == Some(libc::SIGKILL)
+        }
+        #[cfg(not(unix))]
+        false
     }
 
     /// How long its shell lived, once it ended.
@@ -1144,16 +1443,28 @@ impl Terminal {
         *self.shared.palette.lock().unwrap() = palette;
     }
 
-    /// Sends raw input (scrolling the view back to the bottom, like any typing).
+    /// Sends raw input (scrolling the view back to the bottom, like any typing). A viewer takes
+    /// none.
     pub fn write(&self, bytes: impl Into<Cow<'static, [u8]>>) {
+        if self.pty.is_none() {
+            return;
+        }
         self.term.0.lock_unfair().scroll_display(Scroll::Bottom);
         self.term.touched();
         self.send(bytes);
     }
 
     fn send(&self, bytes: impl Into<Cow<'static, [u8]>>) {
-        self.inputs.fetch_add(1, Ordering::Relaxed);
-        let _ = self.pty.send(Msg::Input(bytes.into()));
+        let bytes = bytes.into();
+        // alacritty's event loop never finishes an empty write: all input after it would wait
+        // behind it, forever (an IME clearing its composition replaces it with "").
+        if bytes.is_empty() {
+            return;
+        }
+        if let Some(pty) = &self.pty {
+            self.inputs.fetch_add(1, Ordering::Relaxed);
+            let _ = pty.send(Msg::Input(bytes));
+        }
     }
 
     /// How many times input reached its program: a key, text, a paste, what the app wrote, a
@@ -1166,6 +1477,9 @@ impl Terminal {
     /// `write`, for input someone gave: a key, a paste, typed text ([`Terminal::had_input`]).
     /// Once the shell ended, input reaches nothing and ends nothing: it doesn't count.
     fn input(&self, bytes: impl Into<Cow<'static, [u8]>>) {
+        if self.pty.is_none() {
+            return;
+        }
         if !self.exited() {
             self.input.store(true, Ordering::Relaxed);
         }
@@ -1219,7 +1533,9 @@ impl Terminal {
                 true
             }
             Some(bytes) => {
-                let _ = self.pty.send(Msg::Input(bytes.into()));
+                if let Some(pty) = &self.pty {
+                    let _ = pty.send(Msg::Input(bytes.into()));
+                }
                 true
             }
             None => false,
@@ -1241,7 +1557,7 @@ impl Terminal {
     }
 
     /// The program asked for pastes to be bracketed.
-    fn bracketed(&self) -> bool {
+    pub fn bracketed(&self) -> bool {
         self.term
             .0
             .lock_unfair()
@@ -1261,7 +1577,9 @@ impl Terminal {
             .lock_unfair()
             .resize(TermSize::new(cols as usize, rows as usize));
         self.term.touched();
-        let _ = self.pty.send(Msg::Resize(size));
+        if let Some(pty) = &self.pty {
+            let _ = pty.send(Msg::Resize(size));
+        }
     }
 
     /// Scrolls to the previous (`up`) or the next prompt (shell integration marks them): the one
@@ -1293,6 +1611,11 @@ impl Terminal {
         moved
     }
 
+    /// Its view is scrolled back from the end of its output.
+    pub fn scrolled_back(&self) -> bool {
+        self.term.0.lock_unfair().grid().display_offset() > 0
+    }
+
     /// Scrolls the history (positive = up). In full-screen apps that asked for it (less,
     /// vim: alternate screen + alternate scroll), sends arrow keys instead.
     pub fn scroll(&self, lines: i32) {
@@ -1320,8 +1643,20 @@ impl Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         // Ends the event loop, which drops the PTY and kills the shell.
-        let _ = self.pty.send(Msg::Shutdown);
+        if let Some(pty) = &self.pty {
+            let _ = pty.send(Msg::Shutdown);
+        }
     }
+}
+
+/// A new terminal's id, unique among the terminals of every Templum running: `<pid>-<n>`.
+fn next_id() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 fn window_size(cols: u16, rows: u16, (cell_width, cell_height): (u16, u16)) -> WindowSize {
@@ -1412,6 +1747,82 @@ mod tests {
         assert!(level > 0x280, "level {level:#x}");
     }
 
+    /// A viewer shows what it is fed, as a program's output, and runs nothing: no input reaches
+    /// anything, and it closes with nothing to end.
+    #[test]
+    fn a_viewer_shows_what_it_is_fed_and_takes_no_input() {
+        let woke = Arc::new(AtomicBool::new(false));
+        let wake = woke.clone();
+        let notify: Notify = Arc::new(move || wake.store(true, Ordering::SeqCst));
+        let options = TermOptions::default();
+        let mut term = Terminal::viewer("Explore", (30, 4), Palette::default(), options, notify);
+        assert_eq!(term.title(), "Explore");
+        let watch = term.watch(Pattern::new("Done").unwrap());
+        term.feed("\x1b]2;Explore · List\x07\x1b[1mTask\x1b[0m\r\nList the files.\r\n".as_bytes());
+        term.feed(b"\x1b[2m- Done\x1b[0m\r\n");
+        assert!(woke.load(Ordering::SeqCst), "the UI hears it");
+        assert_eq!(term.title(), "Explore · List");
+        assert_eq!(
+            term.shared().lines(3),
+            ["Task", "List the files.", "- Done"]
+        );
+        assert_eq!(term.hit(watch).as_deref(), Some("- Done"));
+        term.text("x");
+        term.paste("y");
+        term.press(&KeyInput {
+            key: "enter",
+            ..KeyInput::default()
+        });
+        term.write(&b"z"[..]);
+        term.resize(40, 5, (8, 16));
+        assert_eq!(term.grid_size(), (40, 5));
+        assert!(
+            !term.had_input() && term.inputs() == 0,
+            "nothing takes input"
+        );
+        assert!(!term.exited());
+        assert_eq!(term.processes(), Processes::default());
+        assert!(term.shells().is_empty());
+        assert_ne!(
+            term.id(),
+            Terminal::viewer(
+                "x",
+                (1, 1),
+                Palette::default(),
+                TermOptions::default(),
+                Arc::new(|| {})
+            )
+            .id()
+        );
+    }
+
+    #[test]
+    fn a_feeder_feeds_and_resizes_a_viewer_from_another_thread() {
+        let v = Terminal::viewer(
+            "v",
+            (20, 4),
+            Palette::default(),
+            TermOptions::default(),
+            Arc::new(|| {}),
+        );
+        let f = v.feeder();
+        std::thread::spawn(move || f.feed(b"hi")).join().unwrap();
+        assert_eq!(v.shared().lines(1), ["hi"]);
+        assert_eq!(v.shared().grid_size(), (20, 4));
+        assert!(v.feeder().same_viewer(&v.feeder()));
+        let other = Terminal::viewer(
+            "w",
+            (20, 4),
+            Palette::default(),
+            TermOptions::default(),
+            Arc::new(|| {}),
+        );
+        assert!(!v.feeder().same_viewer(&other.feeder()));
+        v.feeder().resize(30, 6);
+        assert_eq!(v.shared().grid_size(), (30, 6));
+        assert_eq!(v.shared().lines(1), ["hi"], "a resize keeps what was shown");
+    }
+
     #[test]
     fn no_foreground_group_is_no_process() {
         assert_eq!(process_group(0), None);
@@ -1435,7 +1846,7 @@ mod tests {
                 mouse: true,
                 kitty_keys: true,
                 full_screen: true,
-                typing: false
+                ..Modes::default()
             }
         );
         // Bracketed pastes and a shown cursor: its input box. Claude Code and Codex hide the cursor
@@ -1909,6 +2320,33 @@ mod tests {
     }
 
     #[test]
+    fn a_suggestion_where_the_cursor_waits_is_not_in_the_lines() {
+        // Claude Code 2.1.309's empty input, as it draws it: its placeholder faint, the cursor
+        // shown on the placeholder's first cell.
+        let (term, _) = headless(40, 4);
+        feed(
+            &term,
+            "\x1b[?25l\x1b[2;1H────\r\x1b[1B\x1b[39m❯\u{a0}\x1b[2mTry \"fix lint errors\"\r\x1b[1B\
+             \x1b[22m────\x1b[3;3H\x1b[?25h"
+                .as_bytes(),
+        );
+        assert_eq!(term.lines(4), ["", "────", "❯", "────"]);
+        // Codex 0.154.0's; faint text the cursor isn't on is the screen's.
+        feed(
+            &term,
+            b"\x1b[2J\x1b[1;1H\x1b[1m\xe2\x80\xba\x1b[22m \x1b[2mAsk Codex to do anything\
+              \x1b[22m\r\n\x1b[2mtip\x1b[22m\r\n> /he\x1b[2mlp\x1b[22m done\x1b[1;3H",
+        );
+        assert_eq!(term.lines(3), ["›", "tip", "> /help done"]);
+        // A completion after what was typed.
+        feed(&term, b"\x1b[3;6H");
+        assert_eq!(term.lines(1), ["> /he done"]);
+        // Under a hidden cursor, nothing waits for typing.
+        feed(&term, b"\x1b[?25l");
+        assert_eq!(term.lines(1), ["> /help done"]);
+    }
+
+    #[test]
     fn the_last_command_is_its_prompt_and_output_up_to_the_next_prompt() {
         let (term, _) = headless(30, 8);
         feed_heard(
@@ -1924,5 +2362,221 @@ mod tests {
             None,
             "no shell integration, no command"
         );
+    }
+    #[test]
+    fn modes_say_every_motion_apart_from_the_mouse() {
+        let v = Terminal::viewer(
+            "v",
+            (10, 2),
+            Palette::default(),
+            TermOptions::default(),
+            Arc::new(|| {}),
+        );
+        let modes = |bytes: &[u8]| {
+            v.feed(bytes);
+            let m = v.shared().modes();
+            (m.mouse, m.mouse_moves)
+        };
+        assert_eq!(modes(b"\x1b[?1000h"), (true, false), "clicks");
+        assert_eq!(modes(b"\x1b[?1002h"), (true, false), "drags");
+        assert_eq!(modes(b"\x1b[?1003h"), (true, true), "every motion");
+        assert_eq!(modes(b"\x1b[?1003l"), (false, false));
+    }
+
+    #[test]
+    fn a_mouse_event_is_wanted_as_the_modes_say() {
+        use crate::input::Button;
+        let at = |kind, button| MouseInput {
+            button,
+            kind,
+            row: 0,
+            col: 0,
+            ctrl: false,
+            alt: false,
+            shift: false,
+        };
+        let clicks = Modes {
+            mouse: true,
+            ..Modes::default()
+        };
+        let every = Modes {
+            mouse: true,
+            mouse_moves: true,
+            ..Modes::default()
+        };
+        for e in [
+            at(MouseKind::Press, Some(Button::Left)),
+            at(MouseKind::Release, Some(Button::Left)),
+            at(MouseKind::Press, Some(Button::WheelUp)),
+            at(MouseKind::Move, Some(Button::Left)),
+        ] {
+            assert!(
+                clicks.wants(&e) && every.wants(&e) && !Modes::default().wants(&e),
+                "{e:?}"
+            );
+        }
+        let hover = at(MouseKind::Move, None);
+        assert!(!clicks.wants(&hover) && every.wants(&hover));
+    }
+
+    /// A viewer as a mirror makes one: no scrollback of its own, home's rows written without
+    /// autowrap.
+    fn mirrored(cols: u16, rows: u16, screen: &[u8]) -> Terminal {
+        let options = TermOptions {
+            scrollback: 0,
+            ..TermOptions::default()
+        };
+        let v = Terminal::viewer(
+            "v",
+            (cols, rows),
+            Palette::default(),
+            options,
+            Arc::new(|| {}),
+        );
+        v.feed(b"\x1b[?7l");
+        v.feed(screen);
+        v
+    }
+
+    #[test]
+    fn history_goes_above_the_live_screen_and_the_screen_stays() {
+        let v = mirrored(10, 4, b"s1\r\ns2\r\ns3\r\ns4");
+        let before = v.shared().screen().unwrap();
+        assert!(v.feeder().fill_history("h1\nh2\nh3\ns1\ns2\ns3\ns4"));
+        assert_eq!(
+            v.shared().lines(100),
+            ["h1", "h2", "h3", "s1", "s2", "s3", "s4"]
+        );
+        assert_eq!(
+            v.shared().screen().unwrap(),
+            before,
+            "the live screen and its cursor stay"
+        );
+    }
+
+    #[test]
+    fn history_above_a_screen_that_isnt_full_loses_and_doubles_nothing() {
+        let v = mirrored(10, 4, b"s1\r\ns2\r\n");
+        let before = v.shared().screen().unwrap();
+        // Home's text ends with its screen down to the last row written; a trailing blank line
+        // is tolerated.
+        assert!(v.feeder().fill_history("h1\nh2\nh3\ns1\ns2\n"));
+        assert_eq!(v.shared().lines(100), ["h1", "h2", "h3", "s1", "s2"]);
+        assert_eq!(v.shared().screen().unwrap(), before);
+        let v = mirrored(10, 4, b"s1\r\ns2");
+        assert!(v.feeder().fill_history("h1\ns1\ns2"));
+        assert_eq!(v.shared().lines(100), ["h1", "s1", "s2"]);
+    }
+
+    #[test]
+    fn long_lines_wrap_again_at_home_s_width() {
+        let v = mirrored(10, 4, b"s1");
+        assert!(v.feeder().fill_history("abcdefghijklmno\ns1"));
+        assert_eq!(v.shared().lines(100), ["abcdefghijklmno", "s1"]);
+    }
+
+    #[test]
+    fn a_fill_leaves_the_viewer_s_line_wrap_as_it_was() {
+        // The painter turns the wrap off once, on its first frame: a row longer than the grid
+        // after a fill must not wrap onto the next one.
+        let v = mirrored(10, 4, b"s1");
+        assert!(v.feeder().fill_history("h1\ns1"));
+        v.feed(b"\x1b[2;1Hxy\x1b[1;1HABCDEFGHIJKLMNOP");
+        assert_eq!(v.shared().lines(100), ["h1", "ABCDEFGHIP", "xy"]);
+    }
+
+    #[test]
+    fn a_viewer_in_the_alternate_screen_takes_no_history() {
+        let v = mirrored(10, 4, b"\x1b[?1049hvim");
+        assert!(!v.feeder().fill_history("h1\nvim"));
+        v.feed(b"\x1b[?1049l");
+        assert!(!v.shared().lines(100).iter().any(|l| l == "h1"));
+    }
+
+    #[test]
+    fn history_from_home_is_drawn_never_run() {
+        let v = mirrored(40, 4, b"s1");
+        assert!(
+            v.feeder()
+                .fill_history("\x1b]2;evil\x07a\x1b[?1049hb\x07\nh2\ns1")
+        );
+        let shared = v.shared();
+        assert_eq!(
+            shared.lines(100),
+            ["]2;evila[?1049hb", "h2", "s1"],
+            "shown as text, not run"
+        );
+        assert_eq!(shared.screen().unwrap().title, None);
+        assert!(!shared.modes().full_screen);
+    }
+
+    #[test]
+    fn the_scrollback_says_where_the_view_is_and_scroll_to_moves_it() {
+        let (term, _) = headless(10, 4);
+        assert_eq!(term.scrollback().unwrap().history, 0, "a fresh terminal");
+        feed(&term, b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9");
+        let back = term.scrollback().unwrap();
+        assert_eq!((back.history, back.below, back.lines), (5, 0, 4));
+        term.scroll_to(3);
+        assert_eq!(term.scrollback().unwrap().below, 3);
+        let mut snap = crate::Snapshot::default();
+        snap.refresh(&term, &Palette::default());
+        assert_eq!(snap.scrollback.below, 3, "the snapshot keeps it");
+        assert_eq!(snap.rows[0].text, "3", "three lines over the screen's 6");
+        term.scroll_to(100);
+        assert_eq!(term.scrollback().unwrap().below, 5, "as far as it goes");
+        term.scroll_to(0);
+        assert_eq!(term.scrollback().unwrap().below, 0);
+        let held = term.0.lock();
+        assert_eq!(term.scrollback(), None, "painting doesn't wait");
+        drop(held);
+        feed(&term, b"\x1b[?1049h\x1b[?1000h");
+        let full = term.scrollback().unwrap();
+        assert_eq!(full.history, 0, "full screen has no history");
+        assert!(full.mouse);
+    }
+
+    #[test]
+    fn history_keeps_at_most_two_thousand_rows() {
+        let v = mirrored(10, 4, b"");
+        let text: Vec<String> = (0..3000).map(|n| n.to_string()).collect();
+        assert!(v.feeder().fill_history(&text.join("\n")));
+        let lines = v.shared().lines(10_000);
+        assert!(lines.len() <= VIEWER_HISTORY, "{}", lines.len());
+        assert_eq!(lines.last().map(String::as_str), Some("2999"));
+    }
+
+    #[test]
+    fn a_fill_keeps_the_view_where_the_person_left_it() {
+        let v = mirrored(10, 4, b"s1");
+        let text: Vec<String> = (1..=30)
+            .map(|n| format!("h{n}"))
+            .chain(["s1".into()])
+            .collect();
+        assert!(v.feeder().fill_history(&text.join("\n")));
+        v.scroll(5);
+        v.shared()
+            .select_start(0, 0, Side::Left, SelectionKind::Line);
+        assert!(v.feeder().fill_history(&text.join("\n")));
+        assert!(v.scrolled_back(), "still scrolled back");
+        assert_eq!(
+            v.shared().selection_text(),
+            None,
+            "a selection in the old history goes"
+        );
+        v.feeder().drop_history();
+        assert!(!v.scrolled_back());
+        assert_eq!(v.shared().lines(100), ["s1"]);
+    }
+
+    #[test]
+    fn fed_counts_what_the_painter_feeds_never_a_fill() {
+        let v = mirrored(10, 4, b"");
+        let f = v.feeder();
+        let n = f.fed();
+        f.feed(b"x");
+        assert_eq!(f.fed(), n + 1);
+        assert!(f.fill_history("h1\nx"));
+        assert_eq!(f.fed(), n + 1, "a history isn't a frame");
     }
 }

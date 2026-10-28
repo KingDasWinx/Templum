@@ -2,8 +2,9 @@
 
 use crate::{Camera, Point};
 
-/// Zooms drawn on the way sit on these steps (like block scales): text is rasterized at a few
-/// extra sizes only.
+/// Zooms drawn on the way sit on multiples of this step (like block scales): text is rasterized
+/// at a few extra sizes only. Under 16% the step halves each time the zoom does (`on_step`), so
+/// a glide near 1% still has frames between its ends.
 pub const FLIGHT_ZOOM_STEP: f32 = 0.02;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -27,7 +28,7 @@ impl CameraFlight {
         let (z0, z1) = (self.from.zoom(), self.to.zoom());
         // 1/zoom moves linearly: every world point then travels in a straight line on screen.
         let inv = 1.0 / z0 + (1.0 / z1 - 1.0 / z0) * t;
-        let zoom = ((1.0 / inv) / FLIGHT_ZOOM_STEP).round() * FLIGHT_ZOOM_STEP;
+        let zoom = on_step(1.0 / inv).clamp(z0.min(z1), z0.max(z1));
         let (w0, w1) = (self.from.to_world(self.pivot), self.to.to_world(self.pivot));
         let w = Point::new(w0.x + (w1.x - w0.x) * t, w0.y + (w1.y - w0.y) * t);
         Camera::unsnapped(
@@ -41,6 +42,16 @@ impl CameraFlight {
         self.from.pan_by(screen_delta);
         self.to.pan_by(screen_delta);
     }
+}
+
+/// `zoom` (positive) on the nearest multiple of [`FLIGHT_ZOOM_STEP`], or of its half, its quarter…
+/// while the step is more than an eighth of the zoom: 0.02 from 16% up, 0.00125 under 2%.
+fn on_step(zoom: f32) -> f32 {
+    let mut step = FLIGHT_ZOOM_STEP;
+    while step > zoom / 8.0 {
+        step /= 2.0;
+    }
+    (zoom / step).round() * step
 }
 
 #[cfg(test)]
@@ -85,22 +96,45 @@ mod tests {
 
     #[test]
     fn zooms_on_the_way_sit_on_steps_and_stay_between_the_ends() {
-        let f = CameraFlight {
-            from: Camera::at(Point::default(), 0.5),
-            to: Camera::at(Point::default(), 2.0),
-            pivot: Point::default(),
-        };
-        let mut last = 0.0;
-        for t in samples() {
-            let z = f.at(t).zoom();
-            let k = z / FLIGHT_ZOOM_STEP;
-            assert!((k - k.round()).abs() < 1e-3, "t {t}: {z}");
-            assert!(
-                (0.5..=2.0).contains(&z) && z >= last,
-                "t {t}: {z} after {last}"
-            );
-            last = z;
+        // Up, and down at the far end, where a 0.02 step would round 1% to nothing.
+        for (a, b, step) in [
+            (0.5, 2.0, 0.02),
+            (0.01, 0.015, 0.00125),
+            (0.03, 0.02, 0.0025),
+        ] {
+            let f = CameraFlight {
+                from: Camera::at(Point::default(), a),
+                to: Camera::at(Point::default(), b),
+                pivot: Point::default(),
+            };
+            let (lo, hi) = (f32::min(a, b), f32::max(a, b));
+            let mut last = a;
+            let mut between = 0;
+            for t in samples() {
+                let z = f.at(t).zoom();
+                let k = z / step;
+                assert!((k - k.round()).abs() < 1e-3, "{a} to {b}, t {t}: {z}");
+                assert!(
+                    (lo..=hi).contains(&z) && (z - last) * (b - a) >= 0.0,
+                    "{a} to {b}, t {t}: {z} after {last}"
+                );
+                between += usize::from(z != last && z != b);
+                last = z;
+            }
+            assert!(between >= 2, "{a} to {b}: {between} zooms on the way");
         }
+    }
+
+    #[test]
+    fn the_step_is_0_02_from_16_percent_and_halves_with_the_zoom_under_it() {
+        let near = |z: f32, want: f32| (on_step(z) - want).abs() < 1e-6;
+        assert!(near(1.013, 1.02));
+        assert!(
+            near(0.161, 0.16) && near(0.171, 0.18),
+            "0.02 apart from 16%"
+        );
+        assert!(near(0.153, 0.15), "0.01 apart from 8%");
+        assert!(near(0.0113, 0.01125), "0.00125 apart under 2%");
     }
 
     #[test]

@@ -38,11 +38,8 @@ mod tests {
     use super::*;
     use crate::ZOOM_STEPS;
 
-    fn at_step(i: usize, origin: Point) -> Camera {
-        let mut cam = Camera::default();
-        cam.zoom_step(i as i32 - 6, Point::default());
-        cam.origin = origin;
-        cam
+    fn at(zoom: f32, origin: Point) -> Camera {
+        Camera::at(origin, zoom)
     }
 
     #[test]
@@ -52,8 +49,8 @@ mod tests {
 
     #[test]
     fn dots_are_never_closer_than_24_px_nor_thinned_needlessly() {
-        for (i, zoom) in ZOOM_STEPS.iter().enumerate() {
-            let grid = dot_grid(&at_step(i, Point::default()));
+        for zoom in ZOOM_STEPS {
+            let grid = dot_grid(&at(zoom, Point::default()));
             let gap = grid.spacing * zoom;
             assert!(gap >= 24.0, "zoom {zoom}: {gap} px");
             if grid.spacing > DOT_SPACING {
@@ -63,10 +60,11 @@ mod tests {
                 );
             }
         }
+        assert_eq!(dot_grid(&at(0.25, Point::default())).spacing, 96.0);
         assert_eq!(
-            dot_grid(&at_step(0, Point::default())).spacing,
-            96.0,
-            "zoom 0.25"
+            dot_grid(&at(0.01, Point::default())).spacing,
+            3072.0,
+            "30.72 px apart at 1%"
         );
     }
 
@@ -80,9 +78,8 @@ mod tests {
     #[test]
     fn a_full_hd_viewport_stays_under_3800_dots_at_every_zoom_a_flight_draws() {
         let mut last: Option<f32> = None;
-        // 0.25 to 3.0 by 0.02: every zoom a CameraFlight can draw.
-        for k in 0..=138 {
-            let zoom = 0.25 + k as f32 * 0.02;
+        // 1% to 300%, a thousandth apart: finer than any CameraFlight draws.
+        for zoom in (10..=3000).map(|k| k as f32 / 1000.0) {
             let n = dots_on_full_hd(zoom);
             assert!(n <= 3800.0, "zoom {zoom}: {n} dots");
             if let Some(l) = last {
@@ -111,13 +108,13 @@ mod tests {
             Point::new(30.0, 47.5),
             Point::new(-30.0, -1.0),
         ] {
-            let grid = dot_grid(&at_step(6, origin));
+            let grid = dot_grid(&at(1.0, origin));
             for (first, o) in [(grid.first.x, origin.x), (grid.first.y, origin.y)] {
                 assert_eq!(first % grid.spacing, 0.0, "{first} on the lattice");
                 assert!(first <= o && o - first < grid.spacing, "{first} vs {o}");
             }
         }
         // Panning keeps the dots where they were in the world.
-        assert_eq!(dot_grid(&at_step(6, Point::new(-30.0, 0.0))).first.x, -48.0);
+        assert_eq!(dot_grid(&at(1.0, Point::new(-30.0, 0.0))).first.x, -48.0);
     }
 }

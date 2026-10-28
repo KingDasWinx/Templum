@@ -7,6 +7,7 @@ use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use semver::Version;
 use ureq::Agent;
@@ -257,16 +258,18 @@ fn copy_app(dmg: &Path, mount: &Path, new: &Path) -> Result<(), String> {
     let copy = own(new);
     remove(&copy);
     fs::create_dir_all(mount).map_err(|e| cant_write(mount, &e))?;
-    run(Command::new("hdiutil")
-        .args([
-            "attach",
-            "-nobrowse",
-            "-readonly",
-            "-noautoopen",
-            "-mountpoint",
-        ])
-        .arg(mount)
-        .arg(dmg))?;
+    busy_again(Duration::from_millis(500), || {
+        run(Command::new("hdiutil")
+            .args([
+                "attach",
+                "-nobrowse",
+                "-readonly",
+                "-noautoopen",
+                "-mountpoint",
+            ])
+            .arg(mount)
+            .arg(dmg))
+    })?;
     let app = fs::read_dir(mount)
         .into_iter()
         .flatten()
@@ -281,6 +284,18 @@ fn copy_app(dmg: &Path, mount: &Path, new: &Path) -> Result<(), String> {
     copied?;
     remove(new);
     fs::rename(&copy, new).map_err(|e| cant_write(new, &e))
+}
+
+/// `f`, done again (up to 5 times, `wait` apart) while it fails for a resource that is busy:
+/// `hdiutil attach` says "Resource temporarily unavailable" while macOS's disk images are busy.
+fn busy_again(wait: Duration, mut f: impl FnMut() -> Result<(), String>) -> Result<(), String> {
+    for _ in 1..5 {
+        match f() {
+            Err(e) if e.contains("Resource temporarily unavailable") => std::thread::sleep(wait),
+            done => return done,
+        }
+    }
+    f()
 }
 
 fn run(command: &mut Command) -> Result<(), String> {
@@ -551,6 +566,30 @@ mod tests {
             .collect();
         kept.sort();
         assert_eq!(kept, ["0.2.0", "notes"]);
+    }
+
+    // macOS CI's `hdiutil attach` once answered EAGAIN; any other failure stays one.
+    #[test]
+    fn a_busy_resource_is_tried_again_and_nothing_else_is() {
+        let mut calls = 0;
+        let busy = "hdiutil failed: hdiutil: attach failed - Resource temporarily unavailable";
+        let done = busy_again(Duration::ZERO, || {
+            calls += 1;
+            if calls < 3 { Err(busy.into()) } else { Ok(()) }
+        });
+        assert_eq!((done, calls), (Ok(()), 3));
+        let mut calls = 0;
+        let done = busy_again(Duration::ZERO, || {
+            calls += 1;
+            Err(busy.into())
+        });
+        assert_eq!((done, calls), (Err(busy.to_string()), 5));
+        let mut calls = 0;
+        let done = busy_again(Duration::ZERO, || {
+            calls += 1;
+            Err("hdiutil failed: no such file".into())
+        });
+        assert_eq!(calls, 1, "{done:?}");
     }
 
     #[cfg(target_os = "macos")]

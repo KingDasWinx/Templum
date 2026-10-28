@@ -10,8 +10,8 @@ use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Anchor, AnyElement, App, ClickEvent, Context, ElementId, Entity, FontWeight, SharedString,
-    Subscription, TestSupportExt, Window, div, px,
+    Anchor, AnyElement, App, ClickEvent, Context, ElementId, Entity, FontWeight, Hsla,
+    SharedString, Subscription, TestSupportExt, Window, div, px,
 };
 
 use crate::config::{Config, Edit};
@@ -163,7 +163,7 @@ pub(super) fn remove(
 }
 
 /// A button showing the current option, opening a menu of them; the current one is checked.
-pub(super) fn menu_button(
+pub(crate) fn menu_button(
     id: impl Into<ElementId>,
     options: Vec<(SharedString, SharedString)>,
     current: SharedString,
@@ -240,6 +240,100 @@ pub(super) fn text_input(
         .small()
         .w(px(200.0))
         .into_any_element()
+}
+
+/// A text field's editor and what it showed last; the text goes to `set` on Enter or when the
+/// field loses the focus, not at each key.
+struct CommitState {
+    input: Entity<InputState>,
+    shown: SharedString,
+    /// Why `set` refused the last text, said under the field.
+    refused: Option<SharedString>,
+    /// The field holds a refused text: the setting is put back in it at the next draw.
+    restore: bool,
+    _events: Subscription,
+}
+
+/// What a commit field's `set` does with the text: Err is why it refuses it.
+pub(super) type Commit = fn(&mut Workspace, &str, &mut Context<Workspace>) -> Result<(), String>;
+
+/// A text field showing `value`: what is typed is kept in the field and goes to `set` once the
+/// person presses Enter or leaves it. For a value that does something when it changes (a port the
+/// server listens on): half a number must not. A text `set` refuses is replaced by `value` and the
+/// reason is said under the field, in `red`.
+pub(super) fn commit_input(
+    entity: &Entity<Workspace>,
+    key: &'static str,
+    value: String,
+    set: Commit,
+    red: Hsla,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let value = SharedString::from(value);
+    let e = entity.clone();
+    let initial = value.clone();
+    let state = window.use_keyed_state(
+        SharedString::from(format!("commit-{key}")),
+        cx,
+        move |window, cx| {
+            let shown = initial.clone();
+            let input = cx.new(|cx| InputState::new(window, cx).default_value(initial));
+            let _events = cx.subscribe(
+                &input,
+                move |this: &mut CommitState, input, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                        let text = input.read(cx).value();
+                        let done = e.update(cx, |ws, cx| {
+                            let done = set(ws, &text, cx);
+                            cx.notify();
+                            done
+                        });
+                        this.restore = done.is_err();
+                        this.refused = done.err().map(SharedString::from);
+                        cx.notify();
+                    }
+                },
+            );
+            CommitState {
+                input,
+                shown,
+                refused: None,
+                restore: false,
+                _events,
+            }
+        },
+    );
+    // What the workspace shows wins when it changes (a reset, a hand edit), not at each draw: the
+    // text being typed is not the workspace's yet.
+    state.update(cx, |state, cx| {
+        if state.shown != value || state.restore {
+            state.shown = value.clone();
+            state.restore = false;
+            state
+                .input
+                .update(cx, |input, cx| input.set_value(value.clone(), window, cx));
+        }
+    });
+    let state = state.read(cx);
+    let field = Input::new(&state.input).small().w(px(200.0));
+    match &state.refused {
+        None => field.into_any_element(),
+        Some(why) => div()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .child(field)
+            .child(
+                div()
+                    .id(ElementId::Name(format!("commit-{key}-refused").into()))
+                    .text_size(px(12.0))
+                    .text_color(red)
+                    .child(why.clone())
+                    .test_support(),
+            )
+            .into_any_element(),
+    }
 }
 
 /// A text area's editor; each change goes to `set`.

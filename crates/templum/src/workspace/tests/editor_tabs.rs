@@ -297,6 +297,54 @@ fn closing_with_unsaved_changes_asks_first(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_close_tab_question_answered_in_another_workspace_does_nothing(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    no_motion(cx);
+    let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    std::fs::write(one.path().join("a.txt"), "a").unwrap();
+    std::fs::write(two.path().join("c.txt"), "c").unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_editor(handle, &ws, cx, one.path());
+    click_file(handle, 0, cx);
+    cx.simulate_input(handle, "x");
+    // The second workspace has an editor with the same id and a changed tab of its own.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.new_space(window, cx))
+    })
+    .unwrap();
+    // A note takes the id the first workspace's terminal took.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.add_note_at(Point::new(900.0, 40.0), window, cx)
+        })
+    })
+    .unwrap();
+    assert_eq!(open_editor(handle, &ws, cx, two.path()), id);
+    click_file(handle, 0, cx);
+    cx.simulate_input(handle, "z");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.switch_to(0, window, cx);
+            ws.focus_block(id, window, cx);
+        });
+        window.press(CLOSE_TAB, cx);
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx));
+        ws.update(cx, |ws, cx| ws.switch_to(1, window, cx));
+        window.within("dialog").click("discard", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.editor(id).unwrap().tabs.len(), 1, "c.txt stays");
+        assert_eq!(
+            ws.said.last().map(String::as_str),
+            Some("Another workspace is shown now: nothing was done.")
+        );
+    });
+}
+
+#[gpui_kit::test]
 fn a_failed_save_says_so_and_keeps_the_tab_changed(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("a.txt");

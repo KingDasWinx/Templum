@@ -7,11 +7,14 @@ use std::sync::atomic::AtomicBool;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
 use templum_git::Synced;
+use templum_git::ops::{self, Op};
 
 use crate::git_block::{self, words};
 use crate::menu::Target;
 use crate::prompt::{self, Choice};
 
+use super::git_home::parsed;
+use super::remote::Deed;
 use super::{Extra, GitAt, Workspace, notify_git_error, notify_with, show_notification};
 
 impl Workspace {
@@ -28,22 +31,26 @@ impl Workspace {
 
     fn run_sync(&mut self, join: Option<bool>, window: &mut Window, cx: &mut Context<Self>) {
         let entity = cx.entity();
+        // A refused one must not leave the Sync button spinning.
+        if let Some(why) = self.why_not(Deed::Git("sync")) {
+            return self.warn(why, window, cx);
+        }
+        let at = self.here();
+        if self.git_runs(&at).is_none() {
+            return;
+        }
         let Some(git) = self.space.git_mut() else {
             return;
         };
-        let Some(repo) = git.repo().cloned() else {
-            return;
-        };
+        // At home it runs on and can't be stopped from here: no flag.
         let cancel = Arc::new(AtomicBool::new(false));
         git.sync = Some(git_block::Sync::Both);
-        git.cancel = Some(cancel.clone());
-        let repo = repo.with_cancel(cancel);
-        self.act_job(
-            self.here(),
-            move || match join {
-                None => repo.sync(),
-                Some(rebase) => repo.sync_join(rebase),
-            },
+        git.cancel = git.home.is_none().then(|| cancel.clone());
+        self.act_op(
+            at,
+            Op::Sync { join },
+            move |repo| ops::sync(&repo.clone().with_cancel(cancel), join),
+            parsed::<Synced>,
             move |ws, at, result, window, cx| {
                 if let Some(git) = ws.git_at(&at) {
                     git.sync = None;
@@ -140,13 +147,12 @@ impl Workspace {
     /// the mouse; with none, "No remote" with Run in a terminal (`git remote add origin `
     /// typed, for the user to finish).
     pub(crate) fn publish(&mut self, branch: String, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(repo) = self.space.git().and_then(|g| g.repo().cloned()) else {
-            return;
-        };
         let at_mouse = window.mouse_position();
-        self.git_job(
+        self.git_op(
             self.here(),
-            move || repo.remotes(),
+            Op::Remotes,
+            |repo| repo.remotes(),
+            parsed::<Vec<String>>,
             move |ws, at, remotes, window, cx| {
                 let entity = cx.entity();
                 // The workspace changed meanwhile: its block with this id isn't the one asked.
@@ -155,6 +161,13 @@ impl Workspace {
                 }
                 match remotes {
                     Ok(r) if r.len() == 1 => ws.publish_to(r[0].clone(), branch, window, cx),
+                    Ok(r) if r.is_empty() && at.home.is_some() => {
+                        let words = format!(
+                            "No remote: add one on {} to publish this branch.",
+                            at.home.as_deref().unwrap_or_default()
+                        );
+                        show_notification(window, cx, Notification::warning(words));
+                    }
                     Ok(r) if r.is_empty() => {
                         let run: Extra = (
                             "git-add-remote",
@@ -175,10 +188,13 @@ impl Workspace {
                                 }
                             }),
                         );
+                        let words = "No remote: add one to publish this branch.";
+                        #[cfg(test)]
+                        super::told(words);
                         notify_with(
                             &entity,
                             at,
-                            Notification::warning("No remote: add one to publish this branch."),
+                            Notification::warning(words),
                             vec![run],
                             window,
                             cx,
@@ -205,6 +221,10 @@ impl Workspace {
     /// Clone a repository…: a URL and where to put it: the block's folder at first, or beside
     /// the block's repository (from its ⋯), never inside it.
     pub(crate) fn ask_clone(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Clone stays on home for now.
+        if let Some(why) = self.why_not(Deed::GitLeftOut) {
+            return self.warn(why, window, cx);
+        }
         let Some(folder) = self.space.git().map(|g| {
             let beside = g
                 .repo()
@@ -289,12 +309,11 @@ impl Workspace {
 
     /// Reads the default branch in the background (after an action, and when the block opens).
     pub(crate) fn load_default(&mut self, at: GitAt, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(repo) = self.git_at(&at).and_then(|g| g.repo().cloned()) else {
-            return;
-        };
-        self.git_job(
+        self.git_op(
             at,
-            move || repo.default_branch(),
+            Op::DefaultBranch,
+            |repo| repo.default_branch(),
+            |heard| parsed::<Option<String>>(heard).ok().flatten(),
             |ws, at, default, _, _| {
                 if let Some(git) = ws.git_at(&at) {
                     git.default_branch = default;
@@ -315,6 +334,10 @@ impl Workspace {
     ) {
         self.git_sync(
             git_block::Sync::Push,
+            Op::Publish {
+                remote: remote.clone(),
+                branch: branch.clone(),
+            },
             move |repo| repo.publish(&remote, &branch),
             |_, at, e, window, cx| {
                 let ws = cx.entity();

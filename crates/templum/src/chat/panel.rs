@@ -5,34 +5,78 @@ use std::time::Duration;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, BoxShadow, ClickEvent, Context, ElementId,
-    FollowMode, MouseButton, MouseDownEvent, TestSupportExt, Window, div, list, point, px,
+    FollowMode, FontWeight, MouseButton, MouseDownEvent, TestSupportExt, Window, canvas, div, list,
+    point, px,
 };
 
+use crate::grid::hsla;
 use crate::workspace::Workspace;
 
 const WIDTH: f32 = 640.0;
 const SIDES: f32 = 32.0;
-const MIN_H: f32 = 240.0;
+/// Full screen leaves this much canvas on every side.
+const INSET: f32 = 16.0;
+/// The header and the composer take about 150 of it; the rest is the rows'.
+const MIN_H: f32 = 300.0;
 /// At most this much of the canvas's height.
 const MAX_SHARE: f32 = 0.7;
-const HEADER: f32 = 36.0;
+const HEADER: f32 = 44.0;
 /// It rises this far as it fades in.
 const RISE: f32 = 12.0;
 const APPEAR: Duration = Duration::from_millis(220);
+
+/// The card's width on a canvas `canvas_w` wide.
+fn width(canvas_w: f32, full: bool) -> f32 {
+    if full {
+        canvas_w - 2.0 * INSET
+    } else {
+        WIDTH.min(canvas_w - SIDES)
+    }
+}
+
+/// The width of an approval pinned in the open card: the column the rows share.
+pub(crate) fn approval_width(canvas_w: f32, full: bool) -> f32 {
+    super::look::column(width(canvas_w, full))
+}
+
+const GREETING: &str = "It builds and runs your canvas: workspaces, agents, boards and notes. \
+Anything it can't take back waits for your click.";
+/// A suggestion chip is as wide as the column, up to this.
+const CHIP_MAX: f32 = 520.0;
 
 /// The person's message Catch me up sends.
 pub(crate) const CATCH_UP: &str = "Catch me up: what's going on?";
 
 /// What an empty conversation offers; a click puts its text in the field (Catch me up sends).
-pub(crate) const SUGGESTIONS: [&str; 3] = [
-    "Set up a workspace for a project, with a kanban and an agent per card",
-    CATCH_UP,
-    "Tidy this workspace into a grid",
+pub(crate) const SUGGESTIONS: [(IconName, &str); 4] = [
+    (
+        IconName::LayoutGrid,
+        "Set up a workspace for a project, with a kanban and an agent per card",
+    ),
+    (IconName::Eye, CATCH_UP),
+    (IconName::Grid2x2, "Tidy this workspace into a grid"),
+    (IconName::Bot, "Open an agent for each card on my board"),
 ];
+
+/// The chat greets: it has no rows, or only notes (a new chat leaves one).
+pub(crate) fn greets(rows: &[templum_agent::Row]) -> bool {
+    rows.iter()
+        .all(|row| matches!(row, templum_agent::Row::Note { .. }))
+}
+
+/// The body was scrolled up: its content is taller than it, it doesn't follow its end, and it
+/// isn't at its end.
+pub(crate) fn scrolled_up(list: &gpui_kit::ListState) -> bool {
+    list.max_offset_for_scrollbar().y > px(0.0)
+        && !list.is_following_tail()
+        && list.is_scrolled_to_end() != Some(true)
+}
 
 /// The run meter: its tasks under way and what the conversation spent ("3 working · $1.24");
 /// None before it ran anything.
@@ -56,19 +100,38 @@ pub(crate) fn render(
         return None;
     }
     let ui = ws.ui;
+    let full = agent.full;
     let rows = &agent.conversation.rows;
+    let fg = hsla(ws.theme.palette.foreground, 1.0);
+    let col = super::look::column(width(canvas_w, full));
     let button = |id: &'static str, icon: IconName, tip: &'static str| {
         div()
             .id(id)
             .flex()
             .items_center()
             .justify_center()
-            .size(px(24.0))
-            .rounded(px(6.0))
+            .flex_none()
+            .size(px(28.0))
+            .rounded(px(8.0))
             .cursor_pointer()
             .hover(move |s| s.bg(ui.hover))
-            .child(Icon::new(icon).size(px(14.0)).text_color(ui.title_dim))
+            .active(move |s| s.bg(ui.pressed))
+            .child(Icon::new(icon).size(px(15.0)).text_color(ui.title_dim))
             .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+    };
+    let working = agent.conversation.working;
+    let tasks_under_way = ws.agent_tasks() > 0;
+    let lead = if working {
+        Spinner::new()
+            .icon(IconName::Orbit)
+            .color(ui.accent)
+            .with_size(UiSize::Size(px(15.0)))
+            .into_any_element()
+    } else {
+        Icon::new(IconName::Sparkles)
+            .size(px(15.0))
+            .text_color(ui.accent)
+            .into_any_element()
     };
     let header = div()
         .flex_none()
@@ -77,68 +140,55 @@ pub(crate) fn render(
         .gap(px(8.0))
         .h(px(HEADER))
         .px(px(12.0))
-        .border_b_1()
-        .border_color(ui.hairline)
-        .child(
-            Icon::new(IconName::Sparkles)
-                .size(px(14.0))
-                .text_color(ui.accent),
-        )
+        .child(lead)
         .child(
             div()
+                .min_w(px(0.0))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
                 .text_size(px(13.0))
-                .text_color(ui.title)
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(fg)
                 .child("Templum Agent"),
-        )
-        .child(
-            div()
-                .text_size(px(12.0))
-                .text_color(ui.title_dim)
-                .child(super::pill::engine(ws)),
         )
         .child(div().flex_1())
         .when_some(meter(ws), |el, meter| {
             el.child(
                 div()
                     .id("agent-meter")
-                    .px(px(8.0))
-                    .py(px(2.0))
-                    .rounded(px(6.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .h(px(24.0))
+                    .px(px(10.0))
+                    .rounded(px(12.0))
+                    .bg(ui.card)
+                    .border_1()
+                    .border_color(ui.hairline)
                     .text_size(px(12.0))
                     .text_color(ui.title_dim)
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(ui.hover))
+                    // A label, unless tasks are under way: then it opens their drawer.
+                    .when(tasks_under_way, |el| {
+                        el.cursor_pointer()
+                            .hover(move |s| s.bg(ui.hover))
+                            .tooltip(|window, cx| Tooltip::new("Tasks under way").build(window, cx))
+                    })
                     .on_click(cx.listener(|ws, _: &ClickEvent, _, cx| {
-                        ws.templum_agent.tasks_open = !ws.templum_agent.tasks_open;
-                        cx.notify();
+                        if ws.agent_tasks() > 0 {
+                            ws.templum_agent.tasks_open = !ws.templum_agent.tasks_open;
+                            cx.notify();
+                        }
                     }))
                     .child(meter)
-                    .tooltip(|window, cx| Tooltip::new("Tasks under way").build(window, cx))
-                    .test_support(),
-            )
-        })
-        .when(ws.agent_tasks() > 0, |el| {
-            el.child(
-                div()
-                    .id("agent-catch-up")
-                    .px(px(8.0))
-                    .py(px(2.0))
-                    .rounded(px(6.0))
-                    .text_size(px(12.0))
-                    .text_color(ui.title_dim)
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(ui.hover))
-                    .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| {
-                        ws.send_to_agent(CATCH_UP.to_string(), window, cx)
-                    }))
-                    .child("Catch me up")
-                    .test_support(),
-            )
-        })
-        .when(agent.conversation.working, |el| {
-            el.child(
-                button("agent-stop", IconName::CircleStop, "Stop")
-                    .on_click(cx.listener(|ws, _: &ClickEvent, _, cx| ws.stop_engine(cx)))
+                    .when(tasks_under_way, |el| {
+                        el.child(
+                            Icon::new(IconName::ChevronDown)
+                                .size(px(12.0))
+                                .text_color(ui.title_dim),
+                        )
+                    })
                     .test_support(),
             )
         })
@@ -148,46 +198,88 @@ pub(crate) fn render(
                 .test_support(),
         )
         .child(
-            button("agent-close", IconName::ChevronDown, "Close")
+            if full {
+                button("agent-full", IconName::Minimize2, "Exit full screen")
+            } else {
+                button("agent-full", IconName::Maximize2, "Full screen")
+            }
+            .on_click(cx.listener(|ws, _: &ClickEvent, _, cx| {
+                ws.templum_agent.full = !ws.templum_agent.full;
+                cx.notify();
+            }))
+            .test_support(),
+        )
+        .child(
+            button("agent-close", IconName::ChevronDown, "Close (Esc)")
                 .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.leave_agent(window, cx)))
                 .test_support(),
         );
-    // The meter's list: a line per task under way; a click shows its block.
-    let tasks = agent.tasks_open.then(|| {
+    // The usage chip's drawer: a line per task under way (a click shows its block), then Catch me
+    // up.
+    let line = |id: ElementId, icon: IconName, color| {
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .h(px(28.0))
+            .px(px(8.0))
+            .rounded(px(8.0))
+            .text_size(px(13.0))
+            .cursor_pointer()
+            .hover(move |s| s.bg(ui.hover))
+            .child(Icon::new(icon).size(px(14.0)).text_color(color))
+    };
+    let tasks = (agent.tasks_open && tasks_under_way).then(|| {
         div()
             .flex_none()
             .flex()
-            .flex_col()
-            .gap(px(2.0))
-            .p(px(8.0))
+            .justify_center()
             .border_b_1()
             .border_color(ui.hairline)
-            .children(
-                ws.agent_task_blocks()
-                    .into_iter()
-                    .enumerate()
-                    .map(|(n, (space, id))| {
-                        let title = ws
-                            .spaces()
-                            .find(|s| s.id == space)
-                            .and_then(|s| s.blocks.get(&id))
-                            .map(|b| crate::block::title(ws, b, cx).to_string())
-                            .unwrap_or_default();
-                        div()
-                            .id(ElementId::Name(format!("agent-task-{n}").into()))
-                            .px(px(6.0))
-                            .py(px(2.0))
-                            .rounded(px(6.0))
-                            .text_size(px(12.0))
-                            .text_color(ui.title)
-                            .cursor_pointer()
-                            .hover(move |s| s.bg(ui.hover))
+            .child(
+                div()
+                    .w(px(col))
+                    .flex()
+                    .flex_col()
+                    .py(px(6.0))
+                    .children(ws.agent_task_blocks().into_iter().enumerate().map(
+                        |(n, (space, id))| {
+                            let title = ws
+                                .spaces()
+                                .find(|s| s.id == space)
+                                .and_then(|s| s.blocks.get(&id))
+                                .map(|b| crate::block::title(ws, b, cx).to_string())
+                                .unwrap_or_default();
+                            line(
+                                ElementId::Name(format!("agent-task-{n}").into()),
+                                IconName::Bot,
+                                ui.title_dim,
+                            )
                             .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                                 ws.reveal(&space, id, window, cx)
                             }))
-                            .child(title)
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_color(fg)
+                                    .child(title),
+                            )
                             .test_support()
-                    }),
+                        },
+                    ))
+                    .child(
+                        line("agent-catch-up".into(), IconName::Sparkles, ui.accent)
+                            .text_color(ui.accent)
+                            .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| {
+                                ws.send_to_agent(CATCH_UP.to_string(), window, cx)
+                            }))
+                            .child("Catch me up")
+                            .test_support(),
+                    ),
             )
     });
     // Only the rows in view are drawn: the list learns of each new one (and of a new chat), and
@@ -203,82 +295,234 @@ pub(crate) fn render(
     } else if rows.len() > agent.seen.get() {
         agent.unseen.set(true);
     }
+    // A row that arrives while the chat is open fades in; the rows there when it opens don't.
+    let now = cx.background_executor().now();
+    if agent.drawn.get() && rows.len() > agent.seen.get() {
+        agent.arrival.set(Some((agent.seen.get(), now)));
+    }
+    agent.drawn.set(true);
     agent.seen.set(rows.len());
-    let body = if rows.is_empty() {
+    let body = if greets(rows) {
+        let chip_w = col.min(CHIP_MAX);
+        let chip = |n: usize, icon: IconName, text: &'static str| {
+            div()
+                .id(ElementId::Name(format!("agent-suggestion-{n}").into()))
+                .w_full()
+                .min_h(px(40.0))
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .px(px(14.0))
+                .py(px(10.0))
+                .rounded(px(12.0))
+                .border_1()
+                .border_color(ui.hairline)
+                .cursor_pointer()
+                .hover(move |s| s.bg(ui.hover).border_color(ui.hover_border))
+                .active(move |s| s.bg(ui.pressed))
+                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.suggest_to_agent(text, window, cx)
+                }))
+                .child(
+                    div()
+                        .flex_none()
+                        .child(Icon::new(icon).size(px(15.0)).text_color(ui.title_dim)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .text_size(px(13.0))
+                        .text_color(fg)
+                        .child(text),
+                )
+                .test_support()
+        };
         div()
-            .flex()
-            .flex_col()
-            .gap(px(8.0))
-            .p(px(16.0))
-            .children(SUGGESTIONS.iter().enumerate().map(|(n, text)| {
+            .id("agent-greeting-scroll")
+            .size_full()
+            .overflow_y_scroll()
+            .child(
                 div()
-                    .id(ElementId::Name(format!("agent-suggestion-{n}").into()))
-                    .px(px(12.0))
-                    .py(px(6.0))
-                    .rounded(px(12.0))
-                    .border_1()
-                    .border_color(ui.hairline)
-                    .text_size(px(13.0))
-                    .text_color(ui.title)
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(ui.hover))
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.suggest_to_agent(text, window, cx)
-                    }))
-                    .child(*text)
-                    .test_support()
-            }))
+                    .id("agent-greeting")
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .pt(px(24.0))
+                    .pb(px(16.0))
+                    .child(
+                        div()
+                            .size(px(40.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .bg(ui.accent.opacity(0.12))
+                            .child(
+                                Icon::new(IconName::Sparkles)
+                                    .size(px(20.0))
+                                    .text_color(ui.accent),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .mt(px(12.0))
+                            .text_size(px(16.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(fg)
+                            .child("What should Templum do?"),
+                    )
+                    .child(
+                        div()
+                            .mt(px(6.0))
+                            .max_w(px(420.0))
+                            .text_center()
+                            .text_size(px(13.0))
+                            .text_color(ui.title_dim)
+                            .child(GREETING),
+                    )
+                    .child(
+                        div()
+                            .mt(px(20.0))
+                            .w(px(chip_w))
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.0))
+                            .children(
+                                SUGGESTIONS
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(n, (icon, text))| chip(n, *icon, text)),
+                            ),
+                    )
+                    .test_support(),
+            )
             .into_any_element()
     } else {
-        let row = cx.processor(|ws: &mut Workspace, n: usize, _, cx| {
-            let row = ws.templum_agent.conversation.rows.get(n).cloned();
+        let row = cx.processor(move |ws: &mut Workspace, n: usize, _, cx| {
+            let agent = &ws.templum_agent;
+            let rows = &agent.conversation.rows;
+            let gap = rows.get(n).map_or(0.0, |row| {
+                super::look::gap_above(n.checked_sub(1).and_then(|p| rows.get(p)), row)
+            });
+            let fades = super::look::fades(n, agent.arrival.get(), cx.background_executor().now());
+            let row = rows.get(n).cloned();
             let row = row.map(|row| super::rows::row(ws, n, &row, cx));
-            div()
-                .px(px(12.0))
-                .py(px(4.0))
-                .children(row)
+            let el = div()
+                .w_full()
+                .flex()
+                .justify_center()
+                .child(div().w(px(col)).pt(px(gap)).children(row));
+            if fades {
+                el.with_animation(
+                    ElementId::Name(format!("agent-fade-{n}").into()),
+                    Animation::new(super::look::FADE).with_easing(crate::motion::slide),
+                    |el, t| el.opacity(t),
+                )
                 .into_any_element()
+            } else {
+                el.into_any_element()
+            }
         });
         list(state.clone(), row)
             .size_full()
-            .py(px(8.0))
+            .pt(px(8.0))
+            .pb(px(16.0))
             .into_any_element()
     };
-    let new_below = agent.unseen.get().then(|| {
+    // Outside full screen the body grows with its rows (the card is as tall as they are, up to its
+    // cap): the list can't size itself, so after it is laid out a zero-size canvas measures how much
+    // of it is out of view and the body's basis grows to hold it, one frame later.
+    let measure = (!full && !greets(rows)).then(|| {
+        let (list, rows_h, ws_id) = (state.clone(), agent.rows_h.clone(), cx.entity_id());
+        canvas(
+            move |_, _, cx| {
+                let over = f32::from(list.max_offset_for_scrollbar().y);
+                // The list's padding: 8 above its rows and 16 under.
+                let want = f32::from(list.viewport_bounds().size.height) + over + 24.0;
+                if over > 0.0 && want > rows_h.get() + 0.5 {
+                    rows_h.set(want);
+                    cx.notify(ws_id);
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_0()
+    });
+    // Back to the end, once the person scrolled up; a dot when rows came below meanwhile.
+    let to_end = scrolled_up(state).then(|| {
         div()
             .absolute()
-            .bottom(px(8.0))
+            .bottom(px(12.0))
             .left_0()
             .right_0()
             .flex()
             .justify_center()
             .child(
                 div()
-                    .id("agent-new-below")
-                    .px(px(10.0))
-                    .py(px(2.0))
+                    .id("agent-to-end")
+                    .relative()
+                    .size(px(32.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .rounded_full()
-                    .bg(ui.accent)
-                    .text_size(px(12.0))
-                    .text_color(ui.canvas)
+                    .bg(ui.surface)
+                    .border_1()
+                    .border_color(ui.hairline)
+                    .shadow(vec![BoxShadow {
+                        color: ui.shadow,
+                        offset: point(px(0.0), px(2.0)),
+                        blur_radius: px(8.0),
+                        spread_radius: px(0.0),
+                        inset: false,
+                    }])
                     .cursor_pointer()
                     .on_click(cx.listener(|ws, _: &ClickEvent, _, cx| {
                         ws.templum_agent.list.set_follow_mode(FollowMode::Tail);
                         cx.notify();
                     }))
-                    .child("↓ New")
+                    .child(Icon::new(IconName::ArrowDown).size(px(16.0)).text_color(fg))
+                    .when(agent.unseen.get(), |el| {
+                        el.child(
+                            div()
+                                .id("agent-to-end-new")
+                                .absolute()
+                                .top(px(-2.0))
+                                .right(px(-2.0))
+                                .size(px(8.0))
+                                .rounded_full()
+                                .bg(ui.accent)
+                                .test_support(),
+                        )
+                    })
+                    .tooltip(|window, cx| Tooltip::new("Scroll to the end").build(window, cx))
                     .test_support(),
             )
+            .with_animation(
+                "agent-to-end-fade",
+                Animation::new(crate::motion::HOVER),
+                |el, t| el.opacity(t),
+            )
     });
-    let max_h = (canvas_h * MAX_SHARE).max(MIN_H);
+    // A pinned approval needs room: with one the card may take the canvas less its insets.
+    let max_h = if approval.is_some() {
+        canvas_h - 2.0 * INSET
+    } else {
+        canvas_h * MAX_SHARE
+    }
+    .max(MIN_H);
     let chat = div()
         .id("agent-chat")
         .flex()
         .flex_col()
-        .w(px(WIDTH.min(canvas_w - SIDES)))
+        .w(px(width(canvas_w, full)))
         .min_h(px(MIN_H))
-        .max_h(px(max_h))
-        .rounded(px(14.0))
+        .when(full, |el| el.h(px((canvas_h - 2.0 * INSET).max(MIN_H))))
+        .when(!full, |el| el.max_h(px(max_h)))
+        .rounded(px(super::look::CARD_RADIUS))
         .bg(ui.surface)
         .border_1()
         .border_color(ui.hairline)
@@ -301,20 +545,40 @@ pub(crate) fn render(
         .child(
             div()
                 .relative()
-                .flex_1()
                 .min_h(px(0.0))
-                .child(div().id("agent-body").size_full().child(body))
-                .children(new_below),
+                // The greeting has a height of its own; so has full screen's body.
+                .when(full || greets(rows), |el| el.flex_1())
+                .when(!full && !greets(rows), |el| {
+                    el.flex_grow(1.0)
+                        .flex_shrink(1.0)
+                        .flex_basis(px(agent.rows_h.get()))
+                })
+                .child(
+                    div()
+                        .id("agent-body")
+                        .size_full()
+                        .child(body)
+                        .children(measure)
+                        .test_support(),
+                )
+                .children(to_end),
         )
         // An approval is pinned over its field.
-        .children(approval.map(|a| div().flex_none().px(px(8.0)).pt(px(8.0)).child(a)))
+        .children(approval.map(|a| {
+            div()
+                .flex_none()
+                .flex()
+                .justify_center()
+                .child(div().w(px(col)).child(a))
+        }))
         .child(
             div()
                 .flex_none()
-                .p(px(8.0))
-                .border_t_1()
-                .border_color(ui.hairline)
-                .child(footer),
+                .flex()
+                .justify_center()
+                .pt(px(8.0))
+                .pb(px(16.0))
+                .child(div().w(px(col)).child(footer)),
         )
         .test_support();
     Some(

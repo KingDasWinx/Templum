@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::input::InputState;
 use gpui_kit::{App, Context, Entity, Focusable as _, Subscription, Window};
 use serde_json::Value;
-use templum_canvas::{BlockId, Level};
+use templum_api::store::Scope;
+use templum_canvas::BlockId;
 use templum_mcp::ask::{Ask, Form, Row};
 use templum_mcp::tools::Event;
 use templum_mcp::{Replier, Reply, tools};
@@ -34,7 +35,7 @@ const DRAWN: Duration = Duration::from_millis(300);
 
 /// A tool call waiting for its answer.
 pub(crate) struct Wait {
-    /// Names it for its deadline and the balloon's buttons; counts up, so the oldest is first.
+    /// Names it for its deadline and the inbox's buttons; counts up, so the oldest is first.
     pub key: u64,
     /// The connection it came on, and its JSON-RPC id: a cancel names both.
     pub conn: u64,
@@ -44,13 +45,35 @@ pub(crate) struct Wait {
     /// another workspace.
     pub from: String,
     pub what: Waiting,
-    /// When the balloon first drew it, by the executor's clock.
+    /// When it was made, by the executor's clock: the inbox says how long it has waited.
+    pub since: Instant,
+    /// When the inbox first drew it, by the executor's clock.
     pub shown: Cell<Option<Instant>>,
-    /// The scroll of the balloon's body, past what fits of its terminal's height.
+    /// Its options' previews are shown whole (Show more), not cut after a few lines.
+    pub more: Cell<bool>,
+    /// The scroll of the request's body in the inbox.
     pub body: crate::markdown::PreviewScroll,
     /// The row the keys just moved the highlight to: the body scrolls to show it once, when it is
     /// drawn (a wheel that scrolled it away since isn't fought).
     pub reveal: Rc<Cell<Option<Row>>>,
+    /// A request of an agent on another computer, shown here from a mirrored workspace: it is
+    /// answered there, never here.
+    pub remote: Option<RemoteAsk>,
+}
+
+/// Where a mirrored request is answered.
+pub(crate) struct RemoteAsk {
+    /// The remote workspace's id here.
+    pub space: String,
+    /// Home's id of the request (`r<n>`, unique across home's restarts: see `next_wait`).
+    pub request: String,
+    /// What answering it takes there.
+    pub scope: Scope,
+    /// The answer was sent: it leaves the inbox when home's state no longer has it.
+    pub sent: bool,
+    /// No notification for it: it was told already, or folded into a notice of several
+    /// (`remote_tells`).
+    pub quiet: bool,
 }
 
 /// A field of a question's dialog, and what it hears from it.
@@ -60,14 +83,12 @@ pub(crate) type Field = (Entity<InputState>, Subscription);
 pub(crate) enum Waiting {
     /// `ask_user` (docs/specs/ask-user.md): its questions, what the person picked, each
     /// question's Other field, and the note (asked with `questions` only). `wait` makes the
-    /// fields. `away`: Esc gave the keyboard back to the terminal, until a press on the dialog.
-    /// `stopped`: its client gave up on the call; the answer is typed into its terminal.
+    /// fields. `stopped`: its client gave up on the call; the answer is typed into its terminal.
     Question {
         ask: Ask,
         form: Form,
         others: Vec<Field>,
         note: Option<Field>,
-        away: bool,
         stopped: bool,
         /// A plan's Markdown frame's scroll (`propose_plan`).
         scroll: crate::markdown::PreviewScroll,
@@ -112,16 +133,25 @@ pub(crate) enum Approved {
         unmerged: u32,
         into: String,
     },
+    /// A request of another computer's agent, answered there: `line` says what it asks, `yes` and
+    /// `no` are its buttons' words, home's.
+    Remote {
+        line: String,
+        yes: String,
+        no: String,
+    },
 }
 
 impl Approved {
     /// Its two buttons' words: yes, then no.
-    pub(crate) fn buttons(&self) -> (&'static str, &'static str) {
-        match self {
+    pub(crate) fn buttons(&self) -> (String, String) {
+        let (yes, no) = match self {
             Approved::Connect { .. } => ("Allow", "Deny"),
             Approved::RemoveWorktree { .. } => ("Delete", "Keep"),
             Approved::MergeWorktree { .. } => ("Merge", "Cancel"),
-        }
+            Approved::Remote { yes, no, .. } => (yes.as_str(), no.as_str()),
+        };
+        (yes.into(), no.into())
     }
 }
 
@@ -154,6 +184,9 @@ impl Wait {
             Waiting::Allow {
                 then: Approved::MergeWorktree { name, .. },
             } => format!("merge {name}"),
+            Waiting::Allow {
+                then: Approved::Remote { line, .. },
+            } => line.clone(),
             Waiting::Turn { .. } | Waiting::Event { .. } => String::new(),
         }
     }
@@ -165,8 +198,22 @@ impl Workspace {
     pub(super) fn wait(
         &mut self,
         asked: Asked,
+        what: Waiting,
+        seconds: Option<u64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.wait_as(asked, what, seconds, None, window, cx);
+    }
+
+    /// `wait`, for a request that may be another computer's (`remote`): it is shown here and
+    /// answered there.
+    pub(super) fn wait_as(
+        &mut self,
+        asked: Asked,
         mut what: Waiting,
         seconds: Option<u64>,
+        remote: Option<RemoteAsk>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -196,9 +243,12 @@ impl Workspace {
             reply: asked.reply,
             from: asked.from,
             what,
+            since: cx.background_executor().now(),
             shown: Cell::new(None),
+            more: Cell::new(false),
             body: Default::default(),
             reveal: Rc::default(),
+            remote,
         };
         let looks = matches!(
             wait.what,
@@ -208,11 +258,20 @@ impl Workspace {
             }
         );
         if matches!(wait.what, Waiting::Question { .. } | Waiting::Allow { .. }) {
+            if self
+                .request_space(&wait)
+                .is_some_and(|space| space == self.space.id)
+            {
+                self.inbox_arrived(cx);
+            }
             self.tell_asking(&wait, window, cx);
             self.chime(cx);
             // Its block waits for its person now. The agent that handed it a task hears nothing:
-            // the person sees the balloon, and that agent can't answer it.
-            self.needs_you(&wait.from, Some(&wait.summary()), false, cx);
+            // the person sees the request in the inbox, and that agent can't answer it. (Another
+            // computer's agent is not one of this one's to tell.)
+            if wait.remote.is_none() {
+                self.needs_you(&wait.from, Some(&wait.summary()), false, cx);
+            }
         }
         self.waits.push(wait);
         if looks {
@@ -228,6 +287,8 @@ impl Workspace {
             return false;
         };
         let wait = self.waits.remove(i);
+        self.inbox_settle(&[key]);
+        self.request_ended(&wait, cx);
         self.unwatch(&wait);
         if !matches!(wait.what, Waiting::Question { stopped: true, .. }) {
             let _ = wait.reply.send(tools::tool_result(&wait.id, &reply));
@@ -296,7 +357,9 @@ impl Workspace {
             .collect();
         for wait in &gone {
             self.unwatch(wait);
+            self.request_ended(wait, cx);
         }
+        self.inbox_settle(&gone.iter().map(|w| w.key).collect::<Vec<_>>());
         cx.notify();
     }
 
@@ -314,7 +377,9 @@ impl Workspace {
         let gone: Vec<Wait> = self.waits.extract_if(.., |w| w.conn == conn).collect();
         for wait in &gone {
             self.unwatch(wait);
+            self.request_ended(wait, cx);
         }
+        self.inbox_settle(&gone.iter().map(|w| w.key).collect::<Vec<_>>());
         cx.notify();
     }
 
@@ -347,8 +412,19 @@ impl Workspace {
 
     /// Why `wait` can't be answered any more, if so.
     fn orphaned(&self, wait: &Wait) -> Option<Reply> {
-        // The Templum Agent asks from no block.
-        if wait.from != templum_agent::ASKER && self.caller(&wait.from).is_none() {
+        // Another computer's request stays while its workspace is here and home lists it, with a
+        // viewer of its block or without.
+        if wait.remote.is_some() {
+            return self
+                .request_space(wait)
+                .is_none()
+                .then(|| Reply::err("Its workspace was forgotten; the request was withdrawn."));
+        }
+        // The Templum Agent and the API ask from no block.
+        if wait.from != templum_agent::ASKER
+            && wait.from != templum_api::ASKER
+            && self.asker(wait).is_none()
+        {
             return Some(Reply::err(
                 "Your block was closed; the request was withdrawn.",
             ));
@@ -414,11 +490,15 @@ impl Workspace {
 
     /// The person's yes (`yes`) or no to the request `key`: Allow wires the two blocks, a step
     /// Ctrl+Z takes back, as wiring by hand is; Delete and Merge run on the background executor,
-    /// the request gone from the balloon at once, and answer once git is done.
+    /// the request gone from the inbox at once, and answer once git is done.
     pub(crate) fn answer_allow(&mut self, key: u64, yes: bool, cx: &mut Context<Self>) {
         let Some(at) = self.waits.iter().position(|w| w.key == key) else {
             return;
         };
+        if self.waits[at].remote.is_some() {
+            self.remote_answer(key, serde_json::json!({ "allow": yes }), cx);
+            return;
+        }
         let Waiting::Allow { then } = &self.waits[at].what else {
             return;
         };
@@ -450,21 +530,26 @@ impl Workspace {
                         *unmerged,
                         cx,
                     )),
-                    // Answered by the arm above.
-                    Approved::Connect { .. } => Err(Reply::err("Connected.")),
+                    // Answered by the arms above, and by `remote_answer`.
+                    Approved::Connect { .. } | Approved::Remote { .. } => {
+                        Err(Reply::err("Connected."))
+                    }
                 },
             },
         };
-        self.seen_asking(&from);
         match job {
             Err(reply) => {
                 self.answer(key, reply, cx);
+                self.seen_asking(&from);
             }
             Ok(job) => {
                 let Some(at) = self.waits.iter().position(|w| w.key == key) else {
                     return;
                 };
                 let wait = self.waits.remove(at);
+                self.inbox_settle(&[key]);
+                self.request_ended(&wait, cx);
+                self.seen_asking(&from);
                 cx.notify();
                 cx.spawn(async move |_, _| {
                     let reply = job.await;
@@ -493,9 +578,12 @@ impl Workspace {
     }
 
     /// The person answered a request of the terminal `from`: they saw its block, whose alert
-    /// (`tell_asking`'s, or any other) goes, as seeing a block clears its alert.
+    /// (`tell_asking`'s, or any other) goes, as seeing a block clears its alert; but not while
+    /// another request of it waits, whose words the alert keeps (`request_ended`).
     pub(super) fn seen_asking(&mut self, from: &str) {
-        if let Some(pane) = self.pane_mut(from) {
+        if self.asking(from).is_none()
+            && let Some(pane) = self.pane_mut(from)
+        {
             pane.alert = None;
         }
     }
@@ -506,6 +594,9 @@ impl Workspace {
         let Waiting::Allow { then } = &wait.what else {
             return String::new();
         };
+        if let Approved::Remote { line, .. } = then {
+            return line.clone();
+        }
         let Some((space_id, me)) = self.caller(&wait.from) else {
             return String::new();
         };
@@ -542,40 +633,45 @@ impl Workspace {
                 into,
                 ..
             } => format!("{from} wants to merge {name} ({unmerged} commits) into {into}."),
+            Approved::Remote { line, .. } => line.clone(),
+        }
+    }
+
+    /// The workspace and block a request comes from: for another computer's, the viewer of its
+    /// block (a viewer is no caller of this computer's tools); else the terminal that called.
+    pub(crate) fn asker(&self, wait: &Wait) -> Option<(String, BlockId)> {
+        if wait.remote.is_none() {
+            return self.caller(&wait.from);
+        }
+        self.spaces().filter(|s| s.is_remote()).find_map(|space| {
+            space
+                .blocks
+                .iter()
+                .find(|(_, body)| body.terminal().is_some_and(|p| p.term.id() == wait.from))
+                .map(|(id, _)| (space.id.clone(), *id))
+        })
+    }
+
+    /// The workspace a request is listed in: for another computer's, the viewer of its block's,
+    /// else the remote workspace it came from while it is here; else the terminal's that called.
+    pub(crate) fn request_space(&self, wait: &Wait) -> Option<String> {
+        match &wait.remote {
+            Some(ask) => self
+                .asker(wait)
+                .map(|(space, _)| space)
+                .or_else(|| self.space_named(&ask.space).map(|s| s.id.clone())),
+            None => self.asker(wait).map(|(space, _)| space),
         }
     }
 
     /// What the agent in terminal `terminal` asks the person, oldest first: the first, and how
-    /// many.
-    pub(crate) fn balloon(&self, terminal: &str) -> Option<(&Wait, usize)> {
+    /// many. Its block shows a notice, and the inbox lists them.
+    pub(crate) fn asking(&self, terminal: &str) -> Option<(&Wait, usize)> {
         let mut asking = self.waits.iter().filter(|w| {
             w.from == terminal && matches!(w.what, Waiting::Question { .. } | Waiting::Allow { .. })
         });
         let first = asking.next()?;
         Some((first, 1 + asking.count()))
-    }
-
-    /// The terminal whose dialog has the keyboard: one of its fields has it, or its block does
-    /// (focused, the workspace holding the keyboard), its oldest request is a question, and Esc
-    /// didn't give the keyboard back.
-    pub(crate) fn balloon_keys(&self, window: &Window, cx: &App) -> Option<&str> {
-        if let Some(terminal) = self.balloon_typing(window, cx) {
-            return Some(terminal);
-        }
-        if !self.canvas_has_keys(window) {
-            return None;
-        }
-        let pane = self.space.focused_terminal()?;
-        let (wait, _) = self.balloon(pane.term.id())?;
-        matches!(wait.what, Waiting::Question { away: false, .. }).then_some(wait.from.as_str())
-    }
-
-    /// The terminal whose balloon's field has the keyboard, if one does: the keys are the field's.
-    pub(crate) fn balloon_typing(&self, window: &Window, cx: &App) -> Option<&str> {
-        self.waits
-            .iter()
-            .find(|w| field_focused(w, window, cx))
-            .map(|w| w.from.as_str())
     }
 
     /// A request's short sound, unless `[connections] sound` is off or one played under
@@ -591,33 +687,84 @@ impl Workspace {
         }
     }
 
-    /// The person doesn't see the asking block's dialog (the block is in another workspace,
-    /// outside the view, hidden by grid mode, or too small on screen for its dialog to be drawn,
-    /// or the window is in the background): a notification says what it asks, clicking it shows
-    /// the block; and the block gets an alert, as a bell gives one (its workspace's dot,
-    /// `go_to_waiting`).
+    /// The person doesn't see the request: it is in another workspace than the one shown, or the
+    /// window is in the background. A notification says what it asks, clicking it shows that
+    /// workspace with its inbox open at the request. The block gets an alert in every case, as a
+    /// bell gives one (its workspace's dot, `go_to_waiting`), so a request missed here is found
+    /// from another workspace; a request here, the window in front, is told by the inbox's
+    /// badge alone.
     fn tell_asking(&mut self, wait: &Wait, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((space_id, me)) = self.caller(&wait.from) else {
+        let Some(space_id) = self.request_space(wait) else {
             return;
         };
-        // As `block::render` draws it: in full, or worked in.
-        let full = self.space.focused == Some(me)
-            || templum_canvas::level(self.cell.font_size, self.space.rest) == Level::Full;
-        let shown = window.is_window_active()
-            && space_id == self.space.id
-            && self.space.shown(me)
-            && full
-            && self
-                .space
-                .canvas
-                .visible_from(&self.space.view, self.viewport(window))
-                .any(|b| b.id == me);
-        if shown {
+        let me = self.asker(wait).map(|(_, me)| me);
+        let space = self.space_named(&space_id).expect("the caller's workspace");
+        // Another computer's request is titled by where it is: "API on winx-desktop".
+        let title = match (
+            space.remote.as_deref().filter(|_| wait.remote.is_some()),
+            me,
+        ) {
+            (Some(remote), _) => {
+                format!("{} on {}", space.name, crate::mirror::computer_of(remote))
+            }
+            (None, Some(me)) => self.about(&space.blocks[&me], cx).1,
+            (None, None) => return,
+        };
+        let Some(text) = self.asking_text(wait, cx) else {
+            return;
+        };
+        let quiet = wait.remote.as_ref().is_some_and(|a| a.quiet);
+        #[cfg(test)]
+        if wait.remote.is_some() && !quiet {
+            self.said.push(format!("{title}: {text}"));
+        }
+        if let Some(pane) = self.pane_mut(&wait.from) {
+            pane.alert = Some(Alert::Attention(Some(text.clone())));
+        }
+        // A request here, the window in front, is told by the badge: no notification.
+        if quiet || window.is_window_active() && space_id == self.space.id {
             return;
         }
+        self.notify_from(space_id, me, title, text, Some(wait.key), window, cx);
+    }
+
+    /// One notification for `count` requests of another computer's that were not told one each
+    /// (the last of them, `key`, is what it opens).
+    pub(super) fn tell_folded(
+        &mut self,
+        key: u64,
+        count: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(wait) = self.waits.iter().find(|w| w.key == key) else {
+            return;
+        };
+        let Some(space_id) = self.request_space(wait) else {
+            return;
+        };
+        let me = self.asker(wait).map(|(_, me)| me);
         let space = self.space_named(&space_id).expect("the caller's workspace");
-        let (_, title, _) = self.about(&space.blocks[&me], cx);
-        let text = match &wait.what {
+        let Some(remote) = space.remote.as_deref() else {
+            return;
+        };
+        let title = format!("{} on {}", space.name, crate::mirror::computer_of(remote));
+        let text = match count {
+            1 => "1 more request asks you".to_string(),
+            _ => format!("{count} more requests ask you"),
+        };
+        #[cfg(test)]
+        self.said.push(format!("{title}: {text}"));
+        if window.is_window_active() && space_id == self.space.id {
+            return;
+        }
+        self.notify_from(space_id, me, title, text, Some(key), window, cx);
+    }
+
+    /// What the request `wait` says to the person, as a notification and the block's alert: None
+    /// for what is no request of the person's.
+    fn asking_text(&self, wait: &Wait, cx: &App) -> Option<String> {
+        Some(match &wait.what {
             Waiting::Question { ask, .. } if ask.plan.is_some() => {
                 format!("Asks you to approve a plan: {}", ask.summary())
             }
@@ -626,16 +773,31 @@ impl Workspace {
                 more => format!("Asks you: {} (and {more} more)", ask.summary()),
             },
             Waiting::Allow { .. } => self.allow_line(wait, cx),
-            Waiting::Turn { .. } | Waiting::Event { .. } => return,
+            Waiting::Turn { .. } | Waiting::Event { .. } => return None,
+        })
+    }
+
+    /// The request `ended` of the terminal `from` is gone: its block's alert follows what still
+    /// waits there. The oldest request left gives its words; with none left, the alert goes if it
+    /// was the request's (a bell's or a command's stays).
+    fn request_ended(&mut self, ended: &Wait, cx: &App) {
+        let Some(gone) = self.asking_text(ended, cx) else {
+            return;
         };
-        if let Some(pane) = self.pane_mut(&wait.from) {
-            pane.alert = Some(Alert::Attention(Some(text.clone())));
+        let left = self
+            .asking(&ended.from)
+            .and_then(|(wait, _)| self.asking_text(wait, cx));
+        if let Some(pane) = self.pane_mut(&ended.from) {
+            match left {
+                Some(text) => pane.alert = Some(Alert::Attention(Some(text))),
+                None if pane.alert == Some(Alert::Attention(Some(gone))) => pane.alert = None,
+                None => {}
+            }
         }
-        self.notify_from(space_id, me, title, text, window, cx);
     }
 
     /// `wait_for` from the terminal `from`: `event` in the terminal `block`. `idle` is
-    /// `wait_for_idle`; `needs_you` answers at once when its agent, or its balloon, already asks
+    /// `wait_for_idle`; `needs_you` answers at once when its agent, or its request, already asks
     /// its person; `output` waits for a line matching `pattern`, at once when one of its last
     /// `lines` does, or with `wait` false keeps watching while the caller works, its match typed
     /// back; the others wait for the next command or alert.
@@ -689,7 +851,7 @@ impl Workspace {
         if event == Event::NeedsYou {
             let asks = match &pane.state {
                 Some(AgentState::NeedsYou(what)) => Some(what.clone()),
-                _ => self.balloon(&of).map(|(wait, _)| Some(wait.summary())),
+                _ => self.asking(&of).map(|(wait, _)| Some(wait.summary())),
             };
             if let Some(what) = asks {
                 return Outcome::Now(waiting_for_person(block, what.as_deref(), &pane.tail()));
@@ -731,6 +893,8 @@ impl Workspace {
             let id = self.watch_keep(watch, cx);
             let back = if by == templum_agent::ASKER {
                 "comes back into this chat"
+            } else if by == templum_api::ASKER {
+                "comes back as a notice event"
             } else {
                 "is typed into your terminal"
             };
@@ -750,7 +914,7 @@ impl Workspace {
     }
 
     /// The block of the terminal `terminal` waits for its person (its agent asks for `what`, or
-    /// its balloon does): the `wait_for(needs_you)` on it are answered DRAWN later, with its
+    /// its request does): the `wait_for(needs_you)` on it are answered DRAWN later, with its
     /// screen as drawn by then. `tell`: a new wait, which the agent that handed it a task hears of,
     /// unless a `wait_for(needs_you)` of its was just answered with it.
     pub(super) fn needs_you(

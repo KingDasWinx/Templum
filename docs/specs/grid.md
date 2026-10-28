@@ -18,6 +18,9 @@ tiled side by side, like Hyprland's dwindle layout, and go back to the canvas ex
   its real size, a terminal resized to fill its tile. The camera doesn't move: the wheel scrolls inside blocks only,
   Ctrl+wheel, pinching, the zoom keys and dragging the background do nothing, the gaps are inert.
 - **Each workspace** has its own grid: switching workspaces shows each as it was left, and a restart brings it back.
+- **On a mirrored workspace** ([templum-to-templum.md](templum-to-templum.md)) grid mode is the mirror's own view of
+  home's blocks: going in and out calls nothing at home, and home's moves and closes keep the tiles (a moved tile goes
+  back to home's place). A restart doesn't bring it back: a mirror's canvas is never saved.
 - **Tiles:** each pair of tiles shares its area in halves. A new tile takes half of the one it splits, along its
   longer side (a wide tile splits side by side, a tall one top and bottom). Halves stay halves: there are no
   dividers to drag.

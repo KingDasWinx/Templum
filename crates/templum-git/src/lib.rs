@@ -7,6 +7,7 @@ pub mod conflict;
 mod diff;
 pub mod graph;
 pub mod message;
+pub mod ops;
 mod parse;
 mod repo;
 pub mod trash;

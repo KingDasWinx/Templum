@@ -39,11 +39,12 @@ pub(crate) struct Kind {
     pub new: &'static str,
 }
 
-/// Opens the dialog of `kind`: `rows` gives the rows a search finds, `open` opens an entry, `delete`
+/// Opens the dialog of `kind`: `rows` gives the rows a search finds (of what the dialog was opened on,
+/// not of whatever is shown by the time it is drawn), `open` opens an entry, `delete`
 /// deletes one, `new` adds one. Each closes the dialog first, but `delete`.
 pub(crate) fn open(
     kind: Kind,
-    rows: fn(&Workspace, &str) -> Vec<Row>,
+    rows: impl Fn(&Workspace, &str) -> Vec<Row> + 'static,
     open: impl Fn(&mut Workspace, u64, &mut Window, &mut Context<Workspace>) + Clone + 'static,
     delete: impl Fn(&mut Workspace, u64, &mut Window, &mut Context<Workspace>) + Clone + 'static,
     new: impl Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + Clone + 'static,

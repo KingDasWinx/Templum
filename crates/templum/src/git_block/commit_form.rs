@@ -15,6 +15,7 @@ use crate::editor::button;
 use crate::grid::hsla;
 use crate::menu::Target;
 use crate::workspace::Workspace;
+use crate::workspace::remote::NOT_YET;
 
 /// The commit form's Description, about three rows high, at zoom 1.
 const DESCRIPTION_H: f32 = 64.0;
@@ -167,7 +168,7 @@ pub(super) fn commit_form(
                 .child(commit)
                 .child(menu),
         )
-        .when(git.author.is_none() && git.repo().is_some(), |el| {
+        .when(git.author.is_none() && git.has_repo(), |el| {
             el.child(
                 div()
                     .flex()
@@ -196,16 +197,34 @@ fn generate_button(
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> Option<AnyElement> {
-    let agent = ws.commit_agent.as_ref().filter(|a| a.ready)?;
+    // On a mirror home's agent writes the message, whatever agent this computer has.
+    let home = ws
+        .space
+        .remote
+        .as_deref()
+        .filter(|_| git.home.is_some())
+        .map(crate::mirror::computer_of);
+    let agent = ws.commit_agent.as_ref().filter(|a| a.ready);
+    if home.is_none() && agent.is_none() {
+        return None;
+    }
     let running = git.generating.is_some();
-    if git.repo().is_none() || (git.status.staged().is_empty() && !git.commit_all() && !running) {
+    if !git.has_repo() || (git.status.staged().is_empty() && !git.commit_all() && !running) {
         return None;
     }
     let ui = ws.ui;
-    let tip: SharedString = if running {
-        "Stop the agent".into()
-    } else {
-        format!("Generate: {} writes the message", agent.title).into()
+    let tip: SharedString = match (&home, running, agent) {
+        (Some(computer), true, _) => {
+            format!("Running on {computer}: it can't be stopped from here.").into()
+        }
+        (Some(computer), false, _) => {
+            format!("Generate: {computer}'s agent writes the message").into()
+        }
+        (None, true, _) => "Stop the agent".into(),
+        (None, false, Some(agent)) => {
+            format!("Generate: {} writes the message", agent.title).into()
+        }
+        (None, false, None) => return None,
     };
     let generate = div()
         .id("git-generate")
@@ -227,20 +246,32 @@ fn generate_button(
                 .text_color(ui.title)
                 .into_any_element()
         })
-        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-        .on_click(
-            cx.listener(move |ws, _: &ClickEvent, window, cx| ws.generate_message(window, cx)),
-        )
-        .test_support();
-    let menu = icon_button("git-generate-menu", IconName::Settings2, ui, z)
-        .flex_shrink_0()
-        .tooltip(|window, cx| {
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx));
+    // Running at home, a click does nothing: it can't be stopped from here.
+    let generate = if home.is_some() && running {
+        generate.test_support()
+    } else {
+        generate
+            .on_click(
+                cx.listener(move |ws, _: &ClickEvent, window, cx| ws.generate_message(window, cx)),
+            )
+            .test_support()
+    };
+    let menu = icon_button("git-generate-menu", IconName::Settings2, ui, z).flex_shrink_0();
+    // The ⚙ (the model, this repository's instructions) stays on home for now.
+    let menu = if home.is_some() {
+        menu.opacity(0.5)
+            .tooltip(|window, cx| Tooltip::new(NOT_YET).build(window, cx))
+            .test_support()
+    } else {
+        menu.tooltip(|window, cx| {
             Tooltip::new("The model, and this repository's instructions").build(window, cx)
         })
         .on_click(cx.listener(move |ws, e: &ClickEvent, window, cx| {
             ws.open_menu(Target::GitGenerateMenu, e.position(), window, cx)
         }))
-        .test_support();
+        .test_support()
+    };
     Some(
         div()
             .flex()

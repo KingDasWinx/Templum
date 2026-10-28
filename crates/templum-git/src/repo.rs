@@ -6,10 +6,12 @@ use std::collections::HashSet;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
 
 use crate::blame::BlameLine;
 use crate::diff::{self, FileDiff, parse_diff};
@@ -43,6 +45,11 @@ impl GitError {
     /// It was cancelled ([`Repo::with_cancel`]), not refused.
     pub fn cancelled(&self) -> bool {
         self.code.is_none() && !self.missing && self.stderr == CANCELLED
+    }
+
+    /// Its output passed [`API_OUTPUT_MOST`] and it was killed.
+    pub fn too_large(&self) -> bool {
+        self.code.is_none() && !self.missing && self.stderr == TOO_LARGE
     }
 
     /// It failed because git would have asked for a password or a key.
@@ -137,6 +144,8 @@ pub struct Repo {
     program: String,
     /// Set from elsewhere: the running command is killed.
     cancel: Option<Arc<AtomicBool>>,
+    /// Past it the running command is killed ([`Repo::with_deadline`]).
+    deadline: Option<Instant>,
     /// The working tree's top folder.
     pub root: PathBuf,
     /// Where HEAD, MERGE_HEAD and the like live (a worktree's own, for a linked worktree).
@@ -166,6 +175,7 @@ fn run_in(
     dir: &Path,
     args: &[&str],
     cancel: Option<&AtomicBool>,
+    deadline: Option<Instant>,
 ) -> Result<Vec<u8>, GitError> {
     let command = shown(program, args);
     let mut c = Command::new(program);
@@ -191,9 +201,30 @@ fn run_in(
         code: None,
         stderr: format!("Couldn't run {program}: {e}"),
     };
-    let out = match cancel {
-        None => c.output().map_err(couldnt)?,
-        Some(cancel) => match until_cancelled(&mut c, cancel, None).map_err(couldnt)? {
+    let out = if cancel.is_none() && deadline.is_none() {
+        retry_busy(|| c.output()).map_err(couldnt)?
+    } else {
+        // A call with a deadline is the API's: nobody is there to answer, and what git starts
+        // (ssh, a hook, a credential helper) dies with it.
+        let unattended = deadline.is_some();
+        if unattended {
+            quiet(&mut c);
+        }
+        // An API caller can ask for a diff of any size: past a cap the command is killed.
+        let most = unattended.then_some(API_OUTPUT_MOST);
+        match until_cancelled(&mut c, cancel.unwrap_or(&NEVER), deadline, unattended, most)
+            .map_err(|e| {
+                if e.kind() == io::ErrorKind::FileTooLarge {
+                    GitError {
+                        command: command.clone(),
+                        code: None,
+                        stderr: TOO_LARGE.to_string(),
+                        missing: false,
+                    }
+                } else {
+                    couldnt(e)
+                }
+            })? {
             Some(out) => out,
             None => {
                 return Err(GitError {
@@ -203,7 +234,7 @@ fn run_in(
                     missing: false,
                 });
             }
-        },
+        }
     };
     if out.status.success() {
         Ok(out.stdout)
@@ -217,23 +248,115 @@ fn run_in(
     }
 }
 
+/// `c` never waits on a person: ssh asks nothing (its askpass fails at once, as `BatchMode`
+/// would, without replacing the user's `GIT_SSH_COMMAND` or `core.sshCommand`), nor does a
+/// credential manager. A setting the user made for these stays.
+fn quiet(c: &mut Command) {
+    // Windows has no console here to ask on (CREATE_NO_WINDOW).
+    if cfg!(unix) && std::env::var_os("SSH_ASKPASS_REQUIRE").is_none() {
+        c.env("SSH_ASKPASS_REQUIRE", "force")
+            .env("SSH_ASKPASS", "false");
+    }
+    if std::env::var_os("GCM_INTERACTIVE").is_none() {
+        c.env("GCM_INTERACTIVE", "never");
+    }
+}
+
+/// Kills `child` and, with `group`, everything it started.
+fn kill_tree(child: &mut Child, group: bool) {
+    if group {
+        let pid = child.id().to_string();
+        #[cfg(unix)]
+        let mut kill = Command::new("kill");
+        #[cfg(unix)]
+        kill.args(["-KILL", "--", &format!("-{pid}")]);
+        #[cfg(windows)]
+        let mut kill = {
+            use std::os::windows::process::CommandExt as _;
+            let mut kill = Command::new("taskkill");
+            kill.args(["/T", "/F", "/PID", &pid])
+                .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            kill
+        };
+        let _ = kill
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// What a cancelled command's error says.
 const CANCELLED: &str = "Cancelled";
 
+/// What a command of the API may write to stdout or stderr: 64 MiB, 8 times what an answer
+/// weighs. It is read whole into memory, then parsed and copied (about 4 times its size); past
+/// it the command is killed.
+pub const API_OUTPUT_MOST: usize = 64 * 1024 * 1024;
+
+/// What the error of a command killed for passing [`API_OUTPUT_MOST`] says.
+const TOO_LARGE: &str = "Too large";
+
+/// The cancel flag of a command that only has a deadline.
+static NEVER: AtomicBool = AtomicBool::new(false);
+
+/// Why a command was stopped: it wrote too much, or it was cancelled or ran past its deadline.
+fn stopped(over: &AtomicBool) -> io::Result<Option<Output>> {
+    if over.load(Ordering::Relaxed) {
+        Err(io::Error::new(io::ErrorKind::FileTooLarge, TOO_LARGE))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Runs `run` again a few times while the program is busy: Linux refuses to run a file that
+/// another thread's fork still holds open for writing, as when a wrapper was written a moment ago.
+fn retry_busy<T>(mut run: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    let mut tries = 0;
+    loop {
+        match run() {
+            Err(e) if e.kind() == io::ErrorKind::ExecutableFileBusy && tries < 5 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20 * tries));
+            }
+            done => return done,
+        }
+    }
+}
+
 /// Runs `c` to the end, or kills it once `cancel` is set or `deadline` has passed (None then).
 /// Its output is read on threads meanwhile, so a chatty command never blocks on a full pipe.
+/// With `group` it runs in a group of its own and the kill takes all of it (ssh, a hook).
+/// With `most`, a command writing more than that to stdout or stderr is killed and the error is
+/// [`io::ErrorKind::FileTooLarge`].
 pub(crate) fn until_cancelled(
     c: &mut Command,
     cancel: &AtomicBool,
     deadline: Option<Instant>,
+    group: bool,
+    most: Option<usize>,
 ) -> io::Result<Option<Output>> {
     use std::io::Read;
-    let mut child = c.spawn()?;
+    #[cfg(unix)]
+    if group {
+        use std::os::unix::process::CommandExt as _;
+        c.process_group(0);
+    }
+    let mut child = retry_busy(|| c.spawn())?;
+    let over = Arc::new(AtomicBool::new(false));
     let read = |pipe: Option<Box<dyn Read + Send>>| {
+        let over = over.clone();
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
-            if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_end(&mut bytes);
+            if let Some(pipe) = pipe {
+                // One byte past the most says it was passed.
+                let room = most.map_or(u64::MAX, |m| m as u64 + 1);
+                let _ = pipe.take(room).read_to_end(&mut bytes);
+                if most.is_some_and(|m| bytes.len() > m) {
+                    over.store(true, Ordering::Relaxed);
+                }
             }
             bytes
         })
@@ -250,25 +373,31 @@ pub(crate) fn until_cancelled(
             .take()
             .map(|p| Box::new(p) as Box<dyn Read + Send>),
     );
+    let stop = || {
+        cancel.load(Ordering::Relaxed)
+            || over.load(Ordering::Relaxed)
+            || deadline.is_some_and(|d| Instant::now() >= d)
+    };
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        if cancel.load(Ordering::Relaxed) || deadline.is_some_and(|d| Instant::now() >= d) {
-            // ponytail: kills git, not what it started (an ssh asking on a terminal stays until
-            // that terminal closes); a process group needs a dependency or unsafe.
-            let _ = child.kill();
-            let _ = child.wait();
-            return Ok(None);
+        if stop() {
+            kill_tree(&mut child, group);
+            return stopped(&over);
         }
         std::thread::sleep(Duration::from_millis(20));
     };
     // A helper it left running may hold its output open: waited for no longer than it.
     while !(stdout.is_finished() && stderr.is_finished()) {
-        if cancel.load(Ordering::Relaxed) || deadline.is_some_and(|d| Instant::now() >= d) {
-            return Ok(None);
+        if stop() {
+            kill_tree(&mut child, group);
+            return stopped(&over);
         }
         std::thread::sleep(Duration::from_millis(20));
+    }
+    if over.load(Ordering::Relaxed) {
+        return stopped(&over);
     }
     Ok(Some(Output {
         status,
@@ -280,7 +409,7 @@ pub(crate) fn until_cancelled(
 impl Repo {
     /// "git version 2.55.0", or why `program` can't run.
     pub fn version(program: &str) -> Result<String, GitError> {
-        let out = run_in(program, Path::new("."), &["--version"], None)?;
+        let out = run_in(program, Path::new("."), &["--version"], None, None)?;
         Ok(String::from_utf8_lossy(&out).trim().to_string())
     }
 
@@ -290,6 +419,7 @@ impl Repo {
             program,
             folder,
             &["rev-parse", "--show-toplevel", "--absolute-git-dir"],
+            None,
             None,
         ) {
             Ok(out) => out,
@@ -304,6 +434,7 @@ impl Repo {
         Ok(Some(Repo {
             program: program.to_string(),
             cancel: None,
+            deadline: None,
             root: PathBuf::from(root),
             git_dir: PathBuf::from(git_dir),
         }))
@@ -311,7 +442,7 @@ impl Repo {
 
     /// `git init` in `folder`.
     pub fn init(program: &str, folder: &Path) -> Result<Repo, GitError> {
-        run_in(program, folder, &["init", "-q"], None)?;
+        run_in(program, folder, &["init", "-q"], None, None)?;
         Self::discover(program, folder)?.ok_or_else(|| GitError {
             command: shown(program, &["init", "-q"]),
             code: None,
@@ -345,6 +476,7 @@ impl Repo {
             parent,
             &["clone", "-q", "--", url, &dest],
             cancel.as_deref(),
+            None,
         ) {
             if !existed {
                 let _ = std::fs::remove_dir_all(into);
@@ -378,9 +510,33 @@ impl Repo {
         }
     }
 
+    /// This repository, its commands killed past `at` (what the API's `git` tool allows one
+    /// call). A killed command is a cancelled one: [`GitError::cancelled`].
+    pub fn with_deadline(&self, at: Instant) -> Repo {
+        Repo {
+            deadline: Some(at),
+            ..self.clone()
+        }
+    }
+
     /// Runs `git args` in the root; Ok is stdout.
     pub fn run(&self, args: &[&str]) -> Result<Vec<u8>, GitError> {
-        run_in(&self.program, &self.root, args, self.cancel.as_deref())
+        run_in(
+            &self.program,
+            &self.root,
+            args,
+            self.cancel.as_deref(),
+            self.deadline,
+        )
+    }
+
+    /// `run` for a command with paths a caller wrote: they are files, never patterns (`[ab].txt`
+    /// names that file, not a.txt and b.txt). Not for every command: `git stash -u` and others
+    /// pass pathspec magic of their own.
+    fn run_paths(&self, args: &[&str]) -> Result<Vec<u8>, GitError> {
+        let mut all = vec!["--literal-pathspecs"];
+        all.extend_from_slice(args);
+        self.run(&all)
     }
 
     fn text(&self, args: &[&str]) -> Result<String, GitError> {
@@ -425,20 +581,11 @@ impl Repo {
         })
     }
 
-    /// Writes both to the global config.
-    pub fn set_author(program: &str, name: &str, email: &str) -> Result<(), GitError> {
-        run_in(
-            program,
-            Path::new("."),
-            &["config", "--global", "user.name", name],
-            None,
-        )?;
-        run_in(
-            program,
-            Path::new("."),
-            &["config", "--global", "user.email", email],
-            None,
-        )?;
+    /// Writes both to the global config, or only to this repository's.
+    pub fn set_author(&self, name: &str, email: &str, global: bool) -> Result<(), GitError> {
+        let scope = if global { "--global" } else { "--local" };
+        self.run(&["config", scope, "user.name", name])?;
+        self.run(&["config", scope, "user.email", email])?;
         Ok(())
     }
 
@@ -446,14 +593,14 @@ impl Repo {
     pub fn stage(&self, paths: &[&str]) -> Result<(), GitError> {
         let mut args = vec!["add", "-A", "--"];
         args.extend_from_slice(paths);
-        self.run(&args).map(drop)
+        self.run_paths(&args).map(drop)
     }
 
     /// `git reset -q -- paths`: works before the first commit, where `restore --staged` doesn't.
     pub fn unstage(&self, paths: &[&str]) -> Result<(), GitError> {
         let mut args = vec!["reset", "-q", "--"];
         args.extend_from_slice(paths);
-        self.run(&args).map(drop)
+        self.run_paths(&args).map(drop)
     }
 
     /// Throws away unstaged changes: tracked files go back to the index, untracked ones are
@@ -467,7 +614,7 @@ impl Repo {
         if !tracked.is_empty() {
             let mut args = vec!["restore", "--worktree", "--"];
             args.extend_from_slice(&tracked);
-            self.run(&args)?;
+            self.run_paths(&args)?;
         }
         for e in entries
             .iter()
@@ -545,7 +692,7 @@ impl Repo {
 
     /// The repository's main working tree: the first of `git worktree list`; None for a bare
     /// repository, which has none.
-    fn main_tree(&self) -> Result<Option<PathBuf>, GitError> {
+    pub fn main_tree(&self) -> Result<Option<PathBuf>, GitError> {
         let list = self.text(&["worktree", "list", "--porcelain"])?;
         let mut first = list.split("\n\n").next().unwrap_or_default().lines();
         let main = first
@@ -785,7 +932,7 @@ impl Repo {
             .trim_end()
             .to_string();
         let target = match replaced {
-            Some(r) => Some(r.to_string()),
+            Some(r) => Some(self.amended(&head, r)?),
             None => self
                 .text(&["rev-parse", "--verify", "-q", &format!("{head}~1")])
                 .ok()
@@ -803,6 +950,48 @@ impl Repo {
             None => self.run(&["update-ref", "-d", "HEAD", &head])?,
         };
         Ok(Some(message))
+    }
+
+    /// The commit that the amend which made `head` replaced, as HEAD's reflog tells it: the
+    /// entry before the newest "commit (amend)" that moved HEAD to `head`.
+    fn amended_from(&self, head: &str) -> Option<String> {
+        let log = self
+            .text(&["log", "-g", "-n1000", "--format=%H %gs", "HEAD"])
+            .ok()?;
+        let mut entries = log.lines();
+        entries.find(|l| {
+            l.strip_prefix(head)
+                .is_some_and(|r| r.starts_with(" commit (amend)"))
+        })?;
+        let before = entries.next()?;
+        Some(before.split(' ').next()?.to_string())
+    }
+
+    /// The full hash of `replaced` when HEAD is its amend: another commit with the same parents,
+    /// as `git commit --amend` leaves it. Any other commit would move the branch somewhere else.
+    fn amended(&self, head: &str, replaced: &str) -> Result<String, GitError> {
+        let line = |rev: &str| -> Result<Vec<String>, GitError> {
+            let out = self.text(&["rev-list", "--parents", "-n1", &format!("{rev}^{{commit}}")])?;
+            Ok(out.split_whitespace().map(str::to_string).collect())
+        };
+        let (old, new) = (line(replaced)?, line(head)?);
+        match (old.split_first(), new.split_first()) {
+            // Two root commits "have the same parents" without being an amend of each other:
+            // HEAD's reflog says which commit the amend of `head` replaced.
+            (Some((hash, a)), Some((_, b)))
+                if hash != head
+                    && a == b
+                    && (!b.is_empty() || self.amended_from(head).as_deref() == Some(hash)) =>
+            {
+                Ok(hash.clone())
+            }
+            _ => Err(GitError {
+                command: shown(&self.program, &["rev-list", "--parents", replaced]),
+                code: None,
+                stderr: format!("fatal: {replaced} isn't the commit that {head} amended."),
+                missing: false,
+            }),
+        }
     }
 
     /// `git apply` of `patch` (a `hunk_patch`): on the index with `cached`, the other way with
@@ -838,7 +1027,7 @@ impl Repo {
 }
 /// The working tree's diff: the unstaged changes, untracked files included (built with a new
 /// file's headers, after the tracked ones, in the status's order), and the staged ones.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkingDiff {
     pub unstaged: Vec<FileDiff>,
     pub staged: Vec<FileDiff>,
@@ -848,9 +1037,35 @@ pub struct WorkingDiff {
 /// file is listed unread (`FileDiff::unread`) until it is asked for in `whole`.
 const UNTRACKED_FILES: usize = 200;
 const UNTRACKED_BYTES: u64 = DIFF_LIMIT as u64;
+/// What the files asked for in `whole` take of one read in all, tracked (what git's re-read
+/// writes) or untracked, 4 MiB at most each: the API can name a thousand.
+const ASKED_BYTES: u64 = 8 * DIFF_LIMIT as u64;
+
+/// What one read of the working diff takes of the conflicted files in all, regions kept as
+/// lines (two or three times a file's size): past it, a file is listed unread.
+const CONFLICT_BYTES: u64 = 4 * DIFF_LIMIT as u64;
 
 /// More context lines than any file has: git shows the file whole.
 const WHOLE: &str = "-U999999999";
+
+/// A working file's size as git counts it: a link's own, not its target's.
+fn working_size(path: &Path) -> u64 {
+    std::fs::symlink_metadata(path).map_or(0, |m| m.len())
+}
+
+/// A working file's bytes as git diffs them: a regular file's, a link's own target text. None
+/// for anything else (a device, a pipe: reading one never ends) or when it can't be read.
+pub(crate) fn working_bytes(path: &Path) -> Option<Vec<u8>> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if meta.is_file() {
+        std::fs::read(path).ok()
+    } else if meta.is_symlink() {
+        let target = std::fs::read_link(path).ok()?;
+        Some(target.to_string_lossy().into_owned().into_bytes())
+    } else {
+        None
+    }
+}
 
 impl Repo {
     /// `git diff` and `git diff --cached`, parsed (`-M`; `-w` with `ignore_whitespace`), each
@@ -864,18 +1079,31 @@ impl Repo {
     ) -> Result<WorkingDiff, GitError> {
         // Conflicted files first, region by region (git's own diff of them is a combined one,
         // which the parser skips).
+        let mut conflict_bytes = 0u64;
         let mut unstaged: Vec<FileDiff> = status
             .conflicts()
             .iter()
             .filter_map(|e| {
-                let bytes = std::fs::read(self.root.join(&e.path)).ok()?;
-                if bytes.len() > DIFF_LIMIT {
+                let full = self.root.join(&e.path);
+                // Markers are in a regular file only (a link holds none).
+                let meta = std::fs::symlink_metadata(&full).ok()?;
+                if !meta.is_file() || meta.len() > DIFF_LIMIT as u64 {
                     return None;
                 }
-                crate::conflict::conflict_diff(&e.path, &bytes)
+                if conflict_bytes + meta.len() > CONFLICT_BYTES {
+                    let mut file = FileDiff::empty();
+                    file.old_path = Some(e.path.clone());
+                    file.new_path = Some(e.path.clone());
+                    file.status = Change::Conflict;
+                    file.unread = true;
+                    return Some(file);
+                }
+                conflict_bytes += meta.len();
+                crate::conflict::conflict_diff(&e.path, &std::fs::read(full).ok()?)
             })
             .collect();
-        unstaged.extend(self.side_diff(false, ignore_whitespace, whole)?);
+        let mut asked_bytes = 0u64;
+        unstaged.extend(self.side_diff(false, ignore_whitespace, whole, &mut asked_bytes)?);
         // An agent can make thousands of new files (a build, an unpacked folder): one read
         // takes the first ones, the others are listed unread until asked for.
         let (mut read, mut bytes) = (0, 0u64);
@@ -884,12 +1112,15 @@ impl Repo {
             .iter()
             .filter(|e| e.unstaged == Some(Change::Untracked))
         {
-            let size = std::fs::metadata(self.root.join(&e.path)).map_or(0, |m| m.len());
-            let asked = whole.iter().any(|(staged, p)| !staged && *p == e.path);
+            let size = working_size(&self.root.join(&e.path));
+            let asked = whole.iter().any(|(staged, p)| !staged && *p == e.path)
+                && asked_bytes + size <= ASKED_BYTES;
             // Over DIFF_LIMIT it is never read (Too large to show): it costs nothing.
             let huge = size > DIFF_LIMIT as u64;
             if huge || asked || (read < UNTRACKED_FILES && bytes + size <= UNTRACKED_BYTES) {
-                if !huge {
+                if asked {
+                    asked_bytes += size;
+                } else if !huge {
                     read += 1;
                     bytes += size;
                 }
@@ -902,7 +1133,7 @@ impl Repo {
                 unstaged.push(file);
             }
         }
-        let staged = self.side_diff(true, ignore_whitespace, whole)?;
+        let staged = self.side_diff(true, ignore_whitespace, whole, &mut asked_bytes)?;
         let mut all = WorkingDiff { unstaged, staged };
         for file in all.unstaged.iter_mut().chain(all.staged.iter_mut()) {
             self.count(file);
@@ -931,11 +1162,20 @@ impl Repo {
         args
     }
 
+    /// `name` as the full ref of the branch it names, the local one first: a tag or a hash of
+    /// the same name never stands in for it. A name that is none stays as it is.
+    fn full_ref(&self, name: &str) -> String {
+        [format!("refs/heads/{name}"), format!("refs/remotes/{name}")]
+            .into_iter()
+            .find(|r| self.has_ref(r))
+            .unwrap_or_else(|| name.to_string())
+    }
+
     /// The commits `branch` has that `base` hasn't (`git log base..branch`), newest first.
     pub fn compare_log(&self, base: &str, branch: &str) -> Result<Vec<Commit>, GitError> {
         let format = format!("--format={}", parse::LOG_FORMAT);
         let date = format!("--date={}", parse::LOG_DATE);
-        let range = format!("{base}..{branch}");
+        let range = format!("{}..{}", self.full_ref(base), self.full_ref(branch));
         let out = self.run(&["log", "-z", &format, &date, &range, "--"])?;
         Ok(parse::parse_log(&out))
     }
@@ -948,7 +1188,7 @@ impl Repo {
         branch: &str,
         ignore_whitespace: bool,
     ) -> Result<Vec<FileDiff>, GitError> {
-        let range = format!("{base}...{branch}");
+        let range = format!("{}...{}", self.full_ref(base), self.full_ref(branch));
         let mut args = Self::diff_args("diff", ignore_whitespace);
         args.push(&range);
         args.push("--");
@@ -974,11 +1214,14 @@ impl Repo {
         Ok(parse_diff(&self.text(&args)?, DIFF_LIMIT))
     }
 
+    /// One side's diff; the files in `whole` are read again while `asked_bytes` (shared by the
+    /// whole read of the working diff) has room: one past it keeps its normal diff.
     fn side_diff(
         &self,
         staged: bool,
         ignore_whitespace: bool,
         whole: &[(bool, String)],
+        asked_bytes: &mut u64,
     ) -> Result<Vec<FileDiff>, GitError> {
         let mut args = Self::diff_args("diff", ignore_whitespace);
         if staged {
@@ -989,6 +1232,12 @@ impl Repo {
             let Some(i) = files.iter().position(|f| f.path() == path) else {
                 continue;
             };
+            // The working file's size stands for what the re-read will write (it is counted as
+            // written once read), so a file past the budget is never read.
+            let size = working_size(&self.root.join(path));
+            if *asked_bytes + size > ASKED_BYTES {
+                continue;
+            }
             let mut args = args.clone();
             args.push(WHOLE);
             args.push("--");
@@ -998,7 +1247,9 @@ impl Repo {
                 args.push(from);
             }
             args.push(path);
-            if let Some(file) = parse_diff(&self.text(&args)?, DIFF_LIMIT).pop() {
+            let out = self.run_paths(&args)?;
+            *asked_bytes += out.len() as u64;
+            if let Some(file) = parse_diff(&String::from_utf8_lossy(&out), DIFF_LIMIT).pop() {
                 files[i] = file;
             }
         }
@@ -1009,7 +1260,7 @@ impl Repo {
     /// past `DIFF_LIMIT` (not read).
     fn untracked_diff(&self, path: &str) -> FileDiff {
         let full = self.root.join(path);
-        let size = std::fs::metadata(&full).map_or(0, |m| m.len());
+        let size = working_size(&full);
         if size > DIFF_LIMIT as u64 {
             let mut file = FileDiff::empty();
             file.new_path = Some(path.to_string());
@@ -1017,7 +1268,7 @@ impl Repo {
             file.too_large = true;
             return file;
         }
-        let bytes = std::fs::read(&full).unwrap_or_default();
+        let bytes = working_bytes(&full).unwrap_or_default();
         let text = if bytes.iter().take(8 * 1024).any(|b| *b == 0) {
             diff::new_binary_diff(path)
         } else {
@@ -1033,7 +1284,7 @@ impl Repo {
             return;
         };
         let full = self.root.join(path);
-        let Ok(meta) = std::fs::metadata(&full) else {
+        let Ok(meta) = std::fs::symlink_metadata(&full) else {
             return;
         };
         file.bytes = Some(meta.len());
@@ -1042,7 +1293,7 @@ impl Repo {
         }
         // ponytail: reads every changed file on each poll to count its lines; cache by mtime
         // if a tree with many large changed files stalls the background executor.
-        if let Ok(bytes) = std::fs::read(&full) {
+        if let Some(bytes) = working_bytes(&full) {
             let n = bytes.iter().filter(|b| **b == b'\n').count()
                 + usize::from(!bytes.is_empty() && !bytes.ends_with(b"\n"));
             file.lines = Some(n as u32);
@@ -1052,7 +1303,8 @@ impl Repo {
 
 /// Which side of a conflict to keep, whatever the operation: Ours is the `<<<<<<<` part (HEAD's,
 /// the branch rebased onto in a rebase), Theirs the `>>>>>>>` one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Side {
     Ours,
     Theirs,
@@ -1065,7 +1317,7 @@ impl Repo {
             Side::Ours => "--ours",
             Side::Theirs => "--theirs",
         };
-        self.run(&["checkout", flag, "--", path]).map(drop)
+        self.run_paths(&["checkout", flag, "--", path]).map(drop)
     }
 
     /// `git <operation> --abort`.
@@ -1079,8 +1331,10 @@ impl Repo {
     }
 }
 /// How `git pull` joins the upstream's commits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Pull {
+    #[default]
     FastForward,
     Merge,
     Rebase,
@@ -1104,9 +1358,12 @@ impl Repo {
         self.run(&["push"]).map(drop)
     }
 
-    /// `git push -u <remote> <branch>`: the branch goes to the server and follows it from then.
+    /// `git push -u <remote> refs/heads/<branch>`: the branch goes to the server and follows it
+    /// from then. The full ref keeps a name like `+main` or `a:b` from being read as a forced
+    /// push or a `src:dst` refspec.
     pub fn publish(&self, remote: &str, branch: &str) -> Result<(), GitError> {
-        self.run(&["push", "-u", remote, branch]).map(drop)
+        self.run(&["push", "-u", remote, &format!("refs/heads/{branch}")])
+            .map(drop)
     }
 
     /// Pushes `branch`, not the one checked out, to its upstream: the remote and the ref it
@@ -1158,7 +1415,8 @@ impl Repo {
 }
 
 /// What Sync did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Synced {
     /// Got `got` commits from the server, sent `sent`.
     Done { got: u32, sent: u32 },
@@ -1217,7 +1475,8 @@ impl Repo {
 }
 
 /// Where History's search looks.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Search {
     /// Commit messages (`--grep`), without case.
     #[default]
@@ -1229,7 +1488,7 @@ pub enum Search {
 }
 
 /// What History lists.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoryQuery {
     /// HEAD and every branch, tag and remote branch (not `--all`, which has the stashes); else
     /// HEAD's history.
@@ -1314,7 +1573,7 @@ impl Repo {
         // `skip + count` and drop the first `skip` here. Parsing from the newest also keeps
         // each entry's path right across a rename on an earlier page.
         let count = format!("-n{}", skip + count);
-        let out = self.run(&[
+        let out = self.run_paths(&[
             "-c",
             "core.quotePath=false",
             "log",
@@ -1373,20 +1632,20 @@ impl Repo {
     /// would be ambiguous and name this one), is an error before anything is made.
     pub fn new_branch(&self, name: &str, from: Option<&str>) -> Result<(), GitError> {
         self.check_ref_format(name)?;
-        let remote = format!("refs/remotes/{name}");
-        if self
-            .run(&["show-ref", "--verify", "--quiet", &remote])
-            .is_ok()
-        {
-            return Err(GitError {
-                command: shown(&self.program, &["checkout", "-b", name]),
-                code: None,
-                stderr: format!(
-                    "fatal: '{name}' is a remote branch: a local branch of that name would \
+        if self.has_ref(&format!("refs/remotes/{name}")) {
+            return Err(self.fatal(
+                &["checkout", "-b", name],
+                format!(
+                    "'{name}' is a remote branch: a local branch of that name would \
                      make '{name}' ambiguous."
                 ),
-                missing: false,
-            });
+            ));
+        }
+        if self.has_ref(&format!("refs/tags/{name}")) {
+            return Err(self.fatal(
+                &["checkout", "-b", name],
+                format!("'{name}' is a tag: a branch of that name would make '{name}' ambiguous."),
+            ));
         }
         let mut args = vec!["checkout", "-q", "-b", name];
         if let Some(from) = from {
@@ -1395,8 +1654,30 @@ impl Repo {
         self.run(&args).map(drop)
     }
 
+    /// A tag `name` at `hash`; not one a branch is named: `name` would be ambiguous.
     pub fn tag(&self, name: &str, hash: &str) -> Result<(), GitError> {
+        if self.has_ref(&format!("refs/heads/{name}")) {
+            return Err(self.fatal(
+                &["tag", name, hash],
+                format!("'{name}' is a branch: a tag of that name would make '{name}' ambiguous."),
+            ));
+        }
         self.run(&["tag", name, hash]).map(drop)
+    }
+
+    /// `full` (a ref's whole name) exists.
+    fn has_ref(&self, full: &str) -> bool {
+        self.run(&["show-ref", "--verify", "--quiet", full]).is_ok()
+    }
+
+    /// A refusal as git would word it, for the command `args` that wasn't run.
+    fn fatal(&self, args: &[&str], why: String) -> GitError {
+        GitError {
+            command: shown(&self.program, args),
+            code: None,
+            stderr: format!("fatal: {why}"),
+            missing: false,
+        }
     }
 
     pub fn revert(&self, hash: &str) -> Result<(), GitError> {
@@ -1434,7 +1715,8 @@ impl Repo {
 
     /// Merges `name` into the current branch.
     pub fn merge(&self, name: &str) -> Result<(), GitError> {
-        self.run(&["merge", "--no-edit", name]).map(drop)
+        self.run(&["merge", "--no-edit", &self.full_ref(name)])
+            .map(drop)
     }
 
     pub fn delete_branch(&self, name: &str, force: bool) -> Result<(), GitError> {
@@ -1541,7 +1823,8 @@ impl Repo {
 }
 
 /// What a switch found of the changes once left on the branch it went to.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Back {
     /// None were left there.
     Nothing,
@@ -1688,5 +1971,126 @@ pub fn clone_target(dest: &Path, url: &str) -> PathBuf {
         dest.to_path_buf()
     } else {
         dest.join(clone_name(url))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A program busy for an instant is run again; any other failure is said at once.
+    #[test]
+    fn a_busy_program_is_run_again_and_other_failures_are_not() {
+        let mut tries = 0;
+        let ran = retry_busy(|| {
+            tries += 1;
+            if tries < 3 {
+                Err(io::Error::from(io::ErrorKind::ExecutableFileBusy))
+            } else {
+                Ok(tries)
+            }
+        });
+        assert_eq!(ran.unwrap(), 3);
+        let mut tries = 0;
+        let missing = retry_busy(|| -> io::Result<()> {
+            tries += 1;
+            Err(io::Error::from(io::ErrorKind::NotFound))
+        });
+        assert_eq!(missing.unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(tries, 1);
+    }
+
+    /// The API gives every git call ten minutes; a command past its deadline is killed.
+    #[cfg(unix)]
+    #[test]
+    fn a_deadline_kills_a_command_that_runs_past_it() {
+        let started = Instant::now();
+        let err = run_in(
+            "sleep",
+            Path::new("."),
+            &["30"],
+            None,
+            Some(started + Duration::from_millis(100)),
+        )
+        .unwrap_err();
+        assert!(err.cancelled(), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    /// A call of the API reads at most [`API_OUTPUT_MOST`] of what a command writes: past it the
+    /// command is killed, not read to its end.
+    #[cfg(unix)]
+    #[test]
+    fn a_command_writing_past_the_most_is_killed() {
+        let at = Instant::now() + Duration::from_secs(60);
+        let started = Instant::now();
+        let err = run_in(
+            "sh",
+            Path::new("."),
+            &["-c", "head -c 3000000000 /dev/zero"],
+            None,
+            Some(at),
+        )
+        .unwrap_err();
+        assert!(err.too_large(), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(30));
+        // Without a deadline (the popup's) nothing is cut.
+        let out = run_in(
+            "sh",
+            Path::new("."),
+            &["-c", "head -c 70000000 /dev/zero"],
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(out.len(), 70_000_000);
+    }
+
+    /// What git started (ssh, a hook, a credential helper) dies with it at the deadline.
+    #[cfg(unix)]
+    #[test]
+    fn a_deadline_kills_what_the_command_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let script = format!("sleep 60 & echo $! > {}; wait", pidfile.display());
+        let mut c = Command::new("sh");
+        c.args(["-c", &script])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let out = until_cancelled(&mut c, &NEVER, Some(deadline), true, None).unwrap();
+        assert!(out.is_none());
+        let pid = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .to_string();
+        let alive = || {
+            Command::new("kill")
+                .args(["-0", &pid])
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        };
+        let until = Instant::now() + Duration::from_secs(5);
+        while alive() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!alive(), "the sleep it started is still running");
+    }
+
+    /// A call with a deadline is the API's: ssh and credential helpers never ask anyone.
+    #[cfg(unix)]
+    #[test]
+    fn a_call_with_a_deadline_never_waits_on_a_prompt() {
+        if std::env::var_os("SSH_ASKPASS_REQUIRE").is_some() {
+            return;
+        }
+        let args = ["-c", "alias.env=!echo $SSH_ASKPASS_REQUIRE", "env"];
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repo::init("git", dir.path()).unwrap();
+        assert_eq!(repo.run(&args).unwrap(), b"\n");
+        let at = Instant::now() + Duration::from_secs(60);
+        assert_eq!(repo.with_deadline(at).run(&args).unwrap(), b"force\n");
     }
 }

@@ -277,6 +277,9 @@ pub(crate) struct TerminalConfig {
     /// The system's notifications too, when Templum is in the background and a long command ends
     /// or a terminal asks for attention.
     pub notifications: bool,
+    /// A selection the person makes with the mouse goes to the clipboard as the button is let go,
+    /// no copy shortcut needed (docs/specs/walking-skeleton.md).
+    pub copy_on_select: bool,
 }
 
 impl Default for TerminalConfig {
@@ -284,6 +287,7 @@ impl Default for TerminalConfig {
         Self {
             scrollback: 10_000,
             notifications: true,
+            copy_on_select: true,
         }
     }
 }
@@ -1165,7 +1169,9 @@ pub(crate) fn template(macos: bool) -> String {
         "# scrollback = 10000   # 0 to 100000\n",
         "## A system notification when Templum is in the background and a long command ends or\n",
         "## a terminal asks for attention.\n",
-        "# notifications = true\n\n",
+        "# notifications = true\n",
+        "## Text selected with the mouse goes to the clipboard as the button is let go.\n",
+        "# copy_on_select = true\n\n",
         "[canvas]\n",
         "## The block under the pointer takes the keyboard once the pointer moves, no click needed.\n",
         "# focus_follows_pointer = true\n\n",
@@ -1794,6 +1800,13 @@ scrollback = 500
         assert!(c.shell.integration && c.terminal.notifications);
         let c = parse("[shell]\nintegration = false\n[terminal]\nnotifications = false\n").unwrap();
         assert!(!c.shell.integration && !c.terminal.notifications);
+    }
+
+    #[test]
+    fn a_selection_is_copied_unless_turned_off() {
+        assert!(parse("").unwrap().terminal.copy_on_select);
+        let c = parse("[terminal]\ncopy_on_select = false\n").unwrap();
+        assert!(!c.terminal.copy_on_select);
     }
 
     #[test]

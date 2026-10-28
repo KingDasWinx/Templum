@@ -16,17 +16,24 @@ use crate::editor::{self, Editor};
 use crate::launcher;
 use crate::prompt;
 
+use super::remote::Deed;
 use super::{Body, Workspace, remember, show_notification};
 
 impl Workspace {
     /// Asks for a folder, then opens an editor on it at the viewport's center.
     pub(crate) fn new_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.why_not(Deed::AddEditor).is_some() {
+            return;
+        }
         let at = self.room_in_view(editor::SIZE, window, cx).origin();
         self.ask_editor_folder(at, window, cx);
     }
 
     /// The folder dialog; the editor's top-left corner goes to `at` (world units).
     pub(crate) fn ask_editor_folder(&self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
+        if self.why_not(Deed::AddEditor).is_some() {
+            return;
+        }
         let entity = cx.entity();
         launcher::ask_folder_for(
             self,
@@ -47,6 +54,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
+        if self.why_not(Deed::AddEditor).is_some() {
+            return None;
+        }
         if !folder.is_dir() {
             let message = format!("{} isn't a folder", folder.display());
             eprintln!("templum: {message}");
@@ -202,13 +212,16 @@ impl Workspace {
             self.remove_tab(block, i, window, cx);
             return;
         };
-        let ws = cx.entity();
-        let saver = ws.clone();
+        let (ws, space) = (cx.entity(), self.space.id.clone());
+        let (saver, shown) = (ws.clone(), space.clone());
         prompt::save_or_discard(
             format!("Save {name}?"),
             "Its changes are lost otherwise.",
             move |window, cx| {
                 saver.update(cx, |ws, cx| {
+                    if !ws.still_shown(&shown, window, cx) {
+                        return false;
+                    }
                     let saved = ws.save_tab(block, i, window, cx);
                     if saved {
                         ws.remove_tab(block, i, window, cx);
@@ -216,7 +229,13 @@ impl Workspace {
                     saved
                 })
             },
-            move |window, cx| ws.update(cx, |ws, cx| ws.remove_tab(block, i, window, cx)),
+            move |window, cx| {
+                ws.update(cx, |ws, cx| {
+                    if ws.still_shown(&space, window, cx) {
+                        ws.remove_tab(block, i, window, cx);
+                    }
+                })
+            },
             window,
             cx,
         );
@@ -589,7 +608,7 @@ impl Workspace {
         else {
             return;
         };
-        let ws = cx.entity();
+        let (ws, space) = (cx.entity(), self.space.id.clone());
         prompt::ask_text(
             "Go to line",
             "Go",
@@ -599,7 +618,9 @@ impl Workspace {
                     return false;
                 };
                 ws.update(cx, |ws, cx| {
-                    ws.open_file(block, &path, Some(line), window, cx)
+                    if ws.still_shown(&space, window, cx) {
+                        ws.open_file(block, &path, Some(line), window, cx);
+                    }
                 });
                 true
             },

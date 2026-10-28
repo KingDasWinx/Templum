@@ -155,11 +155,8 @@ fn a_region_changed_since_it_was_read_is_refused(cx: &mut TestAppContext) {
         edited,
         "left as it is"
     );
-    assert_eq!(
-        notification_count(handle, cx),
-        1,
-        "The file changed; try again"
-    );
+    assert_eq!(notification_count(handle, cx), 1);
+    assert_eq!(told_so_far(), ["The file changed; try again"]);
 }
 
 #[gpui_kit::test]
@@ -271,9 +268,11 @@ fn a_whole_file_choice_whose_copy_fails_changes_nothing(cx: &mut TestAppContext)
         edited,
         "left as it is"
     );
-    assert_eq!(
-        notification_count(handle, cx),
-        1,
-        "says the copy couldn't be kept"
+    assert_eq!(notification_count(handle, cx), 1);
+    let told = told_so_far();
+    assert!(
+        told.len() == 1
+            && told[0].starts_with("Couldn't keep a copy of the file, so nothing was changed: "),
+        "{told:?}"
     );
 }

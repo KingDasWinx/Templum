@@ -119,7 +119,11 @@ fn without_a_remote_publish_says_so(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| window.click("git-sync", cx))
         .unwrap();
     settle(handle, cx);
-    assert_eq!(notification_count(handle, cx), 1, "No remote");
+    assert_eq!(notification_count(handle, cx), 1);
+    assert_eq!(
+        told_so_far(),
+        ["No remote: add one to publish this branch."]
+    );
     git_of(&ws, cx, |g| assert_eq!(g.status.upstream, None));
 }
 
@@ -225,6 +229,12 @@ fn a_failed_clone_says_why_and_leaves_no_folder(cx: &mut TestAppContext) {
     });
     settle(handle, cx);
     assert_eq!(notification_count(handle, cx), 1);
+    // Git's line that says why: the repository isn't there.
+    let told = told_so_far();
+    assert!(
+        told.len() == 1 && told[0].starts_with("fatal: ") && told[0].contains("no/such/app.git"),
+        "{told:?}"
+    );
     assert!(!parent.path().join("app").exists(), "nothing half-made");
     git_of(&ws, cx, |g| {
         assert_eq!(g.sync, None);

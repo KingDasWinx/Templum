@@ -5,6 +5,8 @@
 
 use std::ops::Range;
 
+use serde::{Deserialize, Serialize};
+
 use crate::diff::{FileDiff, Hunk, Kind, Line};
 use crate::parse::Change;
 
@@ -39,7 +41,8 @@ impl Region {
 }
 
 /// Which part of a region stays.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Take {
     First,
     Second,

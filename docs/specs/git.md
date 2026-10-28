@@ -256,7 +256,7 @@ parent), **a stash**, and **a comparison** of two branches.
   done. Untracked files are covered too.
 - **Undo** on the notification restores at once. **Recently discarded…** (the top bar's ⋯) lists the entries,
   newest first, each with **Restore**; a file changed since asks before it is overwritten.
-- Entries older than 7 days, or beyond the newest 50, are deleted when Templum starts and after each discard.
+- Entries older than 7 days, or beyond the newest 50 of their repository, are deleted when Templum starts and after each discard. The copies a Templum API call makes (marked `api`) are deleted by age only, never by count: they may hold the person's work (a hand-merged file a call resolved over), and more calls must not push them out. With 50 of them younger than 7 days for a repository, a call that needs a copy is refused before it changes anything; the person restores or clears them.
 - **When a copy can't be kept:** without a data folder (`session::dir()` is None, as in `--bench`), or over 500
   files or 100 MB in one discard (`status -uall` lists every untracked file: a build folder is thousands), the
   question says so ("Too much to keep a copy: 1,240 files. This can't be undone.") and the notification has no
@@ -452,6 +452,22 @@ Each agent's dialog (Templum's and the user's) gets a **Commit messages** part:
   agreeing writes `confirmed = true` under `[git.commit_message]`.
 - **The ⚙ beside it:** the model for now, and **Instructions for this repository** (overrides the global ones in
   this repository only).
+
+## On a mirrored workspace
+
+The popup opens on a mirrored workspace (docs/specs/templum-to-templum.md, Batch 2g) and looks and acts as it does here,
+but every read and act is an operation of home's `git` tool (docs/api.md): nothing runs or is read on this computer,
+where home's path may be another folder. It opens on the focused terminal's folder at home, else the first terminal's,
+else the workspace's; the folder ▾ lists home's folders (the workspace's, its terminals', then home's recent folders of
+the workspace, read when the popup and the menu open), Choose another folder… stays on home, Refresh and Open a terminal
+here (at home) work. The status is read every 2 s while the popup is shown and the remote is live; the diff when the
+status changes, every 10 s, and when asked (opening, Refresh, whitespace, a whole file); the other tabs' lists as the
+tab asks. Fetch, Pull, Push, Sync, Publish and Generate go on the slow lane (10 minutes) and can't be stopped from here:
+the spinning button says so. Generate uses home's agent (it asks there, once, whether the diff may go to the agent's
+provider); its ⚙ stays on home. Recently discarded… is home's trash, Send to lists home's terminals. What a Control
+share can't do (Discard, Restore this version, deleting a branch, dropping a stash, Abort) is dimmed with the rule's
+words and refused before any question; Clone, Open in editor and Run in a terminal are left out. A failed command's
+Details shows git's stderr as home gave it. The folder, tab and message live in memory only.
 
 ## Configuration
 

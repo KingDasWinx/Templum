@@ -4,25 +4,19 @@ use std::rc::Rc;
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
+use serde_json::Value;
+use templum_git::ops::{self, Op, Undone};
 use templum_git::{GitError, Repo};
 
-use crate::git_block::{self, words};
+use crate::git_block;
 use crate::prompt;
 
 use super::git_discard::REFUSED;
+use super::git_home::parsed;
+use super::remote::Deed;
 use super::{
     Extra, GitAt, Workspace, notify_git_error, notify_git_failure, notify_with, show_notification,
 };
-
-/// What Undo commit found.
-enum Undone {
-    /// Taken back: its message, for the fields.
-    Done(String),
-    /// On the upstream: Revert… instead.
-    Pushed,
-    /// HEAD isn't that commit any more.
-    Moved,
-}
 
 impl Workspace {
     /// Commits with the form's message: what is staged, or every change (`Git::commit_all`).
@@ -38,47 +32,38 @@ impl Workspace {
         let (amend, all) = (git.amend, git.commit_all());
         let typed = git.summary.read(cx).value().trim().to_string();
         let description = git.description.read(cx).value().trim().to_string();
-        let Some(repo) = git.repo().cloned() else {
-            return;
-        };
         let at = self.here();
-        self.act_job(
+        let op = Op::Commit {
+            summary: typed.clone(),
+            description: description.clone(),
+            amend,
+            all,
+        };
+        self.act_op(
             at,
-            move || {
-                if all {
-                    repo.stage_all()?;
-                }
-                // No summary typed: the sentence for the one file (`can_commit` saw one), by what
-                // is staged now, not by the status the form read up to 2 s ago, which a file
-                // written since is missing from. Else the commit waits for a message.
-                let summary = if typed.is_empty() {
-                    match words::staged_summary(&repo.status()?) {
-                        Some(summary) => summary,
-                        None => return Ok::<_, GitError>(None),
-                    }
-                } else {
-                    typed
-                };
-                // An Amend's Undo goes back to the commit it replaces: read it before.
-                let replaced = if amend { Some(repo.head()?) } else { None };
-                let message = git_block::join_message(&summary, &description);
-                Ok(Some((repo.commit(&message, amend)?, replaced)))
-            },
+            op,
+            // No summary typed: the sentence for the one file (`can_commit` saw one), by what is
+            // staged now; else the commit waits for a message.
+            move |repo| ops::commit(repo, &typed, &description, amend, all),
+            committed,
             move |ws, at, result, window, cx| {
                 let entity = cx.entity();
                 // Only a commit that happened is pushed.
                 let mut pushed = false;
                 match result {
                     Ok(None) => {
-                        let why = "The files to commit changed since you last looked: write a message for them.";
-                        show_notification(window, cx, Notification::warning(why));
+                        show_notification(
+                            window,
+                            cx,
+                            Notification::warning(ops::CHANGED_MEANWHILE),
+                        );
                         // Only where the person still is: `show_git` would take them back to a
                         // workspace or a popup they left while the commit ran.
                         if ws.space.id == at.space && ws.git_open && ws.git_at(&at).is_some() {
                             ws.focus_summary(window, cx);
                         }
                     }
-                    Ok(Some((short, replaced))) => {
+                    Ok(Some(ops::Committed { short, replaced })) => {
                         if let Some(git) = ws.git_at(&at) {
                             git.amend = false;
                             let (summary, description) =
@@ -157,13 +142,12 @@ impl Workspace {
             description.update(cx, |d, cx| d.set_value("", window, cx));
             return;
         }
-        let Some(repo) = git.repo().cloned() else {
-            return;
-        };
         let at = self.here();
-        self.git_job(
+        self.git_op(
             at,
-            move || repo.last_message(),
+            Op::LastMessage,
+            |repo| repo.last_message(),
+            parsed::<String>,
             move |ws, at, message, window, cx| {
                 let Ok(message) = message else {
                     return;
@@ -202,24 +186,17 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.space.git().and_then(|g| g.repo().cloned()) else {
-            return;
-        };
+        let asked = self.asked_on();
         let job_short = short.clone();
-        self.act_job(
+        let op = Op::UndoCommit {
+            hash: short.clone(),
+            replaced: replaced.clone(),
+        };
+        self.act_op(
             self.here(),
-            move || -> Result<Undone, GitError> {
-                // A commit made since: it is never the one taken back, pushed or not.
-                if !repo.head().is_ok_and(|h| h.starts_with(&job_short)) {
-                    return Ok(Undone::Moved);
-                }
-                if repo.on_upstream(&job_short)? {
-                    return Ok(Undone::Pushed);
-                }
-                Ok(repo
-                    .undo_commit(&job_short, replaced.as_deref())?
-                    .map_or(Undone::Moved, Undone::Done))
-            },
+            op,
+            move |repo| ops::undo_commit(repo, &job_short, replaced.as_deref()),
+            parsed::<Undone>,
             move |ws, at, result, window, cx| {
                 match result {
                     Ok(Undone::Done(message)) => {
@@ -244,7 +221,16 @@ impl Workspace {
                             move |window, cx| {
                                 let short = short.clone();
                                 entity.update(cx, |ws, cx| {
-                                    ws.git_action(move |repo| repo.revert(&short), window, cx)
+                                    if !ws.answered_on(&asked, window, cx) {
+                                        return;
+                                    }
+                                    let hash = short.clone();
+                                    ws.git_action(
+                                        Op::Revert { hash },
+                                        move |repo| repo.revert(&short),
+                                        window,
+                                        cx,
+                                    )
                                 })
                             },
                             window,
@@ -295,7 +281,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let ws = cx.entity();
-        let program = self.config.git.program().to_string();
+        let asked = self.asked_on();
         prompt::ask_text(
             "Your email for commits",
             "Set",
@@ -305,10 +291,18 @@ impl Workspace {
                 if email.is_empty() {
                     return false;
                 }
-                let (name, program) = (name.clone(), program.clone());
+                let name = name.clone();
                 ws.update(cx, |ws, cx| {
+                    if !ws.answered_on(&asked, window, cx) {
+                        return;
+                    }
+                    let op = Op::SetAuthor {
+                        name: name.clone(),
+                        email: email.clone(),
+                    };
                     ws.git_action(
-                        move |_| Repo::set_author(&program, &name, &email),
+                        op,
+                        move |repo| repo.set_author(&name, &email, true),
                         window,
                         cx,
                     )
@@ -344,21 +338,37 @@ impl Workspace {
     /// Reads the whole working diff again in the background (after every status read): a
     /// result equal to what the panel shows changes nothing.
     pub(crate) fn reload_git_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(git) = self.space.git() else {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
-        let Some(repo) = git.repo().cloned() else {
+        if !git.has_repo() {
             return;
-        };
+        }
         let (status, ignore_ws, whole) = (
             git.status.clone(),
             git.panel.ignore_ws,
             git.panel.whole.clone(),
         );
+        // On a mirror: what the diff is read with, and when.
+        if git.home.is_some() {
+            git.home_diff = Some((status.clone(), std::time::Instant::now()));
+        }
         let at = self.here();
-        self.git_job(
+        let op = Op::Diff {
+            ignore_whitespace: ignore_ws,
+            whole: whole
+                .iter()
+                .map(|(staged, path)| ops::WholeFile {
+                    staged: *staged,
+                    path: path.clone(),
+                })
+                .collect(),
+        };
+        self.git_op(
             at,
-            move || repo.working_diff(&status, ignore_ws, &whole),
+            op,
+            move |repo| repo.working_diff(&status, ignore_ws, &whole),
+            parsed::<templum_git::WorkingDiff>,
             |ws, at, diff, _, cx| {
                 let Some(git) = ws.git_at(&at) else {
                     return;
@@ -523,21 +533,21 @@ impl Workspace {
         self.reload_shown_diff(window, cx);
     }
 
-    /// Runs `job` on the block's repository in the background; its failure is a notification,
-    /// and the block is read again either way.
+    /// Runs `op` on the block's repository in the background (`job` here, home's `git` on a
+    /// mirror); its failure is a notification, and the block is read again either way.
     pub(crate) fn git_action(
         &mut self,
+        op: Op,
         job: impl FnOnce(&Repo) -> Result<(), GitError> + Send + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.space.git().and_then(|g| g.repo().cloned()) else {
-            return;
-        };
         let at = self.here();
-        self.act_job(
+        self.act_op(
             at,
-            move || job(&repo),
+            op,
+            job,
+            parsed::<()>,
             |ws, at, result, window, cx| {
                 if let Err(e) = result {
                     let entity = cx.entity();
@@ -556,7 +566,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.git_action(move |repo| repo.stage(&refs(&paths)), window, cx);
+        let op = Op::Stage {
+            paths: paths.clone(),
+        };
+        self.git_action(op, move |repo| repo.stage(&refs(&paths)), window, cx);
     }
 
     /// A file's box in the Changes checklist: checked, it is unstaged whole; unchecked or
@@ -613,7 +626,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.git_action(move |repo| repo.unstage(&refs(&paths)), window, cx);
+        let op = Op::Unstage {
+            paths: paths.clone(),
+        };
+        self.git_action(op, move |repo| repo.unstage(&refs(&paths)), window, cx);
     }
 
     /// A hunk's Stage (`unstage` false) or Unstage: `patch` applied on the index. One git
@@ -626,12 +642,20 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.space.git().and_then(|g| g.repo().cloned()) else {
-            return;
+        let op = if unstage {
+            Op::UnstageHunk {
+                patch: patch.clone(),
+            }
+        } else {
+            Op::StageHunk {
+                patch: patch.clone(),
+            }
         };
-        self.act_job(
+        self.act_op(
             self.here(),
-            move || repo.apply_patch(&patch, true, unstage),
+            op,
+            move |repo| repo.apply_patch(&patch, true, unstage),
+            parsed::<()>,
             |ws, at, result, window, cx| {
                 if let Err(e) = result {
                     let entity = cx.entity();
@@ -659,13 +683,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.space.git().and_then(|g| g.repo().cloned()) else {
-            return;
-        };
         // Not a git command: a failure is said plainly, with nothing to run in a terminal.
-        self.act_job(
+        let op = Op::Ignore { path: path.clone() };
+        self.act_op(
             self.here(),
-            move || repo.ignore(&path),
+            op,
+            move |repo| repo.ignore(&path),
+            |heard| {
+                parsed::<()>(heard).map_err(|e| std::io::Error::other(e.first_line().to_string()))
+            },
             |ws, at, written, window, cx| {
                 if let Err(e) = written {
                     let message = format!("Couldn't write .gitignore: {e}");
@@ -683,14 +709,18 @@ impl Workspace {
         let Some(op) = self.space.git().and_then(|g| g.operation) else {
             return;
         };
-        self.git_action(move |repo| repo.abort(op), window, cx);
+        // Full on a mirror: refused at the entry, before anything is sent.
+        if let Some(why) = self.why_not(Deed::Git("abort")) {
+            return self.warn(why, window, cx);
+        }
+        self.git_action(Op::Abort, move |repo| repo.abort(op), window, cx);
     }
 
     pub(crate) fn continue_operation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(op) = self.space.git().and_then(|g| g.operation) else {
             return;
         };
-        self.git_action(move |repo| repo.continue_(op), window, cx);
+        self.git_action(Op::Continue, move |repo| repo.continue_(op), window, cx);
     }
 
     /// Opens a repository path in an editor beside the Git block, at the first hunk of the
@@ -721,6 +751,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Open in editor stays on home for now.
+        if let Some(why) = self.why_not(Deed::GitLeftOut) {
+            return self.warn(why, window, cx);
+        }
         let Some(root) = self
             .space
             .git()
@@ -729,6 +763,16 @@ impl Workspace {
             return;
         };
         self.open_in_editor(&root, &root.join(path), line, None, window, cx);
+    }
+}
+
+/// Home's answer to a commit as `ops::commit` gives it: a refusal because the files changed
+/// since is `None`, as locally.
+fn committed(heard: Result<Value, GitError>) -> Result<Option<ops::Committed>, GitError> {
+    match parsed::<ops::Committed>(heard) {
+        Ok(committed) => Ok(Some(committed)),
+        Err(e) if e.stderr == ops::CHANGED_MEANWHILE => Ok(None),
+        Err(e) => Err(e),
     }
 }
 

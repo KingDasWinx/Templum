@@ -6,19 +6,23 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
 use gpui_kit::component::input::{Backspace, Escape, Input, InputState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, ElementId, Entity, Focusable as _, FontWeight,
-    MouseButton, ScrollWheelEvent, SharedString, TestSupportExt, Window, div, px, relative,
+    MouseButton, MouseDownEvent, ScrollWheelEvent, SharedString, TestSupportExt, Window, div, px,
+    relative,
 };
 use templum_canvas::{BlockId, Size, chrome};
 
 use crate::checklists::{self, List};
-use crate::kanban::DragPreview;
+use crate::kanban::{DragPreview, scrollbar_over};
 use crate::list_dialog;
+use crate::markdown::PreviewScroll;
 use crate::note;
 use crate::notes;
-use crate::workspace::Workspace;
+use crate::workspace::remote::Deed;
+use crate::workspace::{ChecklistAct, Workspace};
 
 /// A new checklist block's size, and the smallest one (world units).
 pub(crate) const SIZE: Size = Size { w: 320.0, h: 360.0 };
@@ -29,11 +33,15 @@ const NAME_FONT: f32 = 15.0;
 /// A check box's side, world units.
 const BOX: f32 = 14.0;
 
-/// A checklist block: the checklist it shows, by id (None: none, as when it was deleted), and the
-/// one field being edited.
+/// A checklist block: the checklist it shows, by id (None: none, as when it was deleted), the
+/// one field being edited, and its list's scroll, kept through zooms.
 pub(crate) struct Checklist {
     pub list: Option<u64>,
     pub editing: Option<Editing>,
+    pub scroll: PreviewScroll,
+    /// Of a mirrored workspace: its ids are home's, in `RemoteSpace::checklists`, and what is done
+    /// to it is home's tool (`Workspace::act_on_checklist`). No local lookup by id meets it.
+    pub remote: bool,
 }
 
 /// A name or an item of the block's checklist edited in place, every key written to the
@@ -45,10 +53,11 @@ pub(crate) struct Editing {
     pub kept: bool,
 }
 
-/// An item being dragged, by its checklist and its id.
-struct ItemDrag {
-    list: u64,
-    item: u64,
+/// An item being dragged, by its block, its checklist and its id.
+pub(crate) struct ItemDrag {
+    pub block: BlockId,
+    pub list: u64,
+    pub item: u64,
 }
 
 /// What a field edits.
@@ -56,12 +65,14 @@ struct ItemDrag {
 pub(crate) enum Field {
     Name,
     Item(u64),
+    /// A mirrored workspace's new item, at the end: home adds it once it is typed.
+    New,
 }
 
 impl Checklist {
     /// Its checklist's title ("Deploy 2/5"); "Checklists" with none.
     pub fn title(&self, ws: &Workspace) -> SharedString {
-        match self.list.and_then(|id| ws.checklists.get(id)) {
+        match self.list.and_then(|id| ws.checklists_of(self)?.get(id)) {
             Some(list) => list.title().into(),
             None => "Checklists".into(),
         }
@@ -98,9 +109,12 @@ pub(crate) fn body(
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
-    let inner = match checklist.list.and_then(|id| ws.checklists.get(id)) {
+    let inner = match checklist
+        .list
+        .and_then(|id| ws.checklists_of(checklist)?.get(id))
+    {
         Some(list) => list_view(ws, block, checklist, list, z, cx),
-        None => empty(ws, block, z, cx),
+        None => empty(ws, block, checklist.remote, z, cx),
     };
     div()
         .size_full()
@@ -124,14 +138,41 @@ fn list_view(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let (ui, n, id) = (ws.ui, block.0 as usize, list.id);
+    let why = Why::of(ws, checklist.remote);
     let rows: Vec<AnyElement> = list
         .items
         .iter()
         .map(|item| {
             let input = checklist.field(Field::Item(item.id));
-            row(ws, block, id, item, input, z, cx)
+            row(ws, block, id, item, input, &why, z, cx)
         })
         .collect();
+    // A mirrored workspace's new item, typed in a row of its own after the others.
+    let new = checklist.field(Field::New).map(|input| {
+        div()
+            .id(("checklist-new-row", n))
+            .flex()
+            .items_start()
+            .gap(px(8.0 * z))
+            .py(px(4.0 * z))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .mt(px((FONT * 1.5 - BOX) / 2.0 * z))
+                    .size(px(BOX * z))
+                    .rounded(px(3.0 * z))
+                    .border_1()
+                    .border_color(ui.title_dim),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .child(field(ws, block, input, FONT, z, cx)),
+            )
+            .test_support()
+    });
+    let add_words = why.add.clone();
     let add = div()
         .id(("checklist-add", n))
         .flex()
@@ -142,6 +183,10 @@ fn list_view(
         .text_color(ui.title_dim)
         .cursor_pointer()
         .hover(move |s| s.text_color(ui.title))
+        .when(add_words.is_some(), |el| el.opacity(0.4))
+        .when_some(add_words, |el, words| {
+            el.tooltip(move |window, cx| Tooltip::new(words.clone()).build(window, cx))
+        })
         .child(Icon::new(IconName::Plus).size(px(BOX * z)))
         .child("Add an item")
         .drag_over::<ItemDrag>(move |s, _, _, _| s.text_color(ui.accent))
@@ -149,10 +194,12 @@ fn list_view(
             ws.add_item_after(block, id, None, window, cx)
         }))
         .test_support();
-    div()
+    checklist.scroll.follow(z);
+    let scrolled = div()
         .id(("checklist-list", n))
         .size_full()
         .overflow_y_scroll()
+        .track_scroll(&checklist.scroll.handle)
         .flex()
         .flex_col()
         .px(px(12.0 * z))
@@ -170,6 +217,12 @@ fn list_view(
                         .line_height(relative(1.5))
                         .cursor_text()
                         .child(list.name_shown().to_string())
+                        // A mirrored list's name that can't be renamed now says why.
+                        .when_some(why.name.clone(), |el, words| {
+                            el.tooltip(move |window, cx| {
+                                Tooltip::new(words.clone()).build(window, cx)
+                            })
+                        })
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                             ws.edit_field(block, Field::Name, window, cx)
                         })),
@@ -177,37 +230,72 @@ fn list_view(
                 .test_support(),
         )
         .children(rows)
+        .children(new)
         .child(add)
         // Dropped on the list's empty space or on + Add an item: at the end.
-        .on_drop(cx.listener(move |ws, drag: &ItemDrag, _, cx| move_item(ws, id, drag, None, cx)))
-        .test_support()
+        .on_drop(cx.listener(move |ws, drag: &ItemDrag, window, cx| {
+            move_item(ws, block, id, drag, None, window, cx)
+        }))
+        .test_support();
+    // The scrollbar goes over the list, not in it: in it, it would scroll away.
+    div()
+        .relative()
+        .size_full()
+        // The scrollbar takes every press on its strip, whatever the button, before the block
+        // under it: these go ahead of it, in the capture phase. An unpicked block is picked (a
+        // picked one isn't again: that would stop its field), and the middle button pans the
+        // canvas, as over the rest of the block.
+        .capture_any_mouse_down(cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+            if ws.space.focused != Some(block) {
+                ws.focus_block(block, window, cx);
+            }
+            if e.button == MouseButton::Middle {
+                ws.begin_pan(e.position);
+                cx.stop_propagation();
+            }
+        }))
+        .child(scrolled)
+        .child(scrollbar_over(
+            &checklist.scroll.handle,
+            ("checklist-scrollbar", n).into(),
+            z,
+        ))
         .into_any_element()
 }
 
-/// A dropped item goes in the place of item `before` (at the end: None); one of another
-/// checklist stays where it is.
-fn move_item(
+/// An item dropped on checklist `list` of `block` goes in the place of item `before` (at the
+/// end: None), through `act_on_checklist` (home's on a mirror); one of another block or checklist
+/// stays where it is.
+pub(crate) fn move_item(
     ws: &mut Workspace,
+    block: BlockId,
     list: u64,
     drag: &ItemDrag,
     before: Option<u64>,
+    window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    if drag.list == list {
-        ws.edit_checklist(list, |c| c.move_item(list, drag.item, before, notes::now()));
-        cx.notify();
+    if drag.block == block && drag.list == list {
+        let space = ws.space.id.clone();
+        let act = ChecklistAct::Move {
+            item: drag.item,
+            before,
+        };
+        ws.act_on_checklist(&space, block, act, window, cx);
     }
     cx.stop_propagation();
 }
 
 /// An item's row: its check box, its text (struck through and dimmed once checked), and, under
 /// the pointer, a × that deletes it.
+#[allow(clippy::too_many_arguments)]
 fn row(
     ws: &Workspace,
     block: BlockId,
     list: u64,
     item: &checklists::Item,
     input: Option<&Entity<InputState>>,
+    why: &Why,
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
@@ -242,7 +330,14 @@ fn row(
             )
         })
         .cursor_pointer()
-        .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_item(list, id, cx)))
+        .when(why.check.is_some(), |el| el.opacity(0.4))
+        .when_some(why.check.clone(), |el, words| {
+            el.tooltip(move |window, cx| Tooltip::new(words.clone()).build(window, cx))
+        })
+        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+            let space = ws.space.id.clone();
+            ws.act_on_checklist(&space, block, ChecklistAct::Toggle { item: id }, window, cx)
+        }))
         .test_support();
     let text = div()
         .id(name("checklist-text", n, id))
@@ -273,7 +368,9 @@ fn row(
         .justify_center()
         .rounded(px(4.0 * z))
         .opacity(0.0)
-        .group_hover(group.clone(), |s| s.opacity(1.0))
+        .group_hover(group.clone(), |s| {
+            s.opacity(if why.delete.is_some() { 0.4 } else { 1.0 })
+        })
         .cursor_pointer()
         .hover(move |s| s.bg(ui.hover))
         .child(
@@ -281,7 +378,13 @@ fn row(
                 .size(px(10.0 * z))
                 .text_color(ui.title_dim),
         )
-        .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.delete_item(list, id, cx)))
+        .when_some(why.delete.clone(), |el, words| {
+            el.tooltip(move |window, cx| Tooltip::new(words.clone()).build(window, cx))
+        })
+        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+            let space = ws.space.id.clone();
+            ws.act_on_checklist(&space, block, ChecklistAct::Delete { item: id }, window, cx)
+        }))
         .test_support();
     div()
         .id(ElementId::Name(group.clone()))
@@ -296,14 +399,21 @@ fn row(
         .child(delete)
         // A tint, not a border: a border's screen pixels would narrow the text at every zoom.
         .drag_over::<ItemDrag>(move |s, _, _, _| s.bg(ui.accent.opacity(0.18)))
-        .on_drag(ItemDrag { list, item: id }, move |_, _, _, cx| {
-            let text = preview.clone();
-            cx.new(|_| DragPreview { text, width, z, ui })
-        })
-        // Dropped on a row, an item takes its place; the list doesn't get the drop too.
-        .on_drop(
-            cx.listener(move |ws, drag: &ItemDrag, _, cx| move_item(ws, list, drag, Some(id), cx)),
+        .on_drag(
+            ItemDrag {
+                block,
+                list,
+                item: id,
+            },
+            move |_, _, _, cx| {
+                let text = preview.clone();
+                cx.new(|_| DragPreview { text, width, z, ui })
+            },
         )
+        // Dropped on a row, an item takes its place; the list doesn't get the drop too.
+        .on_drop(cx.listener(move |ws, drag: &ItemDrag, window, cx| {
+            move_item(ws, block, list, drag, Some(id), window, cx)
+        }))
         .test_support()
         .into_any_element()
 }
@@ -326,7 +436,7 @@ fn field(
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         // What the field leaves: Esc with nothing of its own to undo, Backspace at its start.
         .on_action(
-            cx.listener(move |ws, _: &Escape, window, cx| ws.stop_editing(block, window, cx)),
+            cx.listener(move |ws, _: &Escape, window, cx| ws.escape_field(block, window, cx)),
         )
         .on_action(cx.listener(move |ws, _: &Backspace, window, cx| {
             ws.backspace_at_start(block, window, cx)
@@ -344,9 +454,48 @@ fn field(
         .into_any_element()
 }
 
-/// A block with no checklist: a new one, or one from the dialog.
-fn empty(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) -> AnyElement {
+/// Why a mirrored checklist's controls can't act now, in words (None: they can, and always on this
+/// computer): asked once for the list, not for each row.
+#[derive(Default)]
+struct Why {
+    check: Option<String>,
+    delete: Option<String>,
+    add: Option<String>,
+    name: Option<String>,
+}
+
+impl Why {
+    fn of(ws: &Workspace, remote: bool) -> Why {
+        if !remote {
+            return Why::default();
+        }
+        Why {
+            check: ws.why_not(Deed::CheckItem),
+            delete: ws.why_not(Deed::DeleteItem),
+            add: ws.why_not(Deed::AddItems),
+            name: ws.why_not(Deed::EditChecklist),
+        }
+    }
+}
+
+/// A block with no checklist: a new one, or one from the dialog. A mirrored one's buttons are
+/// home's, dimmed with the rule's words when the mirror can't.
+fn empty(
+    ws: &Workspace,
+    block: BlockId,
+    remote: bool,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
     let n = block.0 as usize;
+    let why = remote.then(|| ws.why_not(Deed::OpenChecklist)).flatten();
+    let gated = |el: gpui_kit::Stateful<gpui_kit::Div>| {
+        let why = why.clone();
+        el.when(why.is_some(), |el| el.opacity(0.4))
+            .when_some(why, |el, words| {
+                el.tooltip(move |window, cx| Tooltip::new(words.clone()).build(window, cx))
+            })
+    };
     div()
         .id(("checklist-empty", n))
         .size_full()
@@ -362,28 +511,30 @@ fn empty(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) ->
                 .child("No checklist open here"),
         )
         .child(
-            note::button(
+            gated(note::button(
                 ("checklist-new-here", n),
                 IconName::Plus,
                 "New checklist",
                 ws,
                 z,
-            )
+            ))
             .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                 ws.new_checklist(Some(block), window, cx)
             }))
             .test_support(),
         )
         .child(
-            note::button(
+            gated(note::button(
                 ("checklist-open-here", n),
                 IconName::ListChecks,
                 "Open a checklist…",
                 ws,
                 z,
-            )
-            .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| {
-                open_checklists(Some(block), window, cx)
+            ))
+            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                if ws.why_not(Deed::OpenChecklist).is_none() {
+                    open_checklists(ws.space.id.clone(), Some(block), window, cx)
+                }
             }))
             .test_support(),
         )
@@ -391,11 +542,14 @@ fn empty(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) ->
         .into_any_element()
 }
 
-/// The Checklists dialog: every checklist, the most recently changed first, and a field that
-/// finds them by their name and their items. A click opens one where it is open already, else in
-/// the block `into` it was asked from when that shows none, else in a new block (beside `into`).
-/// So does New checklist. Its trash deletes it on a second click, from its block too.
+/// The Checklists dialog of workspace `space`: every checklist, the most recently changed first,
+/// and a field that finds them by their name and their items. A click opens one where it is open
+/// already, else in the block `into` it was asked from when that shows none, else in a new block
+/// (beside `into`). So does New checklist. Its trash deletes it on a second click, from its block
+/// too. On a mirror it lists home's checklists the blocks of the workspace show, and New checklist
+/// is home's.
 pub(crate) fn open_checklists(
+    space: String,
     into: Option<BlockId>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
@@ -408,44 +562,78 @@ pub(crate) fn open_checklists(
         no_match: "No checklist holds that.",
         new: "New checklist",
     };
+    let (listed, opens, deletes, makes) = (space.clone(), space.clone(), space.clone(), space);
     list_dialog::open(
         kind,
-        rows,
-        move |ws, id, window, cx| ws.open_checklist(id, into, window, cx),
-        |ws, id, window, cx| ws.delete_checklist(id, window, cx),
-        move |ws, window, cx| ws.new_checklist(into, window, cx),
+        move |ws, query| rows(ws, &listed, query),
+        move |ws, id, window, cx| {
+            if ws.still_on(&opens, window, cx) {
+                ws.open_checklist(id, into, window, cx)
+            }
+        },
+        move |ws, id, window, cx| match ws.space_named(&deletes) {
+            Some(s) if s.is_remote() => {
+                ws.warn(crate::workspace::remote::NOT_YET.into(), window, cx)
+            }
+            Some(_) => ws.delete_checklist(id, window, cx),
+            None => {}
+        },
+        move |ws, window, cx| {
+            if ws.still_on(&makes, window, cx) {
+                ws.new_checklist(into, window, cx)
+            }
+        },
         window,
         cx,
     );
 }
 
-/// The Checklists dialog's rows for `query`: each checklist's name, then its progress, when it
-/// changed and where it is open ("2/5 · 5 min ago · Open").
-fn rows(ws: &Workspace, query: &str) -> Vec<list_dialog::Row> {
+/// The Checklists dialog's rows for `query`, of workspace `space`: each checklist's name, then its
+/// progress, when it changed and where it is open ("2/5 · 5 min ago · Open"). A mirror's are home's
+/// that its blocks show (when they changed is home's to know).
+fn rows(ws: &Workspace, space: &str, query: &str) -> Vec<list_dialog::Row> {
     let now = notes::now();
-    ws.checklists
+    let Some(shown_in) = ws.space_named(space) else {
+        return Vec::new();
+    };
+    let remote = shown_in.is_remote();
+    let Some(lists) = ws.checklists_in(space) else {
+        return Vec::new();
+    };
+    lists
         .find(query)
         .into_iter()
-        .map(|list| {
+        .filter_map(|list| {
+            let at = if remote {
+                let shows = shown_in.blocks.values().any(|b| {
+                    b.checklist_view()
+                        .is_some_and(|c| c.remote && c.list == Some(list.id))
+                });
+                shows.then_some(shown_in)
+            } else {
+                ws.checklist_open_at(list.id).map(|(space, _)| space)
+            };
+            if remote && at.is_none() {
+                return None;
+            }
             let progress = match list.progress() {
                 (_, 0) => None,
                 (done, all) => Some(format!("{done}/{all}")),
             };
-            let at = ws.checklist_open_at(list.id).map(|(space, _)| space);
             let detail: Vec<String> = [
                 progress,
-                Some(notes::ago(list.changed, now)),
+                (!remote).then(|| notes::ago(list.changed, now)),
                 list_dialog::open_at(ws, at),
             ]
             .into_iter()
             .flatten()
             .collect();
-            list_dialog::Row {
+            Some(list_dialog::Row {
                 id: list.id,
                 title: list.name_shown().to_string(),
                 detail: detail.join(" · "),
                 dot: None,
-            }
+            })
         })
         .collect()
 }

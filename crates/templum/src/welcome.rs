@@ -678,7 +678,7 @@ fn good_to_know(ws: &Workspace) -> AnyElement {
             "On the canvas: terminals, AI agents, notes, kanban",
         ),
         (key(Command::GoToWaiting), "The terminal waiting for you"),
-        (key(Command::Workspaces), "Your workspaces"),
+        (key(Command::Workspaces), "Home: your workspaces"),
         (
             key(Command::ToggleGrid),
             "Grid mode: terminals tiled full screen",

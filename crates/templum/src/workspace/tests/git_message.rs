@@ -86,19 +86,19 @@ fn the_agents_dialog_sets_a_commit_message_command(cx: &mut TestAppContext) {
     );
 }
 
-/// An agent's program in `dir`: it keeps the request it gets (`request.txt`) and its arguments
-/// (`args.txt`) there, then runs `then`, a shell line.
+/// An agent's program in `dir`, run as `sh <it>`: it keeps the request it gets (`request.txt`)
+/// and its arguments (`args.txt`) there, then runs `then`, a shell line. `sh` reads it rather
+/// than running it: another test's fork may still hold it open for writing, and Linux then
+/// refuses to run it ("Text file busy").
 #[cfg(unix)]
 fn fake_agent(dir: &std::path::Path, then: &str) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt as _;
     let path = dir.join("fake-agent");
     let keep = dir.display();
     std::fs::write(
         &path,
-        format!("#!/bin/sh\ncat > '{keep}/request.txt'\necho \"$@\" > '{keep}/args.txt'\n{then}\n"),
+        format!("cat > '{keep}/request.txt'\necho \"$@\" > '{keep}/args.txt'\n{then}\n"),
     )
     .unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path
 }
 
@@ -106,7 +106,7 @@ fn fake_agent(dir: &std::path::Path, then: &str) -> std::path::PathBuf {
 #[cfg(unix)]
 fn fake_config(agent: &std::path::Path, confirmed: bool) -> String {
     format!(
-        "[agents.fake]\nname = \"Fake\"\ncommand = \"fake\"\ngenerate = \"{} {{model}}\"\n\
+        "[agents.fake]\nname = \"Fake\"\ncommand = \"fake\"\ngenerate = \"sh {} {{model}}\"\n\
          models = [\"fast\", \"smart\"]\n\n[git.commit_message]\nagent = \"fake\"\n\
          confirmed = {confirmed}\ninstructions = \"Say why.\"\n",
         agent.display()
@@ -294,6 +294,7 @@ fn an_agent_past_its_timeout_is_stopped(cx: &mut TestAppContext) {
         "stopped, not waited for"
     );
     assert_eq!(notification_count(handle, cx), 1);
+    assert_eq!(told_so_far(), ["The agent didn't answer within 1 s"]);
     assert_eq!(fields(&ws, cx), (String::new(), String::new()));
     git_of(&ws, cx, |g| assert!(g.generating.is_none()));
 }
@@ -397,7 +398,7 @@ fn settings_git_chooses_the_agent_and_tries_it(cx: &mut TestAppContext) {
     write_config(
         config.path(),
         &format!(
-            "[agents.fake]\nname = \"Fake\"\ncommand = \"fake\"\ngenerate = \"{} {{model}}\"\n\
+            "[agents.fake]\nname = \"Fake\"\ncommand = \"fake\"\ngenerate = \"sh {} {{model}}\"\n\
              models = [\"fast\", \"smart\"]\n",
             agent.display()
         ),

@@ -24,8 +24,14 @@ answers, and a subagent is told to send its answer back that way.
 ## How it works today, agent by agent
 
 A task is always delivered the same way, whatever the agent: Templum types `[from <title> (<id>), task t7] Your task
-is in the pasted text: do it.` as a paste, the task as a second paste, and Enter once the screen shows the paste
-(`send_task`, `crates/templum/src/workspace/delegate.rs`). What differs is what Templum hears back:
+is in the pasted text: do it.` as a paste, the task as a second paste, and Enter once the screen shows the paste and
+stood still a look, 150 ms (an agent that reads a paste as keys takes an Enter among them for a new line), and not
+once its person typed into it since (`send_task`, `crates/templum/src/workspace/delegate.rs`). Then it checks the
+agent took it: its hooks say so (`Submitted`), or, without hooks, its screen moves. With neither within 3 seconds, a
+second Enter goes only where it can't answer a dialog: the first changed nothing on the screen, or the paste went as
+keys (Windows' console, a program that asked for no bracketed paste). `delegate` answers once it knows: the task
+taken, or why not ("typed but not submitted" when neither Enter changed anything). What differs is what Templum hears
+back:
 
 - **An agent whose hooks speak** (`Pane::speaks`): its turn's end (`AgentEvent::Stopped`) carries its whole last
   message, which ends the task (`agent_event`, `crates/templum/src/workspace/bus.rs`); a permission prompt is heard
@@ -189,6 +195,8 @@ again):
 - an asker with no call waiting gets the notice `[task t7 from Codex · api (k9x1d) hasn't answered: its screen is
   still] Its screen is in the pasted text.` and the last 20 lines, as a dialog's notice is typed (its level
   Waiting for the Templum Agent);
+  the notices about a task come in batches, one message for what comes within 15 seconds of each other
+  ([connections.md](connections.md), Delegating 10; [notice-batching.md](notice-batching.md));
 - other agents' calls that wait for the subagent's turn (`wait_for_idle` on an agent they didn't hand the task) get
   today's still-screen text: for them, its turn ended.
 
@@ -203,8 +211,8 @@ refused until its timeout), and ends as 3 says: its reply, its agent leaving, it
 - **Where no hook hears them:** the screen goes still, so 5's notice (with tools) or the task's end (without) carries
   the dialog as drawn, and the master can still answer it with `send_keys`, `send_to_terminal` or a `reply` to it; with
   tools the task stays open across that answer.
-- **Its questions to the person:** the server's instructions ask for `ask_user`, whose balloon Templum hears; as card
-  30 wants, its master isn't told of them.
+- **Its questions to the person:** the server's instructions ask for `ask_user`, whose request in the inbox
+  Templum hears; as card 30 wants, its master isn't told of them.
 - **`reply` itself asks nothing** (9).
 
 ### 7. The whole answer, and more than the screen

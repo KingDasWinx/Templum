@@ -79,6 +79,8 @@ pub(crate) enum Row {
 pub(crate) enum Note {
     Binary,
     TooLarge,
+    /// Home cut the file's hunks to fit its answer (a mirror's diff only).
+    Cut,
     /// Large or generated: folded until Show diff.
     Large,
     Mode,
@@ -162,6 +164,13 @@ pub(crate) fn rows(
                 rows.push(Row::Note {
                     file,
                     note: Note::Unread,
+                });
+                continue;
+            }
+            if d.cut {
+                rows.push(Row::Note {
+                    file,
+                    note: Note::Cut,
                 });
                 continue;
             }
@@ -561,6 +570,32 @@ mod tests {
         );
         assert_eq!(files[0].key(), (false, "x.rs".to_string()));
         assert!(rows(&[], &HashSet::new(), &HashSet::new()).is_empty());
+    }
+
+    #[test]
+    fn a_file_cut_for_the_network_draws_one_note_and_no_lines() {
+        let mut cut = shown(
+            false,
+            "diff --git a/h b/h\n--- a/h\n+++ b/h\n@@ -1 +1 @@\n-a\n+b\n",
+            None,
+        );
+        cut.diff.cut = true;
+        cut.diff.hunks.clear();
+        let got = rows(&[cut], &HashSet::new(), &HashSet::new());
+        let notes = got
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r,
+                    Row::Note {
+                        note: Note::Cut,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(notes, 1, "{got:?}");
+        assert!(!got.iter().any(|r| matches!(r, Row::Line { .. })));
     }
 
     #[test]

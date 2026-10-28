@@ -15,6 +15,7 @@ use crate::ink;
 use crate::keys::{self, Command};
 use crate::menu::Target;
 use crate::theme::Ui;
+use crate::workspace::remote::Deed;
 use crate::workspace::{Tool, Workspace};
 
 const BUTTON: f32 = 32.0;
@@ -80,7 +81,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-wire",
             IconName::Cable,
-            "Wire: connect two blocks",
+            gated(ws, Deed::Wire, "Wire: connect two blocks"),
             tool == Tool::Wire,
             ui,
         )
@@ -92,12 +93,13 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-terminal",
             IconName::SquareTerminal,
-            tip("Terminal", Command::NewTerminal),
+            gated(ws, Deed::AddTerminal, tip("Terminal", Command::NewTerminal)),
             false,
             ui,
         )
         .on_click(cx.listener(|ws, e: &ClickEvent, window, cx| {
-            // The shells to pick from; Ctrl+Shift+T opens the default without a menu.
+            // The shells to pick from (a mirror's are home's); Ctrl+Shift+T opens the default
+            // without a menu.
             ws.open_menu(Target::Shells, e.position(), window, cx)
         }))
         .test_support()
@@ -105,7 +107,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-note",
             IconName::StickyNote,
-            tip("Note", Command::NewNote),
+            gated(ws, Deed::AddNote, tip("Note", Command::NewNote)),
             false,
             ui,
         )
@@ -115,7 +117,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-checklist",
             IconName::ListChecks,
-            "Checklist",
+            gated(ws, Deed::AddChecklist, "Checklist"),
             false,
             ui,
         )
@@ -125,7 +127,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-kanban",
             IconName::LayoutDashboard,
-            tip("Kanban board", Command::NewKanban),
+            gated(ws, Deed::AddKanban, tip("Kanban board", Command::NewKanban)),
             false,
             ui,
         )
@@ -135,33 +137,43 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-editor",
             IconName::FileCode,
-            tip("Editor", Command::NewEditor),
+            gated(ws, Deed::AddEditor, tip("Editor", Command::NewEditor)),
             false,
             ui,
         )
         .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.new_editor(window, cx)))
         .test_support()
         .into_any_element(),
-        button("tool-agent", IconName::Bot, "AI agent", false, ui)
-            .on_click(cx.listener(|ws, e: &ClickEvent, window, cx| {
-                // The agent's block opens in the middle of the canvas.
-                let at = ws.space.canvas.camera.to_world(ws.center(window));
-                ws.open_menu(Target::Agents(at), e.position(), window, cx);
-            }))
-            .test_support()
-            .into_any_element(),
+        button(
+            "tool-agent",
+            IconName::Bot,
+            gated(ws, Deed::OpenAgent, "AI agent"),
+            false,
+            ui,
+        )
+        .on_click(cx.listener(|ws, e: &ClickEvent, window, cx| {
+            // The agent's block opens in the middle of the canvas.
+            let at = ws.space.canvas.camera.to_world(ws.center(window));
+            ws.open_menu(Target::Agents(at), e.position(), window, cx);
+        }))
+        .test_support()
+        .into_any_element(),
     ]);
     let drawing = group(vec![
-        button("tool-pen", IconName::Pencil, "Pen", tool == Tool::Pen, ui)
-            .on_click(
-                cx.listener(|ws, _: &ClickEvent, window, cx| ws.set_tool(Tool::Pen, window, cx)),
-            )
-            .test_support()
-            .into_any_element(),
+        button(
+            "tool-pen",
+            IconName::Pencil,
+            gated(ws, Deed::Draw, "Pen"),
+            tool == Tool::Pen,
+            ui,
+        )
+        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.set_tool(Tool::Pen, window, cx)))
+        .test_support()
+        .into_any_element(),
         button(
             "tool-highlighter",
             IconName::Highlighter,
-            "Highlighter",
+            gated(ws, Deed::Draw, "Highlighter"),
             tool == Tool::Highlighter,
             ui,
         )
@@ -175,7 +187,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-shapes",
             ws.last_shape.map_or(IconName::Shapes, shape_icon),
-            "Shapes",
+            gated(ws, Deed::Draw, "Shapes"),
             matches!(tool, Tool::Shape(_)),
             ui,
         )
@@ -185,7 +197,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-eraser",
             IconName::Eraser,
-            "Eraser",
+            gated(ws, Deed::Draw, "Eraser"),
             tool == Tool::Eraser,
             ui,
         )
@@ -377,14 +389,42 @@ fn shape_name(kind: ShapeKind) -> &'static str {
     }
 }
 
+/// What a button's tooltip says, and whether the button is dimmed.
+struct Tip(SharedString, bool);
+
+impl From<&'static str> for Tip {
+    fn from(tip: &'static str) -> Tip {
+        Tip(tip.into(), false)
+    }
+}
+
+impl From<(SharedString, bool)> for Tip {
+    fn from((tip, dim): (SharedString, bool)) -> Tip {
+        Tip(tip, dim)
+    }
+}
+
+/// A control a mirrored workspace can't use now is dimmed, and its tooltip says why: the rule's
+/// words for `deed`, else `tip`.
+pub(crate) fn gated(
+    ws: &Workspace,
+    deed: Deed,
+    tip: impl Into<SharedString>,
+) -> (SharedString, bool) {
+    match ws.why_not(deed) {
+        Some(why) => (why.into(), true),
+        None => (tip.into(), false),
+    }
+}
+
 fn button(
     id: &'static str,
     icon: IconName,
-    tip: impl Into<SharedString>,
+    tip: impl Into<Tip>,
     active: bool,
     ui: Ui,
 ) -> Stateful<Div> {
-    let tip = tip.into();
+    let Tip(tip, dim) = tip.into();
     div()
         .id(id)
         .flex()
@@ -394,6 +434,7 @@ fn button(
         .rounded(px(8.0))
         .cursor_pointer()
         .when(active, |el| el.bg(ui.card))
+        .when(dim, |el| el.opacity(0.4))
         .aria_selected(active)
         .hover(move |s| s.bg(ui.hover))
         .active(move |s| s.bg(ui.pressed))

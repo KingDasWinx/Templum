@@ -1,10 +1,11 @@
 # Shells
 
 - **Date:** 2026-10-11; [A shell for each terminal](#a-shell-for-each-terminal) and
-  [A shell for each agent](#a-shell-for-each-agent) 2026-10-20
+  [A shell for each agent](#a-shell-for-each-agent) 2026-10-20; [A scope for each terminal](#a-scope-for-each-terminal)
+  2026-10-24
 - **Status:** Implemented, *A shell for each terminal* too (kanban card 60,
   [plan](../plans/2026-10-20-shell-per-terminal.md)); *A shell for each agent* too (kanban card 66,
-  [plan](../plans/2026-10-20-shell-per-agent.md))
+  [plan](../plans/2026-10-20-shell-per-agent.md)); *A scope for each terminal* too (kanban card 173)
 - **Builds on:** [config.md](config.md) (`[shell]`), [settings.md](settings.md),
   [context-menus.md](context-menus.md), [persistence.md](persistence.md),
   [shell-integration.md](shell-integration.md), [agents.md](agents.md) and [accounts.md](accounts.md)
@@ -396,3 +397,85 @@ one, or a link named `wsl` to it (Unix), so no test depends on the machine's she
 **Manual (Linux):** Claude Code set to fish opens in fish (its block's title before the agent sets one), Codex in the
 default zsh; after a restart Claude Code resumes in fish. Windows (PowerShell 7, Git Bash, WSL) not checked by hand: no
 Windows machine at hand.
+
+## A scope for each terminal
+
+Kanban card 173, urgent: *"The whole Templum dies when a terminal runs out of memory."* On 2026-10-24 systemd-oomd
+killed Templum's scope (`app-Hyprland-gtk-launch-*.scope`) three times, its memory pressure above 50% for more than
+20 s: 270 to 370 processes each time, the window and every terminal and agent. Templum itself used about 200 MB of the
+scope's 18.1 GB; the rest was agents' parallel Rust builds in its terminals. Every shell, and all it starts, lived in
+Templum's own cgroup, and oomd ends a whole unit.
+
+### On Linux
+
+- Each terminal's shell is moved into a systemd user scope of its own, as GNOME Terminal's are (VTE's
+  `vte-spawn-<uuid>.scope`): `templum-term-<id>.scope`, `<id>` being its `TEMPLUM_TERMINAL`, described as
+  `Templum terminal <id> (<shell>)`. What the shell starts afterwards (agents, `cargo`, tests) is in it too. oomd then
+  ends the scope of the terminal that uses the memory; Templum and the other terminals live. `systemd-cgls --user`
+  shows them under `app.slice`.
+- **How:** right after the PTY's child starts, a thread of its own (`templum-terminal`'s `scope.rs`) calls
+  `org.freedesktop.systemd1.Manager.StartTransientUnit` on the user's session bus with the shell's pid (`PIDs`),
+  `CollectMode=inactive-or-failed`, so a scope oomd ended doesn't stay as a failed unit, as
+  `systemd-run --user --scope --collect` would. One connection serves the whole run (zbus, already in the tree for
+  the portals).
+- **A shell that ends at once:** systemd (261) misses the emptying of a scope whose only process ends while it is
+  being moved, and keeps it running, empty, until logout (3 of 80 quick shells in a test). So when the shell is gone
+  within a second of the call, the thread asks for the scope's `TasksCurrent` and stops it (`StopUnit`) when nothing
+  runs in it.
+- **Nothing waits for it:** opening a terminal costs what it did. Measured on 2026-10-24 (40 terminals running
+  `sh -c 'printf ready; exec cat'`, dev build): `Terminal::spawn` 0.87 ms median before, 0.65 ms after; first output
+  1.8 ms before, 1.6 ms after (noise); the shell is in its scope 2.2 ms (median, p95 3.7 ms) after the spawn began, the
+  first terminal of a run a few ms later (it connects to the bus).
+- **What the shell forks before that** stays in Templum's cgroup: at most the first commands of its startup files,
+  which usually take longer than the move. An agent Templum types into a new terminal starts once the startup files
+  ran, inside the scope. VTE has the same window.
+- **No scope, as before:** without a session bus (zbus tries `DBUS_SESSION_BUS_ADDRESS`, else
+  `/run/user/<uid>/bus`), without systemd on it, or when systemd refuses (Templum started from an SSH login, whose
+  session the system's manager owns), the shell stays in Templum's cgroup. One line on stderr says why, the first time;
+  no notification. macOS and Windows have no scopes.
+
+### A terminal the system stopped
+
+oomd ends a scope with SIGKILL. A terminal whose shell ends killed (`Terminal::killed`: SIGKILL, on Unix) closes its
+block as any ended shell does, and a notification says *The terminal "<title>" was stopped by the system, most likely
+for using too much memory* (also on stderr). Templum never kills the shell of a block it still shows, so the other
+SIGKILL is a person's `kill -9` ([minors](../minors.md#programs-in-a-terminal)).
+
+**Not in a scope yet:** the Templum Agent's engine and what its tools run, and the programs Templum runs without a
+terminal (Git, Generate ✨), stay in Templum's cgroup ([minors](../minors.md#programs-in-a-terminal)).
+
+### Decisions
+
+1. **A D-Bus call from Templum, after the spawn**, as VTE does, rather than starting each shell as
+   `systemd-run --user --scope -- <shell>`. `systemd-run` added 5 to 15 ms before every prompt (measured), needed to
+   be found on the PATH, and, when systemd refused, failed the terminal instead of opening it as before; the call
+   costs no waiting, falls back silently, and leaves the shell's command line, pid, shell integration and the agent
+   and folder detection untouched. Rejected also: a sub-cgroup Templum makes, which needs a delegated cgroup an app's
+   scope doesn't have.
+2. **The scope's name carries the terminal's `TEMPLUM_TERMINAL`**, unique among every Templum running; the block's
+   id is the UI's and `templum-terminal` stays UI-free.
+3. **The notification guesses from the signal**: asking systemd how the scope ended needs its unit kept after it
+   failed, and oomd's own marks (its journal line, the cgroup's `user.oomd_kill` attribute) are gone or racy by then.
+
+### Testing
+
+- `templum-terminal` (`tests/spawn.rs`, Linux): two terminals' shells are each in their `/templum-term-<id>.scope`
+  (`/proc/<pid>/cgroup`), not the test's cgroup, waiting for it; SIGKILL to the first's scope, as oomd sends it
+  (`systemctl --user kill`), ends that terminal (`killed`) and not the other. Skipped, with a line, when no systemd
+  user manager answers or doesn't run the test (`systemctl --user is-system-running`, the test's own cgroup), as in CI
+  containers.
+- A shell that ends at once (`exit 0`, 20 of them) leaves no `templum-term-*` unit (fails without the stop: 1 to
+  3 left).
+- The fallback: the test runs itself again with `DBUS_SESSION_BUS_ADDRESS` naming a missing socket; there two
+  terminals run and stay in its cgroup, and stderr has the line once.
+- `a_killed_shell_says_so` (Unix): `kill -9 $$` is `killed`, `exit 3` isn't.
+- Headless UI (`workspace/tests/terminals.rs`): a block's shell killed from outside closes it with one notification;
+  one the person ends shows none (`persistence.rs`).
+- **Manual (Linux)**, in a dev build (`cargo run -p templum -- --dev`), with oomd watching `app.slice` (`oomctl`):
+  open two terminals; in each, `cat /proc/self/cgroup` names its own `templum-term-<id>.scope`. In one, run
+  `stress-ng --vm 4 --vm-bytes 90% --vm-keep --timeout 120s` (Arch: `pacman -S stress-ng`) and watch
+  `journalctl -f -u systemd-oomd` from a terminal outside Templum: after 20 s above 50% pressure oomd kills
+  `templum-term-<id>.scope` alone; its block closes with the notification, the window and the other terminal stay.
+  Without a hog: `systemctl --user kill --signal=SIGKILL templum-term-<id>.scope` does what oomd does. Not run by the
+  implementer: `stress-ng` isn't installed here, and no GUI window was opened.
+

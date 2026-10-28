@@ -12,19 +12,197 @@ use templum_terminal::{ShellOption, SpawnOptions, Terminal};
 
 use crate::agents::AgentEntry;
 use crate::alert::{self, Alert};
-use crate::board::Boards;
+use crate::board::{Boards, Comment, Draft};
 use crate::config::WorkingDirectory;
 use crate::kanban::{self, Kanban};
 use crate::note::Note;
 use crate::prompt;
+use templum_mcp::control::Kind;
 
 use super::history::{Change, Then};
+use super::remote::Deed;
 use super::{
     AGENT_COLS, AGENT_ROWS, BOARD_UNDO, Body, DEFAULT_COLS, DEFAULT_ROWS, Ghost, Pane, Space,
     Workspace, remember, show_notification,
 };
+use crate::notes;
+
+/// What the person does to a kanban's boards: on this computer an edit of `Workspace::boards`
+/// (one Ctrl+Z step each), on a mirrored workspace a call of home's.
+pub(crate) enum BoardAct {
+    /// `card` into `column`, in the place of card `to` (the end without one), as a drop puts it.
+    MoveCard {
+        board: u64,
+        card: u64,
+        column: u64,
+        to: Option<u64>,
+    },
+    /// `column` into the place of column `to`, as a drop puts it.
+    MoveColumn {
+        board: u64,
+        column: u64,
+        to: u64,
+    },
+    AddColumn {
+        board: u64,
+    },
+    RenameColumn {
+        board: u64,
+        column: u64,
+        title: String,
+    },
+    DeleteColumn {
+        board: u64,
+        column: u64,
+    },
+    RenameBoard {
+        board: u64,
+        name: String,
+    },
+    DeleteBoard {
+        board: u64,
+    },
+    /// Kanban `block` shows `board`, or a new board (None).
+    Show {
+        block: BlockId,
+        board: Option<u64>,
+    },
+    DeleteCard {
+        board: u64,
+        card: u64,
+    },
+    /// Done on a card's dialog.
+    Finish {
+        board: u64,
+        draft: Draft,
+    },
+    Comment {
+        board: u64,
+        card: u64,
+        text: String,
+    },
+    EditComment {
+        board: u64,
+        card: u64,
+        comment: u64,
+        text: String,
+    },
+    DeleteComment {
+        board: u64,
+        card: u64,
+        comment: u64,
+    },
+    /// This computer only: a deleted comment's Undo.
+    RestoreComment {
+        board: u64,
+        card: u64,
+        index: usize,
+        comment: Comment,
+    },
+    /// This computer only: Save draft.
+    KeepDraft(Draft),
+    /// This computer only: Discard.
+    DropDraft(u64),
+}
 
 impl Workspace {
+    /// The one door of a kanban's writes. `space` is the workspace the person acted on: for a
+    /// local one the edit each site made before, for a mirrored one nothing yet.
+    pub(crate) fn act_on_boards(
+        &mut self,
+        space: &str,
+        act: BoardAct,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // A Boards dialog may outlive the workspace it was opened on: block and board ids mean
+        // something else in another one.
+        if matches!(act, BoardAct::Show { .. } | BoardAct::DeleteBoard { .. })
+            && !self.still_shown(space, window, cx)
+        {
+            return;
+        }
+        match self.space_named(space) {
+            Some(s) if s.is_remote() => return self.remote_board_act(space, act, window, cx),
+            Some(_) => {}
+            None => return,
+        }
+        match act {
+            BoardAct::MoveCard {
+                board,
+                card,
+                column,
+                to,
+            } => self.edit_boards(|b| b.move_card(board, card, column, to)),
+            BoardAct::MoveColumn { board, column, to } => {
+                self.edit_boards(|b| b.move_column(board, column, to))
+            }
+            BoardAct::AddColumn { board } => {
+                self.edit_boards(|b| b.add_column(board));
+            }
+            BoardAct::RenameColumn {
+                board,
+                column,
+                title,
+            } => self.edit_boards(|b| b.rename_column(board, column, &title)),
+            BoardAct::DeleteColumn { board, column } => {
+                self.edit_boards(|b| b.remove_column(board, column))
+            }
+            BoardAct::RenameBoard { board, name } => {
+                self.edit_boards(|b| b.rename_board(board, &name))
+            }
+            BoardAct::DeleteBoard { board } => self.delete_board(board, cx),
+            BoardAct::Show {
+                block,
+                board: Some(board),
+            } => self.show_board(block, board, cx),
+            BoardAct::Show { block, board: None } => self.new_board(block, cx),
+            BoardAct::DeleteCard { board, card } => {
+                self.edit_boards(|b| b.remove_card(board, card))
+            }
+            BoardAct::Finish { board, draft } => {
+                self.edit_boards(|b| b.finish_draft(board, &draft));
+            }
+            BoardAct::Comment { board, card, text } => {
+                self.edit_boards(|b| b.add_comment(board, card, "you", &text, notes::now()));
+            }
+            BoardAct::EditComment {
+                board,
+                card,
+                comment,
+                text,
+            } => self.edit_boards(|b| b.edit_comment(board, card, comment, &text)),
+            BoardAct::DeleteComment {
+                board,
+                card,
+                comment,
+            } => self.edit_boards(|b| b.remove_comment(board, card, comment)),
+            BoardAct::RestoreComment {
+                board,
+                card,
+                index,
+                comment,
+            } => self.edit_boards(|b| {
+                b.edit_card(board, card, |c| {
+                    c.restore_comment(index, comment);
+                })
+            }),
+            BoardAct::KeepDraft(draft) => self.boards.keep_draft(draft),
+            BoardAct::DropDraft(at) => self.boards.drop_draft(at),
+        }
+        cx.notify();
+    }
+
+    /// An id for something a dialog makes before home hears of it (an item, a comment, a card's
+    /// first attachment): the boards' next one for a local workspace; a mirror's own count, which
+    /// never meets home's.
+    pub(crate) fn fresh_id(&mut self, space: &str) -> u64 {
+        match self.remote_mut(space) {
+            Some(remote) => remote.fresh_id(),
+            None => self.boards.next(),
+        }
+    }
+
     /// Adds a block on top, focused, popping in.
     pub(super) fn add_block(&mut self, rect: Rect, body: Body) -> BlockId {
         let id = self.space.canvas.add(rect);
@@ -136,6 +314,7 @@ impl Workspace {
     pub(crate) fn edit_boards<R>(&mut self, f: impl FnOnce(&mut Boards) -> R) -> R {
         let before = self.boards.clone();
         let result = f(&mut self.boards);
+        self.boards.prune_drafts();
         if self.boards != before {
             self.boards_undo.push(before);
             if self.boards_undo.len() > BOARD_UNDO {
@@ -152,6 +331,8 @@ impl Workspace {
         };
         // Ids are never handed out twice: a block or a file may still name an undone board.
         before.next_id = before.next_id.max(self.boards.next_id);
+        // Drafts aren't board edits: the ones kept since stay.
+        before.drafts = std::mem::take(&mut self.boards.drafts);
         self.boards = before;
         cx.notify();
         true
@@ -185,10 +366,16 @@ impl Workspace {
         id
     }
 
-    /// Shows the terminal waiting for the person (it asked for attention): this workspace's
-    /// first, then the others' in the sidebar's order, the oldest block first. Going there is
-    /// seeing it, so the next time shows the next one. None waiting: a notification says so.
+    /// Opens the inbox when a request waits in this workspace. Else shows the terminal waiting
+    /// for the person (it asked for attention): this workspace's first, then the others' in the
+    /// sidebar's order, the oldest block first. Going there is seeing it, so the next time shows
+    /// the next one. None waiting: a notification says so.
     pub(crate) fn go_to_waiting(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A request waits here: the inbox has it.
+        if !self.inbox().is_empty() {
+            self.open_inbox(None, window, cx);
+            return;
+        }
         let order = self.order();
         let spaces =
             std::iter::once(&self.space).chain(order.into_iter().filter(|s| s.id != self.space.id));
@@ -259,10 +446,14 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.on_remote() {
+            self.remote_send_to(to, text, window, cx);
+            return;
+        }
         let Some(pane) = self.space.terminal(to) else {
             return;
         };
-        pane.person_typed();
+        pane.person_wrote();
         pane.term.type_in(text);
         let space = self.space.id.clone();
         self.reveal(&space, to, window, cx);
@@ -295,6 +486,12 @@ impl Workspace {
 
     /// A kanban block showing no board, its top-left corner at `at` (world units).
     pub(crate) fn add_kanban_at(&mut self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
+        if self.why_not(Deed::AddKanban).is_some() {
+            return;
+        }
+        if self.on_remote() {
+            return self.remote_add(Kind::Kanban, at, cx);
+        }
         self.space.pristine = false;
         let rect = Rect::new(at.x, at.y, kanban::SIZE.w, kanban::SIZE.h);
         self.add_block(rect, Body::Kanban(Kanban::default()));
@@ -312,6 +509,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.why_not(Deed::AddTerminal).is_some() {
+            return;
+        }
+        if self.on_remote() {
+            // Home's default shell: a mirror's menus choose home's others (`open_home_shell`).
+            return self.open_home_shell(None, at, window, cx);
+        }
         let rect = match at {
             Some(at) => {
                 self.space.pristine = false;
@@ -393,10 +597,34 @@ impl Workspace {
             .is_some_and(|program| templum_terminal::is_shell(program, "wsl"))
     }
 
-    /// Whether the menus, Settings and the welcome list the agent `entry` as installed: WSL is
-    /// another system, whose programs aren't on Windows' PATH, so what runs there is trusted.
+    /// Whether the menus and the welcome list the agent `entry` as installed: WSL is another
+    /// system, whose programs aren't on Windows' PATH, so what runs there is trusted.
     pub(crate) fn agent_installed(&self, entry: &AgentEntry) -> bool {
         self.in_wsl(entry) || templum_terminal::installed(entry.program())
+    }
+
+    /// `agent_installed` as Settings ▸ Agents asks it, every frame: from what `find_programs`
+    /// found (looked for now only for a program it hasn't seen).
+    pub(crate) fn agent_found(&self, entry: &AgentEntry) -> bool {
+        self.in_wsl(entry)
+            || self
+                .found
+                .get(entry.program())
+                .copied()
+                .unwrap_or_else(|| crate::agents::locate(entry.program()).is_some())
+    }
+
+    /// Looks for every agent's program again, for `agent_found`.
+    pub(crate) fn find_programs(&mut self) {
+        self.found = self
+            .agents
+            .iter()
+            .map(|a| {
+                let program = a.program().to_string();
+                let found = crate::agents::locate(&program).is_some();
+                (program, found)
+            })
+            .collect();
     }
 
     /// Why `spawn_agent` and the Templum Agent can't open the agent `entry`: it runs in WSL,
@@ -612,7 +840,7 @@ impl Workspace {
     /// The kanban block `block` shows `board`.
     pub(crate) fn show_board(&mut self, block: BlockId, board: u64, cx: &mut Context<Self>) {
         if let Some(k) = self.space.kanban_mut(block) {
-            *k = Kanban { board: Some(board) };
+            k.board = Some(board);
             cx.notify();
         }
     }
@@ -641,6 +869,9 @@ impl Workspace {
 
     /// Starts a terminal in a new focused block, in the configured start folder.
     pub(crate) fn open(&mut self, rect: Rect, window: &mut Window, cx: &mut Context<Self>) {
+        if self.on_remote() || self.why_not(Deed::AddTerminal).is_some() {
+            return;
+        }
         let folder = self.start_dir(window, cx);
         self.spawn_block(rect, folder, window, cx);
     }
@@ -669,6 +900,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
+        if self.on_remote() {
+            return None;
+        }
         let (cols, rows) = chrome::grid_size(chrome::content_rect(rect).size(), self.cell.size);
         let command = shell
             .as_ref()
@@ -709,51 +943,7 @@ impl Workspace {
         };
         let start = folder.or_else(std::env::home_dir);
         let id = match Terminal::spawn(opts, self.notify.clone()) {
-            Ok(term) => {
-                let id = self.space.canvas.add(rect);
-                self.space.blocks.insert(
-                    id,
-                    Body::Terminal(Box::new(Pane {
-                        term,
-                        snapshot: Rc::default(),
-                        heard: (0, 0),
-                        alert: None,
-                        seen: templum_terminal::Inspection {
-                            folder: start,
-                            ..Default::default()
-                        },
-                        usage: None,
-                        find: None,
-                        state: None,
-                        handed: None,
-                        answer: None,
-                        prompt: None,
-                        looks: Default::default(),
-                        typed: Default::default(),
-                        keyed: Default::default(),
-                        scrolled: Default::default(),
-                        submitted: 0,
-                        dialogs: 0,
-                        speaks: false,
-                        keys_from: None,
-                        opened_by: None,
-                        model: None,
-                        effort: None,
-                        flags_for: None,
-                        sent: None,
-                        transcript: None,
-                        starting: None,
-                        restored: false,
-                        resuming: None,
-                        account: None,
-                        role: None,
-                        quit: None,
-                        shell,
-                    })),
-                );
-                self.added(id);
-                Some(id)
-            }
+            Ok(term) => Some(self.add_pane(rect, term, start, shell)),
             Err(err) => {
                 eprintln!("templum: couldn't start a shell: {err}");
                 let message = format!("Couldn't start a shell: {err}");
@@ -762,6 +952,23 @@ impl Workspace {
             }
         };
         cx.notify();
+        id
+    }
+
+    /// A new terminal block at `rect` showing `term`, its folder `start`, keeping `shell`: focused,
+    /// and a step of Ctrl+Z unless `quiet` (`added`).
+    pub(super) fn add_pane(
+        &mut self,
+        rect: Rect,
+        term: Terminal,
+        start: Option<PathBuf>,
+        shell: Option<ShellOption>,
+    ) -> BlockId {
+        let id = self.space.canvas.add(rect);
+        self.space
+            .blocks
+            .insert(id, Body::Terminal(Box::new(Pane::new(term, start, shell))));
+        self.added(id);
         id
     }
 
@@ -780,6 +987,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.why_not(Deed::Close).is_some() {
+            return;
+        }
+        if self.on_remote() {
+            return self.remote_close(ids, window, cx);
+        }
         let one = ids.len() == 1;
         let busy: Vec<String> = ids
             .iter()
@@ -803,11 +1016,16 @@ impl Workspace {
             self.close_now(&ids, then, window, cx);
             return;
         }
-        let ws = cx.entity();
+        let (ws, space) = (cx.entity(), self.space.id.clone());
+        let shown = space.clone();
         let close = {
             let (ws, ids) = (ws.clone(), ids.clone());
             move |window: &mut Window, cx: &mut App| {
-                ws.update(cx, |ws, cx| ws.close_now(&ids, then, window, cx))
+                ws.update(cx, |ws, cx| {
+                    if ws.still_shown(&space, window, cx) {
+                        ws.close_now(&ids, then, window, cx);
+                    }
+                })
             }
         };
         let busy = busy.join(" ");
@@ -831,6 +1049,9 @@ impl Workspace {
             move |window, cx| {
                 // Every one is tried, even after a failure.
                 let saved = ws.update(cx, |ws, cx| {
+                    if !ws.still_shown(&shown, window, cx) {
+                        return false;
+                    }
                     let mut ok = true;
                     for id in &ids {
                         ok &= ws.save_all(*id, window, cx);
@@ -861,12 +1082,13 @@ impl Workspace {
         if !self.take_step(then) {
             return;
         }
+        // A subagent's block never comes back: it belongs to a live session.
         let items: Vec<_> = self
             .space
             .canvas
             .blocks()
             .iter()
-            .filter(|b| ids.contains(&b.id))
+            .filter(|b| ids.contains(&b.id) && self.space.kept(b.id))
             .map(|b| (b.id, self.space.item_of(b)))
             .collect();
         // Their wires go with them; undoing the close brings them back.
@@ -898,15 +1120,17 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(terminal) = self.space.terminal(id).map(|p| p.term.id().to_string()) {
+        let terminal = self.space.terminal(id).map(|p| p.term.id().to_string());
+        if let Some(terminal) = &terminal {
             let uid = self.space.uids.get(&id).cloned().unwrap_or_default();
             let why = format!("{uid} was closed before it answered.");
-            self.end_turn(&terminal, templum_mcp::Reply::err(why), cx);
+            self.end_turn(terminal, templum_mcp::Reply::err(why), cx);
         }
         if let Some((block, _, body)) = self.take_block(id, window, cx) {
-            // Its notes stay in the Notes dialog, but for blank ones: nothing is lost.
+            // Its notes stay in the Notes dialog, but for blank ones: nothing is lost. (A mirrored
+            // block's are home's, by home's ids.)
             for note in body.note().map(Note::ids).unwrap_or_default() {
-                self.drop_if_blank(note);
+                self.note_closed(note);
             }
             if let Some(list) = body.checklist().and_then(|c| c.list) {
                 self.drop_checklist_if_blank(list);
@@ -916,6 +1140,10 @@ impl Workspace {
                 body,
                 since: Instant::now(),
             });
+        }
+        // Its subagents' blocks go with it (docs/specs/claude-subagents.md).
+        if let Some(terminal) = terminal {
+            self.close_subagents_of(&terminal, window, cx);
         }
         cx.notify();
     }
@@ -1144,4 +1372,56 @@ fn base36(mut n: u128, width: usize) -> String {
         n /= 36;
     }
     String::from_utf8(text).expect("ASCII")
+}
+
+impl Pane {
+    /// A terminal block's pane around `term`, its folder `start`, keeping `shell`.
+    pub(super) fn new(term: Terminal, start: Option<PathBuf>, shell: Option<ShellOption>) -> Pane {
+        Pane {
+            term,
+            snapshot: Rc::default(),
+            heard: (0, 0),
+            alert: None,
+            seen: templum_terminal::Inspection {
+                folder: start,
+                ..Default::default()
+            },
+            usage: None,
+            find: None,
+            state: None,
+            handed: None,
+            answer: None,
+            prompt: None,
+            looks: Default::default(),
+            typed: Default::default(),
+            keyed: Default::default(),
+            draft: Default::default(),
+            scrolled: Default::default(),
+            submitted: 0,
+            dialogs: 0,
+            speaks: false,
+            keys_from: None,
+            opened_by: None,
+            model: None,
+            effort: None,
+            flags_for: None,
+            sent: None,
+            transcript: None,
+            starting: None,
+            typed_agent: None,
+            restored: false,
+            resuming: None,
+            account: None,
+            role: None,
+            quit: None,
+            shell,
+            subagents: Vec::new(),
+            awaits_subagents: false,
+            asked_by: None,
+            settles: None,
+            follows: None,
+            watch: Default::default(),
+            remote: None,
+        }
+    }
 }

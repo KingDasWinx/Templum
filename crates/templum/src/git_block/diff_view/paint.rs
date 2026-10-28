@@ -26,6 +26,7 @@ use crate::grid::hsla;
 use crate::menu::Target;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
+use crate::workspace::remote::Deed;
 
 /// Row `ix` of the panel.
 #[allow(clippy::too_many_arguments)]
@@ -243,17 +244,21 @@ fn file_row(
                     .test_support()
                     .into_any_element(),
             );
-            buttons.push(
-                hover_button("discard", IconName::Undo2, words::named("Discard").into())
+            buttons.push(match ws.why_not(Deed::Git("discard")) {
+                Some(why) => hover_button("discard", IconName::Undo2, why.into())
+                    .opacity(0.5)
+                    .test_support()
+                    .into_any_element(),
+                None => hover_button("discard", IconName::Undo2, words::named("Discard").into())
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                         ws.discard(vec![q.clone()], window, cx)
                     }))
                     .test_support()
                     .into_any_element(),
-            );
+            });
         }
     }
-    if !busy && working {
+    if !busy && working && !ws.on_remote() {
         let p = path.clone();
         buttons.push(
             hover_button("open", IconName::FileCode, "Open in editor".into())
@@ -401,8 +406,13 @@ fn hunk_row(
                     .into_any_element(),
             );
             let (discard, path) = (patch.clone(), path.clone());
-            buttons.push(
-                small(ids("discard"), "Discard", ui, z)
+            buttons.push(match ws.why_not(Deed::Git("discard_hunk")) {
+                Some(why) => small(ids("discard"), "Discard", ui, z)
+                    .opacity(0.5)
+                    .tooltip(move |window, cx| Tooltip::new(why.clone()).build(window, cx))
+                    .test_support()
+                    .into_any_element(),
+                None => small(ids("discard"), "Discard", ui, z)
                     .tooltip(|window, cx| Tooltip::new(words::tip("Discard")).build(window, cx))
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                         if let Some(p) = discard() {
@@ -411,10 +421,10 @@ fn hunk_row(
                     }))
                     .test_support()
                     .into_any_element(),
-            );
+            });
         }
     }
-    if !busy && working && !part {
+    if !busy && working && !part && !ws.on_remote() {
         let line = h.new_start.max(1);
         buttons.push(
             small(ids("open"), "Open", ui, z)
@@ -525,6 +535,14 @@ fn note_row(
     let text = match note {
         Note::Binary => format!("Binary file · {}", human(d.bytes.unwrap_or(0))),
         Note::TooLarge => "Too large to show".to_string(),
+        Note::Cut => format!(
+            "Too large to show from {}.",
+            ws.space
+                .remote
+                .as_deref()
+                .map(crate::mirror::computer_of)
+                .unwrap_or_default()
+        ),
         Note::Large if d.generated() => "Generated file".to_string(),
         Note::Large => format!("{} changed lines", d.changed()),
         Note::Mode => {
@@ -554,7 +572,7 @@ fn note_row(
                 )
                 .test_support(),
         ),
-        Note::TooLarge if working => row.child(
+        Note::TooLarge if working && !ws.on_remote() => row.child(
             small(("git-open-large", ix), "Open in editor", ui, z)
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                     ws.open_from_git(&path, window, cx)
@@ -576,6 +594,7 @@ fn note_row(
                 .test_support(),
         ),
         Note::TooLarge
+        | Note::Cut
         | Note::Unread
         | Note::Resolved
         | Note::Binary

@@ -269,7 +269,8 @@ pub fn run(
             use std::os::windows::process::CommandExt as _;
             c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
-        let out = match until_cancelled(&mut c, cancel, Some(Instant::now() + timeout)) {
+        let out = match until_cancelled(&mut c, cancel, Some(Instant::now() + timeout), false, None)
+        {
             Err(e) => return Err(Failure::CouldntRun(format!("{shell}: {e}"))),
             Ok(None) if cancel.load(Ordering::Relaxed) => return Err(Failure::Cancelled),
             Ok(None) => return Err(Failure::TimedOut(timeout)),
@@ -345,6 +346,52 @@ fn decode(bytes: Vec<u8>) -> String {
     }
 }
 
+/// The agent that writes commit messages, and how: what Generate runs (the popup builds it from
+/// Settings ▸ Git, the API's `git` tool at home likewise). It never crosses the network.
+#[derive(Clone, Debug)]
+pub struct Writer {
+    /// Its generate command (`{model}` is `model`).
+    pub command: String,
+    pub model: String,
+    /// An account's variable, naming its folder.
+    pub env: Vec<(String, String)>,
+    /// This repository's commit rules, else Settings ▸ Git's.
+    pub instructions: String,
+    /// The request's template: [`PROMPT`] unless the person wrote their own.
+    pub template: String,
+    /// The diff past this many bytes is cut.
+    pub max_bytes: usize,
+    pub timeout: Duration,
+}
+
+/// Reads what the commit would take, builds the request and runs the writer's agent. The bool
+/// says HEAD moved meanwhile: a commit made from a terminal took what the answer describes.
+pub fn generate(
+    repo: &Repo,
+    w: &Writer,
+    all: bool,
+    cancel: &AtomicBool,
+) -> (Result<String, Failure>, bool) {
+    let head = repo.head().ok();
+    let answer = (|| {
+        let changes = changes(repo, all, w.max_bytes).map_err(Failure::Git)?;
+        let request = request(
+            &w.template,
+            &Request {
+                instructions: &w.instructions,
+                files: &changes.files,
+                diff: &changes.diff,
+                recent: &changes.recent,
+                max_bytes: w.max_bytes,
+            },
+        );
+        run(
+            &w.command, &w.model, &request, &repo.root, w.timeout, cancel, &w.env,
+        )
+    })();
+    (answer, repo.head().ok() != head)
+}
+
 /// What a request is about.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Changes {
@@ -397,11 +444,11 @@ pub fn changes(repo: &Repo, all: bool, max_bytes: usize) -> Result<Changes, GitE
         {
             files.push(format!("A {}", entry.path));
             let path = repo.root.join(&entry.path);
-            let size = std::fs::metadata(&path).map_or(0, |m| m.len());
+            let size = std::fs::symlink_metadata(&path).map_or(0, |m| m.len());
             if diff.len() > max_bytes || size > DIFF_LIMIT as u64 {
                 continue;
             }
-            let bytes = std::fs::read(&path).unwrap_or_default();
+            let bytes = crate::repo::working_bytes(&path).unwrap_or_default();
             diff.push_str(&if bytes.iter().take(8 * 1024).any(|b| *b == 0) {
                 new_binary_diff(&entry.path)
             } else {

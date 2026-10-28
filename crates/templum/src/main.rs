@@ -3,7 +3,11 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod agents;
+mod agents_view;
 mod alert;
+mod attachments;
+mod automations;
+mod automations_view;
 mod autostart;
 mod balloon;
 mod bench;
@@ -14,27 +18,33 @@ mod checklist;
 mod checklists;
 mod chime;
 mod config;
+mod connect_dialog;
 mod editor;
 mod gallery;
 mod git_block;
 mod grid;
+mod home;
+mod inbox;
 mod ink;
+mod instructions;
 mod kanban;
 mod keys;
 mod launcher;
 mod list_dialog;
 mod markdown;
 mod menu;
+mod mirror;
 mod motion;
 mod note;
 mod notes;
+mod popup;
 mod prompt;
 mod session;
 mod settings;
+mod share_dialog;
 mod sidebar;
 mod silhouette;
 mod space_dialog;
-mod spaces_screen;
 mod tab_strip;
 mod theme;
 mod theme_picker;
@@ -42,6 +52,8 @@ mod title_bar;
 mod toolbar;
 mod update;
 mod usage;
+#[cfg(target_os = "linux")]
+mod watchdog;
 mod welcome;
 mod wires;
 mod workspace;
@@ -78,9 +90,16 @@ fn main() {
     let far = std::env::args().any(|a| a == "--bench-far");
     let zoom = std::env::args().find_map(|a| a.strip_prefix("--bench-zoom=").map(str::to_string));
     let git = std::env::args().any(|a| a == "--bench-git");
-    let bench = mixed || far || zoom.is_some() || git || std::env::args().any(|a| a == "--bench");
+    let mirror = std::env::args().any(|a| a == "--bench-mirror");
+    let bench =
+        mixed || far || zoom.is_some() || git || mirror || std::env::args().any(|a| a == "--bench");
     // A build being worked on, beside the installed Templum: its own workspaces, settings and bus.
     let dev = std::env::args().any(|a| a == "--dev");
+    // Started by the watchdog, whose window had stopped answering.
+    #[cfg(target_os = "linux")]
+    let after_stall = std::env::args().any(|a| a == watchdog::AFTER_STALL);
+    #[cfg(not(target_os = "linux"))]
+    let after_stall = false;
     // The agents installed where only .bashrc or .zshrc put them.
     #[cfg(unix)]
     if !bench {
@@ -90,8 +109,15 @@ fn main() {
     #[cfg(windows)]
     templum_terminal::quit_before_terminals();
     let dirs = move |dir: Option<std::path::PathBuf>| if dev { dir.map(session::dev) } else { dir };
-    // The bench starts from one terminal and must not touch the user's saved canvas.
-    let data_dir = if bench { None } else { dirs(session::dir()) };
+    // The bench starts from one terminal and must not touch the user's saved canvas. The mirror
+    // bench needs a folder for its API's key and share: a temporary one, removed at its end.
+    let data_dir = if mirror {
+        Some(bench::make_mirror_dir())
+    } else if bench {
+        None
+    } else {
+        dirs(session::dir())
+    };
     let config_dir = dirs(config::dir());
     // One Templum per data folder: a second would restore the same canvas, resume the same
     // agents and write over the first's files. It keeps nothing instead.
@@ -107,6 +133,10 @@ fn main() {
         _ => false,
     };
     let data_dir = data_dir.filter(|_| !second);
+    // A build being worked on keeps its remotes' keys apart from the installed Templum's.
+    let dev_keys = dev.then(|| {
+        templum_api::client::Keys::system(templum_api::client::SERVICE_DEV, data_dir.as_deref())
+    });
     // The bench leaves the person's login items alone.
     let autostart = if bench { None } else { Autostart::locate(dev) };
     gpui_kit::application()
@@ -145,11 +175,25 @@ fn main() {
                                    empty and keeps nothing, so the other's canvas stays as it is";
                     workspace::show_notification(window, cx, Notification::warning(message));
                 }
-                cx.new(|cx| Workspace::new(autostart, config_dir, data_dir, window, cx))
+                if after_stall {
+                    let message = "Templum restarted: its window had stopped answering, as the \
+                                   graphics driver can after the computer sleeps. The canvas is \
+                                   back from its last save, and its agents resume";
+                    workspace::show_notification(window, cx, Notification::warning(message));
+                }
+                cx.new(|cx| {
+                    let mut ws = Workspace::new(autostart, config_dir, data_dir, window, cx);
+                    if let Some(keys) = dev_keys {
+                        ws.keys = keys;
+                    }
+                    ws
+                })
             })
             .expect("failed to open window");
             if let Some(kind) = zoom {
                 bench::run_zoom(window, ws, kind, cx);
+            } else if mirror {
+                bench::run_mirror(window, ws, cx);
             } else if git {
                 bench::run_git(window, ws, cx);
             } else if far {
@@ -158,10 +202,20 @@ fn main() {
                 bench::run(window, ws, mixed, cx);
             }
             cx.on_window_closed(|cx, _| cx.quit()).detach();
+            // A UI thread stuck in a GPU wait (after a sleep) restarts Templum.
+            #[cfg(target_os = "linux")]
+            if !bench {
+                watchdog::start(after_stall, cx);
+            }
             cx.activate(true);
         });
+    #[cfg(target_os = "linux")]
+    watchdog::quitting();
     // Free before an installer starts the next Templum.
     drop(lock);
+    if mirror {
+        let _ = std::fs::remove_dir_all(bench::mirror_dir());
+    }
     // Restart into an installer (Windows): it replaces Templum, so it starts once Templum is done.
     let installer = update::INSTALLER
         .lock()

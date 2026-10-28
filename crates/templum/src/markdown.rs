@@ -6,9 +6,9 @@ use std::sync::Arc;
 use gpui_kit::component::text::{TextView, TextViewStyle};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement,
-    LayoutId, Pixels, ScrollHandle, SharedString, StyleRefinement, TestSupportExt, Window, div, px,
-    rems,
+    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, HighlightStyle, Hsla,
+    InspectorElementId, IntoElement, LayoutId, Pixels, ScrollHandle, SharedString, StyleRefinement,
+    TestSupportExt, Window, div, px, rems,
 };
 
 /// A Markdown preview's scroll, kept through zooms (see `preview`).
@@ -76,6 +76,41 @@ pub(crate) fn style(z: f32) -> TextViewStyle {
             }
         })),
         code_block: StyleRefinement::default().text_size(px(13.0 * z)),
+        ..TextViewStyle::default()
+    }
+}
+
+/// Markdown's look in the Templum Agent's chat (docs/specs/templum-agent-look.md#the-agents-answer):
+/// answers in the reading color `fg` at the chat's scale, code on the code fill.
+pub(crate) fn chat_style(ui: &crate::theme::Ui, fg: Hsla) -> TextViewStyle {
+    TextViewStyle {
+        paragraph_gap: rems(0.75),
+        heading_base_font_size: px(14.0),
+        heading_font_size: Some(Arc::new(|level, _| {
+            px(match level {
+                1 => 18.0,
+                2 => 16.0,
+                3 => 15.0,
+                _ => 14.0,
+            })
+        })),
+        // 34 px on top: room for the language and the copy button.
+        code_block: StyleRefinement::default()
+            .text_size(px(13.0))
+            .bg(crate::chat::look::code_fill(ui.surface, fg))
+            .border_color(ui.hairline)
+            .rounded(px(10.0))
+            .pt(px(34.0))
+            .px(px(16.0))
+            .pb(px(14.0)),
+        inline_code: HighlightStyle {
+            background_color: Some(ui.hover),
+            color: Some(fg),
+            ..HighlightStyle::default()
+        },
+        // A wide table is cut at the column's edge.
+        table: StyleRefinement::default().overflow_hidden(),
+        table_head: StyleRefinement::default().text_color(fg),
         ..TextViewStyle::default()
     }
 }

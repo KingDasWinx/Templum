@@ -271,6 +271,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let lib = root.path().join("var/lib");
         fs::create_dir_all(lib.join("pacman/local/templum-extras-1.0-1")).unwrap();
+        // The AUR's: its helper updates it, not the release's PKGBUILD (a package that conflicts).
+        fs::create_dir_all(lib.join("pacman/local/templum-bin-0.1.4-1")).unwrap();
         let exe = Path::new("/usr/bin/templum");
         assert_eq!(
             detect_in("linux", exe, None, root.path()),

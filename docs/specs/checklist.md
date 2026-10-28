@@ -49,7 +49,8 @@ wires, copy and paste, moving to another workspace.
 
 ### The checklist on screen
 
-Under the header, scrolling when it doesn't fit (the wheel scrolls it and stops there; Ctrl+wheel zooms the canvas):
+Under the header, scrolling when it doesn't fit (the wheel scrolls it and stops there; Ctrl+wheel zooms the canvas),
+with [a scrollbar](#a-scrollbar-kanban-card-157) then:
 
 - **The name** on top, in 15 world units, semi-bold. A new checklist is named "Checklist". A click edits it: Enter or
   a click elsewhere keeps it, Esc too. A blank name reads "Checklist".
@@ -90,9 +91,9 @@ removed; nothing is lost.
 **Copy and paste** a checklist block (canvas selection): the pasted block shows a copy of its checklist, with the
 same name.
 
-**Far away** (docs/specs/level-of-detail.md): a checklist block is drawn in full at every level, as a kanban block
-(13 world units never reach the Card level with today's zoom steps); below Full its title is the fixed-size label,
-as every block's.
+**Far away** (docs/specs/level-of-detail.md): a checklist block is drawn in full down to the Card level, as a kanban
+block, which its 13 world units reach under 25%: then it is its card, or its shape; below Full its title is the
+fixed-size label, as every block's.
 
 ### The Checklists dialog
 
@@ -105,6 +106,38 @@ Opened by the header's button, **All checklists…** in the block's menu, **Chec
 - a click opens one, and **New checklist** adds one, where [a checklist opens](#a-checklist-block);
 - the trash deletes a checklist on its **second** click ("Click again to delete" shows after the first); the block that
   showed it shows none.
+
+## On a mirrored workspace (Templum to Templum, part 2e; kanban card 205)
+
+A checklist block of a [mirrored workspace](templum-to-templum.md) is drawn from home's state by the same view, and
+what is done to it is done at home (`check_item`, `add_items`, `edit_item`, `delete_item`, `edit_checklist` and
+`new_checklist`, each the rule's deed, asked of `why_not` first):
+
+- the check box and the × send their tool, and show at once: a check, an edit and a delete stand over home's state
+  until it shows them, a refusal, or two seconds;
+- an item's text is a field that starts with home's text and writes nothing as it is typed: **Enter** sends the whole
+  text once (nothing when it is blank or unchanged: the item stays, ✕ deletes), **Esc** drops it, and the keyboard
+  leaving sends what Enter would, to the remote the field was opened on, whichever workspace is shown by then;
+- **+ Add an item** opens a field for a new item: Enter sends `add_items` and opens the next, a blank Enter closes it,
+  and the keyboard leaving sends it too (the item appears with home's state);
+- the checklist's name is a field as an item's is: Enter or the keyboard leaving sends `edit_checklist` with the
+  whole name once (nothing when unchanged; a blank one is "Checklist", as home shows it), Esc drops it; the new name
+  shows at once and stands over home's state as an edit does;
+- a row dragged onto another row, or onto the list's empty space or + Add an item, sends `edit_checklist` with the
+  item and `before` (the row it took the place of, or `"end"`), and shows there at once, held the same way; a drop that
+  changes nothing sends nothing, and an item of another block is not taken;
+- **All checklists…** (the header's button, the block's menu, the canvas menu's Checklists…, the empty block's Open a
+  checklist…) lists home's checklists that the blocks of the mirrored workspace show (what the share sees), with
+  their progress and "Open"; a click shows the block that has it, as locally. **New checklist** in a block that shows
+  none is home's `new_checklist` there; elsewhere home adds a checklist block beside the block (or in the view), as
+  Add ▸ Checklist does. The dialog's trash says "Not on a mirrored workspace yet" and deletes nothing. A dialog acts
+  only while its workspace is shown: one of this computer's, once a mirror is shown, does nothing and says so;
+- a block that shows none offers New checklist and Open a checklist…, as locally; the controls the share or home
+  can't do are dimmed with the rule's words as their tooltip (a home without `edit_checklist` or `new_checklist`:
+  "winx-desktop's Templum is older: update it to do this from here."); Ctrl+Z there stops at the mark and says to undo
+  on home.
+
+Nothing local is written: the mirror's `checklists.json` stays as it was.
 
 ## Agents
 
@@ -163,7 +196,7 @@ checklist is the block's; an item is named by its id, as `read_checklist` shows 
   temporary file and rename. A `checklists.json` Templum can't parse is kept as `checklists.json.bak` and the
   checklists start empty; one it can't open isn't written that session. The canvases are written either way: a block
   naming a checklist that isn't there shows none (nothing is lost, the dialog keeps every checklist).
-- The workspaces screen's card counts them: "2 checklists".
+- The Home's card counts them: "2 checklists".
 
 ## Architecture
 
@@ -207,6 +240,8 @@ calls.
 - a wired agent's `read_checklist`, `check_item` and `add_items`, and an unwired one refused;
 - checklists and blocks come back after a restart; a block of tabs from before shows its tab on screen and keeps
   the others in the dialog; a pasted block shows a copy.
+- a long checklist's scrollbar is over its list and its track scrolls it; its scroll follows the zoom; a press on
+  the scrollbar picks an unpicked block and a middle drag from there pans; a press in a field keeps it editing.
 
 **Manual (Hyprland):** edit, check and drag items at zoom 0.5, 1 and 2, a one-line item's text staying where the
 row's was while it is edited; a long list scrolls; the dialog finds and deletes.
@@ -220,3 +255,22 @@ row's was while it is edited; a long list scrolls; the dialog finds and deletes.
 5. The agents' tools and verbs.
 6. The docs (ARCHITECTURE.md, connections.md, context-menus.md, level-of-detail.md).
 7. One checklist per block: the tab strip removed, a block of tabs from before loaded with its tab on screen.
+8. [A scrollbar](#a-scrollbar-kanban-card-157).
+
+## A scrollbar (kanban card 157)
+
+The card, as the person wrote it: *"Bloco de checklist falta scroll na tela."* A long checklist already scrolled with
+the wheel, but nothing showed that there was more, or let the pointer take hold of it.
+
+- **The scrollbar** is the kanban columns' (`kanban::scrollbar_over`, gpui-component's), over the right edge of the
+  list (name, items and + Add an item, which all scroll): on hover over its track or while scrolling, as the theme
+  says, and only once the list overflows. Its track (16 units) and thumb scale with the zoom.
+- **The scroll follows the zoom:** the list's offset scales with it, so a scrolled checklist shows the same items at
+  every zoom (zoom changes no layout).
+- **Presses:** as in a kanban column, a press on the shown scrollbar's strip is the scrollbar's; the list picks an
+  unpicked block and pans for the middle button in the capture phase, before it. A picked block isn't picked again
+  there: that would stop its field. A right-click on the strip opens no menu ([minors.md](../minors.md)).
+- **The wheel is unchanged:** over a picked block it scrolls the list, over any other it moves the canvas.
+
+**Not testable headlessly:** the thumb's look on hover. **Manual (Hyprland):** a long checklist at zoom 0.5, 1 and 2:
+the thumb follows the wheel and is dragged.

@@ -3,11 +3,13 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::diff::{FileDiff, Hunk, Kind, Line};
 use crate::parse::ago;
 
 /// One line of the file and the commit that last changed it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlameLine {
     /// Forty (or sixty-four) zeros for a line not committed yet.
     pub hash: String,

@@ -10,7 +10,7 @@ use std::time::Instant;
 use gpui_kit::{Context, Window};
 use templum_canvas::{BlockId, Camera, Direction, GAP, Rect, Size, Tile, neighbour};
 
-use super::{Grid, Tool, Workspace};
+use super::{Grid, Space, Tool, Workspace};
 
 /// `a` on its way to `b`, `t` of the way (0 to 1).
 pub(super) fn between(a: Rect, b: Rect, t: f32) -> Rect {
@@ -257,19 +257,12 @@ impl Workspace {
         self.retile();
     }
 
-    /// Block `id` is no tile anymore (it is closing): its tile's other half takes the pair's
-    /// place; without tiles, the canvas comes back. Its canvas rect, if it was tiled.
+    /// Block `id` is no tile anymore (it is closing): `Space::untile`, and what was going on
+    /// calms when the canvas comes back. Its canvas rect, if it was tiled.
     pub(super) fn untile(&mut self, id: BlockId) -> Option<Rect> {
-        let grid = self.space.grid.as_mut()?;
-        let home = grid.homes.remove(&id)?;
-        match std::mem::replace(&mut grid.tiles, Tile::Leaf(id)).without(id) {
-            Some(tiles) => grid.tiles = tiles,
-            None => {
-                let camera = grid.camera;
-                self.space.grid = None;
-                self.space.canvas.camera = camera;
-                self.calm();
-            }
+        let home = self.space.untile(id)?;
+        if self.space.grid.is_none() {
+            self.calm();
         }
         Some(home)
     }
@@ -277,23 +270,54 @@ impl Workspace {
     /// What only makes sense on the canvas or in the grid ends when the workspace goes from one
     /// to the other: fading and popping blocks, a drag, a glide, the selection, a drawing tool.
     fn calm(&mut self) {
-        let space = &mut self.space;
-        space.ghosts.clear();
-        space.appearing.clear();
-        space.selected.clear();
-        space.selected_ink = None;
-        space.selected_wire = None;
-        space.framed = None;
-        space.flight = None;
-        space.view = space.canvas.camera;
-        space.guides.clear();
-        space.hovered = None;
-        space.pristine = false;
+        self.space.calm();
         self.drag = None;
         self.press = None;
         self.placed.clear();
         self.tool = Tool::Select;
         self.shapes_open = false;
         self.menu = None;
+    }
+}
+
+impl Space {
+    /// Block `id` is no tile anymore: its tile's other half takes the pair's place; without
+    /// tiles, the canvas and its camera come back (the caller calms what was going on). Its
+    /// canvas rect, if it was tiled.
+    pub(super) fn untile(&mut self, id: BlockId) -> Option<Rect> {
+        let grid = self.grid.as_mut()?;
+        let home = grid.homes.remove(&id)?;
+        match std::mem::replace(&mut grid.tiles, Tile::Leaf(id)).without(id) {
+            Some(tiles) => grid.tiles = tiles,
+            None => {
+                self.canvas.camera = grid.camera;
+                self.grid = None;
+            }
+        }
+        Some(home)
+    }
+
+    /// The workspace's half of `Workspace::calm`: fading and popping blocks, a glide, the
+    /// selection.
+    pub(super) fn calm(&mut self) {
+        self.ghosts.clear();
+        self.appearing.clear();
+        self.selected.clear();
+        self.selected_ink = None;
+        self.selected_wire = None;
+        self.framed = None;
+        self.flight = None;
+        self.view = self.canvas.camera;
+        self.guides.clear();
+        self.hovered = None;
+        self.pristine = false;
+    }
+
+    /// A block's rect on the canvas, to change it: while it is a tile, the place it goes back to.
+    pub(super) fn home_mut(&mut self, id: BlockId) -> Option<&mut Rect> {
+        match self.grid.as_mut().and_then(|g| g.homes.get_mut(&id)) {
+            Some(home) => Some(home),
+            None => self.canvas.get_mut(id).map(|b| &mut b.rect),
+        }
     }
 }

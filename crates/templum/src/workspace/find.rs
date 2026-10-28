@@ -68,7 +68,16 @@ impl Workspace {
             input.focus(window, cx);
             input.select_all(window, cx);
         });
+        // A mirrored terminal searches the history it has: home's is read, and the search is made
+        // again when it lands.
+        self.remote_history(id);
         cx.notify();
+    }
+
+    /// Searches the terminal `id` again for the text in its open field, from the match shown: its
+    /// history changed.
+    pub(super) fn search_again(&mut self, id: BlockId, cx: &mut Context<Self>) {
+        self.search(id, Toward::Here, cx);
     }
 
     /// Searches the terminal `id` for its field's text, `toward` the match shown.

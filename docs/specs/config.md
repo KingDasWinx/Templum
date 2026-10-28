@@ -72,6 +72,7 @@ blink = false
 
 [terminal]
 scrollback = 10000   # lines of history per terminal, 0 to 100000
+copy_on_select = true   # a selection made with the mouse goes to the clipboard
 
 [keys]
 new_terminal   = "ctrl-shift-t"
@@ -88,12 +89,14 @@ swap_left      = "ctrl-alt-shift-left"  # grid mode: trade places with it (and r
 theme_picker   = "ctrl-shift-p"
 open_config    = "ctrl-,"
 go_to_waiting  = "ctrl-shift-a"   # the terminal waiting for you
+all_agents     = "ctrl-shift-l"   # every agent, in one list
+automations    = "ctrl-shift-j"   # the Automations popup
 find           = "ctrl-shift-f"   # in the focused terminal's history
 open_file      = "ctrl-p"         # in a focused editor: a file by name
 ```
 
 On macOS the default shortcuts are `cmd-t`, `cmd-w`, `cmd-c`, `cmd-v`, `cmd-=` and `cmd-+`, `cmd--`, `cmd-0`,
-`cmd-shift-1` and `cmd-!`, `cmd-shift-enter`, `cmd-shift-p`, `cmd-,`, `cmd-shift-a`, `cmd-f` and `cmd-p`.
+`cmd-shift-1` and `cmd-!`, `cmd-shift-enter`, `cmd-shift-p`, `cmd-,`, `cmd-shift-a`, `cmd-shift-l`, `cmd-f` and `cmd-p`.
 
 ### Rules per table
 
@@ -124,6 +127,8 @@ On macOS the default shortcuts are `cmd-t`, `cmd-w`, `cmd-c`, `cmd-v`, `cmd-=` a
     insert mode) still gets it.
 - **`terminal`**
   - `scrollback` is the number of history lines each terminal keeps.
+  - `copy_on_select` copies a selection made with the mouse to the clipboard as the button is let go (on by
+    default; card 119, [walking-skeleton.md](walking-skeleton.md#mouse-and-trackpad)).
 - **`keys`**
   - Each action takes one shortcut or a list. Writing an action replaces its defaults; `[]` disables it.
   - Shortcuts use GPUI's keystroke syntax (`ctrl-shift-t`, `cmd-,`, `alt-f4`).
@@ -162,6 +167,7 @@ dotfiles repository.
 | `theme` | At once. |
 | `cursor` | At once, in every terminal. |
 | `terminal.scrollback` | At once, in every terminal. Lowering it drops the oldest lines beyond the new limit. |
+| `terminal.copy_on_select` | At once: the next selection. |
 | `keys` | At once. |
 | `shell` | In **new** terminals. Open terminals keep their shell. |
 

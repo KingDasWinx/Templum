@@ -107,50 +107,150 @@ pub(crate) fn encode_key(k: &KeyInput, mode: TermMode) -> Option<Vec<u8>> {
     })
 }
 
-/// The keys `send_keys` takes, as its refusal lists them.
-pub const KEY_NAMES: &str = "enter, escape, tab, shift+tab, backspace, delete, up, down, left, right, \
-    home, end, page_up, page_down, space, ctrl+<letter>, or one character (2, y)";
+/// The keys `send_keys` and `terminal_input` take, as their refusals list them.
+pub const KEY_NAMES: &str = "[ctrl+][alt+][shift+] and enter, escape, tab, backspace, delete, \
+    insert, up, down, left, right, home, end, page_up, page_down, space, f1–f12, or one character \
+    (2, y, A, ç)";
 
-/// A key as `send_keys` names it (`KEY_NAMES`), as GPUI would report it; None for any other name.
-pub fn named_key(name: &str) -> Option<KeyInput<'_>> {
-    let key = |key| KeyInput {
-        key,
-        ..KeyInput::default()
-    };
-    Some(match name {
-        "enter" | "escape" | "tab" | "backspace" | "delete" | "up" | "down" | "left" | "right"
-        | "home" | "end" => key(name),
-        "page_up" => key("pageup"),
-        "page_down" => key("pagedown"),
-        "shift+tab" => KeyInput {
-            shift: true,
-            ..key("tab")
-        },
-        "space" => KeyInput {
-            key_char: Some(" "),
-            ..key("space")
-        },
+/// A key as `named_key` reads its name: what GPUI would report for it, owned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamedKey {
+    pub key: String,
+    pub key_char: Option<String>,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+}
+
+impl NamedKey {
+    /// Whether the key is a lone ESC to a program that asked for nothing special: `escape`, and
+    /// the chords that send the same byte (Ctrl+[, Ctrl+3). Alt+key sends ESC and then the key.
+    pub fn sends_lone_esc(&self) -> bool {
+        encode_key(&self.input(), TermMode::empty()).as_deref() == Some(b"\x1b")
+    }
+
+    pub fn input(&self) -> KeyInput<'_> {
+        KeyInput {
+            key: &self.key,
+            key_char: self.key_char.as_deref(),
+            ctrl: self.ctrl,
+            alt: self.alt,
+            shift: self.shift,
+        }
+    }
+}
+
+/// A key as `send_keys` and `terminal_input` name it (`KEY_NAMES`), as GPUI would report it;
+/// None for any other name.
+pub fn named_key(name: &str) -> Option<NamedKey> {
+    let (mut ctrl, mut alt, mut shift) = (false, false, false);
+    let mut rest = name;
+    loop {
+        let (flag, tail) = if let Some(tail) = rest.strip_prefix("ctrl+") {
+            (&mut ctrl, tail)
+        } else if let Some(tail) = rest.strip_prefix("alt+") {
+            (&mut alt, tail)
+        } else if let Some(tail) = rest.strip_prefix("shift+") {
+            (&mut shift, tail)
+        } else {
+            break;
+        };
+        if std::mem::replace(flag, true) {
+            return None;
+        }
+        rest = tail;
+    }
+    let (key, key_char) = match rest {
+        "enter" | "escape" | "tab" | "backspace" | "delete" | "insert" | "up" | "down" | "left"
+        | "right" | "home" | "end" | "f1" | "f2" | "f3" | "f4" | "f5" | "f6" | "f7" | "f8"
+        | "f9" | "f10" | "f11" | "f12" => (rest.to_owned(), None),
+        "page_up" => ("pageup".to_owned(), None),
+        "page_down" => ("pagedown".to_owned(), None),
+        "space" => ("space".to_owned(), Some(" ".to_owned())),
         _ => {
-            if let Some(letter) = name.strip_prefix("ctrl+")
-                && letter.len() == 1
-                && letter.as_bytes()[0].is_ascii_lowercase()
-            {
-                return Some(KeyInput {
-                    ctrl: true,
-                    ..key(letter)
-                });
-            }
-            let mut chars = name.chars();
+            let mut chars = rest.chars();
             let c = chars.next()?;
             if chars.next().is_some() || c.is_control() {
                 return None;
             }
-            KeyInput {
-                key_char: Some(name),
-                ..key(name)
-            }
+            let mut lower = c.to_lowercase();
+            let key = match (lower.next(), lower.next()) {
+                (Some(l), None) => l,
+                _ => c,
+            };
+            shift |= c.is_uppercase();
+            // Ctrl makes it a chord, not text (so Ctrl+Alt+letter is never AltGr's). Alt keeps the
+            // character, so Alt+X sends ESC X.
+            let text = match (ctrl, shift) {
+                (true, _) => None,
+                (false, true) => Some(c.to_uppercase().collect()),
+                (false, false) => Some(c.to_string()),
+            };
+            (key.to_string(), text)
         }
+    };
+    Some(NamedKey {
+        key,
+        key_char,
+        ctrl,
+        alt,
+        shift,
     })
+}
+
+/// What `named_key` reads back as `k`: the name of a key the keyboard pressed, for another
+/// Templum to press at home (`terminal_input`). A printable character typed, with no Ctrl or Alt,
+/// or with both and a character other than its key (AltGr, the rule `encode_key` has), is that
+/// character; any other key is its modifiers (`ctrl+`, `alt+`, `shift+`, in that order) and its
+/// name. None for a key `named_key` has no name for (F13, a media key, a lone modifier).
+pub fn key_name(k: &KeyInput) -> Option<String> {
+    if let Some(text) = typed_text(k) {
+        return one_char(text);
+    }
+    let key = match k.key {
+        "pageup" => "page_up".to_owned(),
+        "pagedown" => "page_down".to_owned(),
+        "enter" | "escape" | "tab" | "backspace" | "delete" | "insert" | "up" | "down" | "left"
+        | "right" | "home" | "end" | "space" | "f1" | "f2" | "f3" | "f4" | "f5" | "f6" | "f7"
+        | "f8" | "f9" | "f10" | "f11" | "f12" => k.key.to_owned(),
+        other => one_char(other)?,
+    };
+    let mut name = String::new();
+    for (held, prefix) in [(k.ctrl, "ctrl+"), (k.alt, "alt+"), (k.shift, "shift+")] {
+        if held {
+            name += prefix;
+        }
+    }
+    Some(name + &key)
+}
+
+/// The text `k` types, when it does: a printable character with no Ctrl or Alt, or with both and a
+/// character other than its key (AltGr). The platform's text-input path carries it too (IME,
+/// dead keys), so a key handler that leaves such a key alone gets it exactly once.
+pub fn typed_text<'a>(k: &KeyInput<'a>) -> Option<&'a str> {
+    let typed = k
+        .key_char
+        .filter(|t| !t.is_empty() && !t.chars().any(char::is_control));
+    let altgr = k.ctrl && k.alt && typed.is_some_and(|t| t != k.key);
+    typed.filter(|_| altgr || (!k.ctrl && !k.alt && k.key != "space"))
+}
+
+/// `text` as a name, when it is one character; a space is `space`.
+fn one_char(text: &str) -> Option<String> {
+    let mut chars = text.chars();
+    match (chars.next(), chars.next()) {
+        (Some(' '), None) => Some("space".into()),
+        (Some(c), None) if !c.is_control() => Some(c.to_string()),
+        _ => None,
+    }
+}
+
+/// Each character of `text` that is not a control character, as its own key name: what an IME
+/// or a dead key committed.
+pub fn text_names(text: &str) -> Vec<String> {
+    text.chars()
+        .filter_map(|c| one_char(c.encode_utf8(&mut [0; 4])))
+        .collect()
 }
 
 /// A key in the kitty keyboard protocol (sw.kovidgoyal.net/kitty/keyboard-protocol), as
@@ -387,8 +487,148 @@ mod tests {
     /// The keys an agent names (`send_keys`) send what the person's keyboard would, in the
     /// program's mode; a character is text, typed as it is.
     #[test]
+    fn every_key_that_sends_a_lone_esc_says_so() {
+        let lone = |name: &str| named_key(name).unwrap().sends_lone_esc();
+        for name in ["escape", "ctrl+[", "ctrl+3", "shift+escape"] {
+            assert!(lone(name), "{name}");
+        }
+        for name in [
+            "alt+escape",
+            "alt+[",
+            "ctrl+alt+[",
+            "[",
+            "j",
+            "ctrl+j",
+            "enter",
+            "f1",
+        ] {
+            assert!(!lone(name), "{name}");
+        }
+    }
+
+    fn pressed<'a>(
+        key: &'a str,
+        key_char: Option<&'a str>,
+        (ctrl, alt, shift): (bool, bool, bool),
+    ) -> KeyInput<'a> {
+        KeyInput {
+            key,
+            key_char,
+            ctrl,
+            alt,
+            shift,
+        }
+    }
+
+    #[test]
+    fn printable_text_is_left_to_the_text_input_path() {
+        let text =
+            |key, key_char, ctrl, alt| typed_text(&pressed(key, key_char, (ctrl, alt, false)));
+        // A letter, a composed dead key, and AltGr type; a shortcut, a space and Enter don't.
+        assert_eq!(text("a", Some("a"), false, false), Some("a"));
+        assert_eq!(text("a", Some("á"), false, false), Some("á"));
+        assert_eq!(text("q", Some("@"), true, true), Some("@"));
+        assert_eq!(text("c", Some("c"), true, false), None);
+        assert_eq!(text("b", Some("b"), false, true), None);
+        assert_eq!(text("space", Some(" "), false, false), None);
+        assert_eq!(text("enter", Some("\n"), false, false), None);
+        assert_eq!(text("left", None, false, false), None);
+    }
+
+    #[test]
+    fn names_are_what_the_keyboard_typed() {
+        let k = |key, key_char, ctrl, alt, shift| pressed(key, key_char, (ctrl, alt, shift));
+        let name = |k: KeyInput| key_name(&k);
+        assert_eq!(
+            name(k("a", Some("A"), false, false, true)).as_deref(),
+            Some("A")
+        );
+        // AltGr on Windows is Ctrl+Alt.
+        assert_eq!(
+            name(k("q", Some("@"), true, true, false)).as_deref(),
+            Some("@")
+        );
+        assert_eq!(
+            name(k("p", None, true, false, true)).as_deref(),
+            Some("ctrl+shift+p")
+        );
+        assert_eq!(
+            name(k("c", Some("c"), true, false, false)).as_deref(),
+            Some("ctrl+c")
+        );
+        assert_eq!(
+            name(k("pageup", None, false, false, false)).as_deref(),
+            Some("page_up")
+        );
+        assert_eq!(
+            name(k("f5", None, false, false, true)).as_deref(),
+            Some("shift+f5")
+        );
+        assert_eq!(
+            name(k("left", None, false, true, false)).as_deref(),
+            Some("alt+left")
+        );
+        assert_eq!(
+            name(k("space", Some(" "), false, false, false)).as_deref(),
+            Some("space")
+        );
+        assert_eq!(
+            name(k("x", Some("x"), false, true, false)).as_deref(),
+            Some("alt+x"),
+            "Alt keeps the key a chord"
+        );
+        assert_eq!(name(k("f13", None, false, false, false)), None);
+        assert_eq!(name(k("shift", None, false, false, true)), None);
+        assert_eq!(text_names("çã\u{7}! "), vec!["ç", "ã", "!", "space"]);
+    }
+
+    #[test]
+    fn a_name_reads_back_as_the_same_key() {
+        let k = |key, key_char, ctrl, alt, shift| pressed(key, key_char, (ctrl, alt, shift));
+        let keys = [
+            k("a", Some("A"), false, false, true),
+            k("a", Some("a"), false, false, false),
+            k("p", None, true, false, true),
+            k("c", None, true, false, false),
+            k("pageup", None, false, false, false),
+            k("pagedown", None, false, false, true),
+            k("f5", None, false, false, true),
+            k("left", None, false, true, false),
+            k("enter", None, false, false, false),
+            k("tab", None, false, false, true),
+            k("escape", None, false, false, false),
+            k("space", Some(" "), false, false, false),
+            k("delete", None, true, true, false),
+            k("ç", Some("ç"), false, false, false),
+            k("x", Some("x"), false, true, false),
+        ];
+        let modes = [
+            TermMode::empty(),
+            TermMode::APP_CURSOR,
+            TermMode::DISAMBIGUATE_ESC_CODES,
+            TermMode::DISAMBIGUATE_ESC_CODES | TermMode::REPORT_ALL_KEYS_AS_ESC,
+        ];
+        for key in keys {
+            let name = key_name(&key).expect("a name");
+            let back = named_key(&name).unwrap_or_else(|| panic!("{name} reads back"));
+            for mode in modes {
+                assert_eq!(
+                    encode_key(&back.input(), mode),
+                    encode_key(&key, mode),
+                    "{name} in {mode:?}"
+                );
+            }
+        }
+        // AltGr's character is text locally; home presses it as a key, which a program that asked
+        // for every key as an escape code (kitty) gets as a code.
+        let altgr = k("q", Some("@"), true, true, false);
+        let back = named_key(&key_name(&altgr).unwrap()).unwrap();
+        assert_eq!(encode_key(&back.input(), TermMode::empty()), None);
+    }
+
+    #[test]
     fn named_keys_send_what_a_keyboard_would() {
-        let bytes = |name: &str, mode| encode_key(&named_key(name).unwrap(), mode);
+        let bytes = |name: &str, mode| encode_key(&named_key(name).unwrap().input(), mode);
         let (plain, kitty) = (TermMode::empty(), TermMode::DISAMBIGUATE_ESC_CODES);
         assert_eq!(bytes("escape", plain).unwrap(), b"\x1b");
         assert_eq!(
@@ -409,11 +649,95 @@ mod tests {
         for text in ["2", "y", "space"] {
             assert_eq!(bytes(text, kitty), None, "{text} is text");
         }
-        assert_eq!(named_key("2").unwrap().key_char, Some("2"));
-        assert_eq!(named_key("space").unwrap().key_char, Some(" "));
-        for bad in ["foo", "ab", "", "ctrl+é", "ctrl+1", "Enter", "\u{1b}", "\n"] {
+        assert_eq!(named_key("2").unwrap().key_char.as_deref(), Some("2"));
+        assert_eq!(named_key("space").unwrap().key_char.as_deref(), Some(" "));
+        for bad in ["foo", "ab", "", "ctrl+", "Enter", "\u{1b}", "\n"] {
             assert!(named_key(bad).is_none(), "{bad:?}");
         }
+    }
+
+    fn fields(name: &str) -> (String, Option<String>, bool, bool, bool) {
+        let k = named_key(name).unwrap();
+        (k.key, k.key_char, k.ctrl, k.alt, k.shift)
+    }
+
+    fn bytes(name: &str, mode: TermMode) -> Option<Vec<u8>> {
+        encode_key(&named_key(name).unwrap().input(), mode)
+    }
+
+    #[test]
+    fn names_carry_every_modifier_in_any_order() {
+        assert_eq!(
+            fields("ctrl+shift+p"),
+            ("p".into(), None, true, false, true)
+        );
+        assert_eq!(named_key("shift+ctrl+p"), named_key("ctrl+shift+p"));
+        assert_eq!(
+            fields("A"),
+            ("a".into(), Some("A".into()), false, false, true)
+        );
+        assert_eq!(
+            fields("Ç"),
+            ("ç".into(), Some("Ç".into()), false, false, true)
+        );
+        assert_eq!(
+            fields("@"),
+            ("@".into(), Some("@".into()), false, false, false)
+        );
+        assert_eq!(fields("ctrl+alt+a"), ("a".into(), None, true, true, false));
+        assert_eq!(
+            fields("+"),
+            ("+".into(), Some("+".into()), false, false, false)
+        );
+        assert_eq!(fields("ctrl++"), ("+".into(), None, true, false, false));
+        assert_eq!(fields("page_up").0, "pageup");
+        for bad in [
+            "ctrl+ctrl+p",
+            "ctrl+",
+            "f13",
+            "F5",
+            "\u{7}",
+            "hyper+a",
+            "ab",
+            "",
+        ] {
+            assert_eq!(named_key(bad), None, "{bad:?}");
+        }
+        // Today's names mean what they meant.
+        assert_eq!(
+            fields("shift+tab"),
+            ("tab".into(), None, false, false, true)
+        );
+        assert_eq!(fields("ctrl+c"), ("c".into(), None, true, false, false));
+        assert_eq!(fields("space").1.as_deref(), Some(" "));
+    }
+
+    #[test]
+    fn new_names_reach_the_program_as_keys_pressed_at_home() {
+        let plain = TermMode::empty();
+        assert_eq!(bytes("f5", plain), Some(b"\x1b[15~".to_vec()));
+        assert_eq!(bytes("shift+f5", plain), Some(b"\x1b[15;2~".to_vec()));
+        assert_eq!(bytes("f1", plain), Some(b"\x1bOP".to_vec()));
+        assert_eq!(bytes("alt+left", plain), Some(b"\x1b[1;3D".to_vec()));
+        assert_eq!(
+            bytes("ctrl+up", TermMode::APP_CURSOR),
+            Some(b"\x1b[1;5A".to_vec())
+        );
+        assert_eq!(bytes("ctrl+alt+delete", plain), Some(b"\x1b[3;7~".to_vec()));
+        assert_eq!(bytes("insert", plain), Some(b"\x1b[2~".to_vec()));
+        assert_eq!(bytes("page_down", plain), Some(b"\x1b[6~".to_vec()));
+        assert_eq!(bytes("alt+x", plain), Some(b"\x1bx".to_vec()));
+        // Alt keeps the case: ESC and the capital, not the lowercase letter.
+        assert_eq!(bytes("alt+X", plain), Some(b"\x1bX".to_vec()));
+        assert_eq!(bytes("alt+shift+x", plain), Some(b"\x1bX".to_vec()));
+        assert_eq!(bytes("alt+ç", plain), Some("\u{1b}ç".as_bytes().to_vec()));
+        assert_eq!(fields("alt+shift+x").1.as_deref(), Some("X"));
+        // Claude Code's Shift+Enter and Ctrl+Shift+letter, in the kitty keyboard protocol.
+        let kitty = TermMode::DISAMBIGUATE_ESC_CODES;
+        assert_eq!(bytes("shift+enter", kitty), Some(b"\x1b[13;2u".to_vec()));
+        assert_eq!(bytes("ctrl+shift+p", kitty), Some(b"\x1b[112;6u".to_vec()));
+        // A character with no modifier is text: the press path types it.
+        assert_eq!(bytes("ç", plain), None);
     }
 
     #[test]

@@ -29,8 +29,12 @@ templum-update = { path = "../templum-update" }
 templum-mcp = { path = "../templum-mcp" }
 # The Templum Agent's engine, its stream and its conversation (docs/specs/templum-agent.md).
 templum-agent = { path = "../templum-agent" }
+# The HTTP API: its server, tokens and registry (docs/specs/api.md).
+templum-api = { path = "../templum-api" }
 # Already in the tree through GPUI: its channel wakes the UI from PTY threads.
 futures = "0.3"
+# Already in the tree (GPUI's): canonical paths without Windows' `\\?\` prefix, which cmd.exe refuses as a folder.
+dunce = "1"
 # Already in the tree: reads theme files and edits config.toml without losing the user's comments.
 toml_edit = "0.25"
 # Already in the tree: config.toml into typed settings, with line and column in errors.
@@ -44,15 +48,21 @@ lyon_tessellation = "1"
 # Already in the tree: an editor's files for Ctrl+P, as .gitignore leaves them.
 ignore = "0.4"
 # Already in the tree (GPUI's, with its clock): when an agent's plan limit resets, in local time.
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 # Already in the tree (uuid's): a downloaded theme checked against the git hash GitHub lists.
 sha1_smol = { version = "1", features = ["std"] }
 # Already in the tree, with its random source: the id of a session an agent is started on.
 uuid = { version = "1", features = ["v4"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Already in the tree (alacritty's): `_exit`, which the watchdog ends a stuck Templum with.
+libc = "0.2"
+
 [dev-dependencies]
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile = "3"
+# Already in the tree (templum-api's): the mock keyring the mirror's tests keep keys in.
+keyring-core = "1.0.1"
 
 # Already in the tree (GPUI's): the Windows executable's icon (build.rs).
 [target.'cfg(windows)'.build-dependencies]

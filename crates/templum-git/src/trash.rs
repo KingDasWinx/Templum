@@ -1,29 +1,41 @@
-//! The trash: what a discard throws away, kept 7 days (the newest 50 discards), so it can be put
-//! back. One folder per discard in Templum's data folder: the files as they were, and a manifest.
+//! The trash: what a discard throws away, kept 7 days (the newest 50 discards of each
+//! repository), so it can be put back. One folder per discard in Templum's data folder: the files as they were, and a manifest.
 //! See docs/specs/git.md, section 4, The trash.
 
+use std::collections::HashMap;
+use std::fmt;
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::io;
-use std::path::{Path, PathBuf};
+use std::io::{self, Read};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
 
 /// Past either, a discard keeps no copy, and the question says so before it is done.
 pub const MAX_FILES: usize = 500;
 pub const MAX_BYTES: u64 = 100 * 1024 * 1024;
-/// Discards older than this, or past the newest KEEP, are deleted.
+/// Discards older than this, or past the newest KEEP of their repository, are deleted. The
+/// copies an API call made are only ever deleted by age: they may hold the person's work, and
+/// more calls can't push them out. At KEEP of them younger than this, a call that needs a
+/// copy is refused instead.
 pub const MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 pub const KEEP: usize = 50;
+
+/// The file in a discard's folder that says an API call made it.
+const API_MARK: &str = "api";
 
 /// The trash's folder (`trash/` in Templum's data folder).
 #[derive(Clone, Debug)]
 pub struct Trash {
     dir: PathBuf,
+    /// The copies it makes are marked as an API call's.
+    api: bool,
 }
 
 /// One discard, as kept.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Kept {
     /// Its folder's name: they sort by time.
     pub id: String,
@@ -37,7 +49,8 @@ pub struct Kept {
     pub files: Vec<(String, bool)>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Restored {
     /// Put back; the discard left the trash.
     Done,
@@ -72,8 +85,11 @@ fn stamp(path: &Path) -> String {
     let mut h = DefaultHasher::new();
     let read = if meta.file_type().is_symlink() {
         fs::read_link(path).map(|t| t.hash(&mut h))
+    } else if meta.is_file() {
+        hash_file(path, meta.len(), &mut h)
     } else {
-        fs::read(path).map(|b| b.hash(&mut h))
+        // A device or a pipe: reading it may never end.
+        Err(io::ErrorKind::InvalidInput.into())
     };
     match read {
         Ok(()) => format!("{}:{:016x}", meta.len(), h.finish()),
@@ -82,13 +98,60 @@ fn stamp(path: &Path) -> String {
     }
 }
 
+/// Hashes the file's bytes in chunks, as `Vec<u8>::hash` would the whole of them (its length
+/// first, then the bytes), so a file of any size takes no more memory than a chunk.
+fn hash_file(path: &Path, len: u64, h: &mut DefaultHasher) -> io::Result<()> {
+    let mut file = fs::File::open(path)?;
+    let mut chunk = [0u8; 64 * 1024];
+    h.write_usize(len as usize);
+    loop {
+        match file.read(&mut chunk)? {
+            0 => return Ok(()),
+            n => h.write(&chunk[..n]),
+        }
+    }
+}
+
+/// What `Trash::restore` fails with when the copy of what it would write over couldn't be made:
+/// nothing was written yet (`kept_nothing`).
+#[derive(Debug)]
+struct KeepFailed(io::Error);
+
+impl fmt::Display for KeepFailed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for KeepFailed {}
+
+fn keep_failed(e: io::Error) -> io::Error {
+    io::Error::new(e.kind(), KeepFailed(e))
+}
+
+/// Whether `restore` failed for want of the copy of what it would write over (nothing was
+/// written), not while writing the files back.
+pub fn kept_nothing(e: &io::Error) -> bool {
+    e.get_ref().is_some_and(|inner| inner.is::<KeepFailed>())
+}
+
 impl Trash {
     pub fn new(dir: PathBuf) -> Trash {
-        Trash { dir }
+        Trash { dir, api: false }
+    }
+
+    /// This trash for a call of the API: its copies are marked, and pruning keeps them apart
+    /// from the person's own.
+    pub fn for_api(&self) -> Trash {
+        Trash {
+            api: true,
+            ..self.clone()
+        }
     }
 
     /// Copies `paths` (relative to `root`) as they are now, before a discard. On a failure the
-    /// half-made entry is removed: the caller must not discard then.
+    /// half-made entry is removed: the caller must not discard then. For the API, with KEEP
+    /// copies of its own younger than MAX_AGE already there for `root`, nothing is copied.
     pub fn put(
         &self,
         root: &Path,
@@ -96,6 +159,15 @@ impl Trash {
         what: &str,
         now: SystemTime,
     ) -> io::Result<Kept> {
+        if self.api && self.api_copies(root, now) >= KEEP {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                format!(
+                    "the trash already holds {KEEP} copies made through the API for {}: restore or clear them on that computer",
+                    root.display()
+                ),
+            ));
+        }
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let since = now.duration_since(UNIX_EPOCH).unwrap_or_default();
         let id = format!(
@@ -117,9 +189,22 @@ impl Trash {
         })
     }
 
+    /// How many copies of API calls `root` has in the trash that aren't older than MAX_AGE.
+    fn api_copies(&self, root: &Path, now: SystemTime) -> usize {
+        let now = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        self.list()
+            .iter()
+            .filter(|k| k.root == root && now.saturating_sub(k.time) <= MAX_AGE.as_secs())
+            .filter(|k| self.dir.join(&k.id).join(API_MARK).exists())
+            .count()
+    }
+
     fn fill(&self, entry: &Path, mut kept: Kept, paths: &[String]) -> io::Result<Kept> {
         let files = entry.join("files");
         fs::create_dir_all(&files)?;
+        if self.api {
+            fs::write(entry.join(API_MARK), "")?;
+        }
         for (i, path) in paths.iter().enumerate() {
             let from = kept.root.join(path);
             let meta = fs::symlink_metadata(&from).ok();
@@ -176,7 +261,7 @@ impl Trash {
     /// Puts discard `id` back. Unless `force`, a file changed since the discard stops it,
     /// nothing written, and is named. Done, the discard leaves the trash.
     pub fn restore(&self, id: &str, force: bool) -> io::Result<Restored> {
-        let entry = self.dir.join(id);
+        let entry = self.entry(id)?;
         let kept = read_manifest(&entry, id.to_string()).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
@@ -191,12 +276,23 @@ impl Trash {
         let over = if changed.is_empty() {
             None
         } else {
-            Some(self.put(
-                &kept.root,
-                &changed,
-                "Overwritten by a restore",
-                SystemTime::now(),
-            )?)
+            // The API's copies are bounded in bytes too: every other copy goes through `fits`.
+            let (files, bytes) = measure(&kept.root, &changed);
+            if self.api && !fits(files, bytes) {
+                return Err(keep_failed(io::Error::new(
+                    io::ErrorKind::StorageFull,
+                    "too large to keep a copy of what it would write over: restore it on that computer",
+                )));
+            }
+            Some(
+                self.put(
+                    &kept.root,
+                    &changed,
+                    "Overwritten by a restore",
+                    SystemTime::now(),
+                )
+                .map_err(keep_failed)?,
+            )
         };
         let files = entry.join("files");
         for (i, (path, existed)) in kept.files.iter().enumerate() {
@@ -229,15 +325,36 @@ impl Trash {
     }
 
     pub fn remove(&self, id: &str) -> io::Result<()> {
-        fs::remove_dir_all(self.dir.join(id))
+        fs::remove_dir_all(self.entry(id)?)
     }
 
-    /// Deletes the discards older than MAX_AGE and those past the newest KEEP; how many.
+    /// The folder of discard `id`: an id is one name in the trash, as `list` gives them. One that
+    /// is a path (`../x`, `a/b`, an absolute one) names nothing here, wherever it came from.
+    fn entry(&self, id: &str) -> io::Result<PathBuf> {
+        let mut parts = Path::new(id).components();
+        match (parts.next(), parts.next()) {
+            (Some(Component::Normal(name)), None) if name == id => Ok(self.dir.join(id)),
+            _ => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "this discard is no longer in the trash",
+            )),
+        }
+    }
+
+    /// Deletes the discards older than MAX_AGE and those past the newest KEEP of their
+    /// repository, the API's apart: those only by age; how many.
     pub fn prune(&self, now: SystemTime) -> io::Result<usize> {
         let now = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         let mut removed = 0;
-        for (i, kept) in self.list().into_iter().enumerate() {
-            if i >= KEEP || now.saturating_sub(kept.time) > MAX_AGE.as_secs() {
+        let mut seen: HashMap<PathBuf, usize> = HashMap::new();
+        for kept in self.list() {
+            let mut past = false;
+            if !self.dir.join(&kept.id).join(API_MARK).exists() {
+                let n = seen.entry(kept.root.clone()).or_default();
+                *n += 1;
+                past = *n > KEEP;
+            }
+            if past || now.saturating_sub(kept.time) > MAX_AGE.as_secs() {
                 self.remove(&kept.id)?;
                 removed += 1;
             }
@@ -405,6 +522,66 @@ mod tests {
         assert_eq!(left[0].what, format!("n{}", KEEP + 1), "newest first");
     }
 
+    /// A token with Control can make copies without end (`resolve` of a conflicted file): they
+    /// push out neither another repository's discards, nor those a person made, nor each other
+    /// (an earlier copy may hold the person's work): at fifty, the next is refused.
+    #[test]
+    fn a_calls_copies_are_never_pushed_out_and_stop_at_fifty() {
+        let (root, _data, trash) = setup();
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("a.txt"), "x").unwrap();
+        std::fs::write(other.path().join("a.txt"), "x").unwrap();
+        let a = ["a.txt".to_string()];
+        let now = 1_800_000_000;
+        let theirs = trash.put(other.path(), &a, "other", at(now - 10)).unwrap();
+        let mine = trash.put(root.path(), &a, "mine", at(now - 9)).unwrap();
+        let api = trash.for_api();
+        let first = api.put(root.path(), &a, "api0", at(now - 8)).unwrap();
+        for i in 1..KEEP {
+            api.put(root.path(), &a, &format!("api{i}"), at(now - 8 + i as u64))
+                .unwrap();
+            api.prune(at(now)).unwrap();
+        }
+        let refused = api.put(root.path(), &a, "one more", at(now)).unwrap_err();
+        assert!(refused.to_string().contains("already holds 50 copies"));
+        // Refused, not half-made: nothing was added.
+        let left = trash.list();
+        assert_eq!(left.len(), KEEP + 2);
+        for kept in [&theirs, &mine, &first] {
+            assert!(left.iter().any(|k| k.id == kept.id), "{}", kept.what);
+        }
+        // Another repository's calls, and the person's own, still get their copies.
+        api.put(other.path(), &a, "other's", at(now)).unwrap();
+        trash.put(root.path(), &a, "mine again", at(now)).unwrap();
+        // A week later the old copies no longer count.
+        api.put(root.path(), &a, "later", at(now + 8 * 24 * 3600))
+            .unwrap();
+    }
+
+    /// The stamp hashes in chunks what `Vec<u8>::hash` hashed whole: one sealed by an earlier
+    /// version still reads as unchanged.
+    #[test]
+    fn a_stamp_hashed_in_chunks_is_the_one_taken_whole() {
+        let (root, _data, _trash) = setup();
+        let bytes: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(root.path().join("big"), &bytes).unwrap();
+        let mut h = DefaultHasher::new();
+        bytes.hash(&mut h);
+        assert_eq!(
+            stamp(&root.path().join("big")),
+            format!("{}:{:016x}", bytes.len(), h.finish())
+        );
+        let before = stamp(&root.path().join("big"));
+        let mut other = bytes;
+        other[150_000] ^= 1;
+        std::fs::write(root.path().join("big"), &other).unwrap();
+        assert_ne!(
+            stamp(&root.path().join("big")),
+            before,
+            "one byte, same size"
+        );
+    }
+
     #[test]
     fn measure_and_the_cap() {
         let (root, _data, _trash) = setup();
@@ -416,6 +593,30 @@ mod tests {
         assert!(fits(MAX_FILES, MAX_BYTES));
         assert!(!fits(MAX_FILES + 1, 0));
         assert!(!fits(1, MAX_BYTES + 1));
+    }
+
+    #[test]
+    fn an_id_that_is_a_path_names_no_discard() {
+        let (root, data, trash) = setup();
+        let other = Trash::new(data.path().join("other"));
+        let kept = discarded(root.path(), &other);
+        std::fs::write(root.path().join("a.txt"), "changed\n").unwrap();
+        // Another trash beside this one holds a real entry: a path to it is not an id of this.
+        for id in [
+            format!("../other/{}", kept.id),
+            other.dir.join(&kept.id).display().to_string(),
+            ".".to_string(),
+            "..".to_string(),
+        ] {
+            assert!(trash.restore(&id, true).is_err(), "{id}");
+            assert!(trash.remove(&id).is_err(), "{id}");
+        }
+        assert_eq!(other.list().len(), 1, "nothing was removed");
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("a.txt")).unwrap(),
+            "changed\n",
+            "nothing was written"
+        );
     }
 
     #[test]
@@ -533,5 +734,19 @@ mod tests {
             trash.restore(&kept.id, false).unwrap(),
             Restored::Changed(vec!["a.txt".to_string()])
         );
+    }
+
+    // Hashing /dev/zero, a device and not a file, never ended.
+    #[cfg(unix)]
+    #[test]
+    fn a_device_is_stamped_unreadable_not_read() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(stamp(Path::new("/dev/zero")));
+        });
+        let stamp = rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("stamp read a device and never ended");
+        assert_eq!(stamp, "?0");
     }
 }

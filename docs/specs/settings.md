@@ -120,6 +120,7 @@ when "i" and "m" advance by the same width at 14 pt, within 0.01 px.
 | Cursor | Dropdown: Block, Bar, Underline | `cursor.shape` |
 | Blink | Switch | `cursor.blink` |
 | Scrollback | Number 0–100000, step 1000 | `terminal.scrollback` |
+| Copy selection automatically | Switch, on by default: text selected with the mouse goes to the clipboard as the button is let go, and a quiet "Copied" shows there for a moment ([walking-skeleton.md](walking-skeleton.md#mouse-and-trackpad)). Not in the welcome | `terminal.copy_on_select` |
 
 **Shell** (applies to new terminals)
 
@@ -140,6 +141,11 @@ when "i" and "m" advance by the same width at 14 pt, within 0.01 px.
 **Agents** lists the agents ([agents.md](agents.md#changing-ours-adding-yours)), and under them their **Accounts**:
 another login of an agent on its own folder, and what it shares with the others
 ([accounts.md](accounts.md#settings--agents--accounts)).
+
+**Instructions** (after Agents) is the person's standing instructions for their agents, saved in `instructions.json`,
+not `config.toml` ([instructions.md](instructions.md#settings--instructions-decided-with-the-person)): a row per
+instruction (its name; under it where and for whom; a switch; **Edit**), "Add an instruction", and a dialog with Name,
+Where, Agents and Text. A change applies at once: the next session's start reads it.
 
 **Shortcuts**
 
@@ -163,6 +169,18 @@ another login of an agent on its own folder, and what it shares with the others
   - If another command has one of those defaults now, the reset is refused.
   - A notification says which command has it.
   - "Reset All" decides its resets together, so two commands that traded keys both get their defaults back.
+
+### API (card 171)
+
+The section after Connections ([api.md](../api.md), [specs/api.md](api.md#settings--api)): *Turn on the API* (and where
+it listens, or why it can't), *Who can reach it*, *Port*, *HTTPS* (with Templum's certificate's fingerprint, *Save
+certificate…* and *New certificate*), *Allowed web pages*, the tokens (*New token…*, *Revoke*, *Revoke all*) and
+*Connected now* (*Disconnect*). These are kept in `<data>/api/api.json`, not `config.toml`: a port, tokens and a
+certificate belong to one computer. A title-bar pill ("API", "API · 2", yellow "API off") shows while it is on.
+A workspace shared with another Templum ([templum-to-templum.md](templum-to-templum.md)) is a token among the others,
+its line saying "share of API" (or "share of a deleted workspace" once that workspace is gone); *Revoke* there is the
+Edit… dialog's. *New certificate*'s question also counts the shares made *Directly*: "Clients that pinned the old one
+stop connecting, 2 mirrors connected directly among them: share again for them."
 
 ## Start at login
 

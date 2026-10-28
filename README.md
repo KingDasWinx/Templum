@@ -81,8 +81,8 @@ https://github.com/user-attachments/assets/dbc8ff5f-f8fc-4b01-b0d1-fb0032f54e89
 
 ### Themes, settings and workspaces
 
-The theme picker shows each theme on the whole window as you hover it. Settings apply as you change them. The
-workspaces screen has a card per project, and makes new ones.
+The theme picker shows each theme on the whole window as you hover it. Settings apply as you change them. Templum
+starts on its Home: what waits for you across every workspace, a card per project, and new ones from a folder.
 
 https://github.com/user-attachments/assets/ca179964-e74a-4a70-b458-4bc7cc08f062
 
@@ -108,6 +108,16 @@ irm https://github.com/KingDasWinx/Templum/releases/latest/download/install.ps1 
 
 Both check the download against its SHA-256 and install the newest release; `TEMPLUM_VERSION=0.1.2` (before `sh`,
 or `$env:TEMPLUM_VERSION = "0.1.2"` before `irm`) installs another one. From then on, Templum updates itself.
+
+### Arch Linux
+
+[`templum-bin`](https://aur.archlinux.org/packages/templum-bin) is in the AUR:
+
+```sh
+yay -S templum-bin    # or: paru -S templum-bin
+```
+
+Your AUR helper updates it with your other packages.
 
 ### Or download a file
 
@@ -145,7 +155,7 @@ The keys worth knowing (Cmd instead of Ctrl on macOS, and Cmd+T for a new termin
 | Ctrl+Shift+G | The Git popup |
 | Ctrl+Shift+Enter | Fill the window with the block, and back |
 | Ctrl+Shift+1 | Fit every block in view |
-| Ctrl+Shift+O | The workspaces screen |
+| Ctrl+Shift+O | Home |
 | Ctrl+, | Settings |
 
 Hold **Alt** (Option on macOS) to pan with a drag or zoom with the wheel anywhere, over blocks too.

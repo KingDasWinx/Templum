@@ -16,6 +16,7 @@ use crate::block;
 use crate::git_block;
 use crate::menu;
 use crate::motion;
+use crate::popup;
 use crate::settings;
 use crate::sidebar;
 use crate::theme_picker;
@@ -23,9 +24,6 @@ use crate::title_bar;
 use crate::toolbar;
 
 use super::{Drag, SAVE_DELAY, Tool, Workspace, hint_keys};
-
-/// The Git popup's distance from the window's edges and the sidebar, pixels.
-const GIT_GAP: f32 = 8.0;
 
 impl Workspace {
     /// Every BLINK: toggles a blinking cursor, and makes sure a steady one is shown.
@@ -267,129 +265,17 @@ fn paint_guides(
     }
 }
 
-impl Render for Workspace {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(mut hook) = self.on_frame.take()
-            && hook(self, window, cx)
-        {
-            self.on_frame = Some(hook);
-        }
-        // Settings changes apply here, where the window is at hand; the save waits for them to settle.
-        if let Some(config) = self.pending.take() {
-            self.apply_config(config, window, cx);
-            self._save = cx.spawn_in(window, async move |ws, cx| {
-                cx.background_executor().timer(SAVE_DELAY).await;
-                ws.update_in(cx, |ws, window, cx| ws.save_or_notify(window, cx))
-                    .ok();
-            });
-        }
-        let fade = transition_with_status(
-            "theme-ui",
-            self.theme.ui,
-            Transition::new(motion::THEME),
-            window,
-            cx,
-        );
-        // Blending ends a rounding error away from the theme: take the theme's own colors.
-        self.ui = match fade.status {
-            MotionStatus::Running | MotionStatus::Delayed => fade.value,
-            MotionStatus::Idle | MotionStatus::Finished => self.theme.ui,
-        };
-        // The focused terminal's painting sets it again this frame, if its cursor blinks.
-        self.cursor_blinks = false;
-        if self.keep_dead_starts() {
-            super::persist::say_unstarted(window, cx);
-        }
-        let exited: Vec<BlockId> = self
-            .space
-            .terminals()
-            .filter(|(_, pane)| pane.term.exited() && !pane.died_starting())
-            .map(|(id, _)| id)
-            .collect();
-        // Nothing left to lose: no question.
-        for id in exited {
-            self.remove_block(id, window, cx);
-        }
-        self.hear(window, cx);
-        // A tool call whose block is gone is withdrawn (docs/specs/connections.md).
-        self.drop_orphans(cx);
-
-        let vp = self.viewport(window);
-        // Grid mode's tiles fill the area as it is now: the window or the sidebar may have changed.
-        if let Some(grid) = &mut self.space.grid {
-            grid.area = super::tiling::grid_area(vp);
-            self.retile();
-        }
-        let tiled = self.space.grid.is_some();
-        if self.space.pristine
-            && let Some(b) = self.space.canvas.bounds()
-        {
-            let z = self.space.canvas.camera.zoom();
-            self.space.canvas.camera.origin = Point::new(
-                b.x + b.w / 2.0 - vp.w / 2.0 / z,
-                b.y + b.h / 2.0 - vp.h / 2.0 / z,
-            );
-        }
-        // Animations: drop the finished ones, and keep frames coming while any runs.
-        let now = Instant::now();
-        if self.drag_edge(vp, now) {
-            window.request_animation_frame();
-        }
-        self.space
-            .appearing
-            .retain(|_, since| motion::progress(*since, now, motion::OPEN) < 1.0);
-        self.space
-            .ghosts
-            .retain(|g| motion::progress(g.since, now, motion::CLOSE) < 1.0);
-        if let Some(panel) = &self.settings {
-            let t = motion::progress(panel.since, now, motion::SLIDE);
-            if t < 1.0 {
-                window.request_animation_frame();
-            } else if panel.closing {
-                self.settings = None;
-            }
-        }
-        if let Some(screen) = &self.screen {
-            let t = motion::progress(screen.since, now, motion::SLIDE);
-            if t < 1.0 {
-                window.request_animation_frame();
-            } else if screen.closing {
-                self.screen = None;
-            }
-        }
-        if let Some(welcome) = &self.welcome {
-            let t = motion::progress(welcome.since, now, motion::SLIDE);
-            if t < 1.0 {
-                window.request_animation_frame();
-            } else if welcome.closing {
-                self.welcome = None;
-            }
-        }
-        if !self.space.appearing.is_empty() || !self.space.ghosts.is_empty() {
-            window.request_animation_frame();
-        }
-        // The view glides to the camera. Anything that moved the camera itself (a drag, the
-        // startup centering) ends the flight: the view is then the camera.
-        self.space.view = match self.space.flight {
-            Some((flight, since)) if flight.to == self.space.canvas.camera => {
-                let t = motion::progress(since, now, motion::FLIGHT);
-                if t < 1.0 {
-                    window.request_animation_frame();
-                    flight.at(motion::slide(t))
-                } else {
-                    self.space.flight = None;
-                    self.space.canvas.camera
-                }
-            }
-            _ => {
-                self.space.flight = None;
-                self.space.canvas.camera
-            }
-        };
-        // The level of detail changes only at rest (docs/specs/level-of-detail.md, section 1).
-        if self.space.flight.is_none() {
-            self.space.rest = self.space.view.zoom();
-        }
+impl Workspace {
+    /// The canvas of the workspace shown: its blocks in view, its wires and drawings, the layers
+    /// the tools put over them, and the toolbar.
+    fn canvas_area(
+        &mut self,
+        vp: Size,
+        now: Instant,
+        tiled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let visible: Vec<_> = self
             .space
             .canvas
@@ -405,7 +291,8 @@ impl Render for Workspace {
                 window.request_animation_frame();
             }
         }
-        let mut blocks: Vec<_> = visible
+        let gates = block::Gates::of(self);
+        let shown: Vec<_> = visible
             .into_iter()
             .map(|mut b| {
                 let look = self
@@ -423,14 +310,26 @@ impl Render for Workspace {
                     let t = motion::slide(motion::progress(*since, now, motion::TILE));
                     b.rect = super::tiling::between(*was, b.rect, t);
                 }
+                (b, look)
+            })
+            .collect();
+        // Far out, crowded labels shorten or hide instead of piling up.
+        let widths = block::label_widths(self, &shown.iter().map(|(b, _)| *b).collect::<Vec<_>>());
+        let mut blocks: Vec<_> = shown
+            .into_iter()
+            .zip(widths)
+            .map(|((b, look), label_w)| {
                 let body = &self.space.blocks[&b.id];
-                block::render(self, b, body, look, true, window, cx)
+                block::render(self, b, body, look, true, label_w, &gates, window, cx)
             })
             .collect();
         // Ghosts fade above the blocks, where they were.
         blocks.extend(self.space.ghosts.iter().map(|g| {
             let look = motion::closing(motion::progress(g.since, now, motion::CLOSE));
-            block::render(self, g.block, &g.body, look, false, window, cx)
+            let label_w = block::LABEL_FAR_W;
+            block::render(
+                self, g.block, &g.body, look, false, label_w, &gates, window, cx,
+            )
         }));
 
         let entity = cx.entity();
@@ -494,8 +393,10 @@ impl Render for Workspace {
                             if e.pressed_button.is_some() {
                                 ws.drag_to(e.position, e.modifiers.shift, cx);
                             } else {
-                                // A release this window never heard still keeps the popup's size.
+                                // A release this window never heard still keeps the popup's size,
+                                // and copies a selection.
                                 if !ws.release_git_resize(window, cx) {
+                                    ws.copy_on_select(e.position, cx);
                                     ws.end_drag();
                                 }
                                 ws.hover_program(e.position, &e.modifiers);
@@ -514,7 +415,7 @@ impl Render for Workspace {
                                 return;
                             }
                             match e.button {
-                                MouseButton::Left => ws.release(e.position, cx),
+                                MouseButton::Left => ws.release(e.position, window, cx),
                                 MouseButton::Middle => ws.end_drag(),
                                 _ => {}
                             }
@@ -536,8 +437,14 @@ impl Render for Workspace {
             }
             _ => None,
         };
+        // The box around two or more selected blocks: a hairline, no events (a press in it is the
+        // workspace's, `on_background_down`).
+        let selection = self
+            .selection_box()
+            .filter(|_| !tiled)
+            .map(|b| self.space.view.rect_to_screen(b));
         let swapping = self.swap_overlay(cx);
-        let area = div()
+        div()
             .id("workspace")
             .relative()
             .flex_1()
@@ -582,6 +489,16 @@ impl Render for Workspace {
                     .border_1()
                     .border_color(self.ui.accent)
                     .bg(self.ui.accent.opacity(0.08))
+            }))
+            .children(selection.map(|r| {
+                div()
+                    .absolute()
+                    .left(px(r.x))
+                    .top(px(r.y))
+                    .w(px(r.w))
+                    .h(px(r.h))
+                    .border_1()
+                    .border_color(self.ui.accent)
             }))
             .children(swapping)
             .when(self.tool.draws() && !tiled, |el| {
@@ -663,62 +580,236 @@ impl Render for Workspace {
                         .test_support(),
                 )
             })
-            .when(self.space.canvas.blocks().is_empty(), |el| {
-                el.child(
-                    div()
-                        .absolute()
-                        .size_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(self.hint()),
-                )
-            })
-            .when(!tiled, |el| el.child(toolbar::render(self, cx)));
+            // A remote workspace is empty until home's first state; a stopped one has its card.
+            .children(crate::mirror::stopped_card(self, cx))
+            .when(
+                self.space.canvas.blocks().is_empty() && !self.space.is_remote(),
+                |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(self.hint()),
+                    )
+                },
+            )
+            // Not live: the blocks keep their last frames under a veil.
+            .children(crate::mirror::veil(self))
+            .when(!tiled, |el| el.child(toolbar::render(self, cx)))
+            .children(crate::mirror::banner(self, cx))
+            .test_support()
+            .into_any_element()
+    }
+}
+
+impl Render for Workspace {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(mut hook) = self.on_frame.take()
+            && hook(self, window, cx)
+        {
+            self.on_frame = Some(hook);
+        }
+        // Settings changes apply here, where the window is at hand; the save waits for them to settle.
+        if let Some(config) = self.pending.take() {
+            self.apply_config(config, window, cx);
+            self._save = cx.spawn_in(window, async move |ws, cx| {
+                cx.background_executor().timer(SAVE_DELAY).await;
+                ws.update_in(cx, |ws, window, cx| ws.save_or_notify(window, cx))
+                    .ok();
+            });
+        }
+        let fade = transition_with_status(
+            "theme-ui",
+            self.theme.ui,
+            Transition::new(motion::THEME),
+            window,
+            cx,
+        );
+        // Blending ends a rounding error away from the theme: take the theme's own colors.
+        self.ui = match fade.status {
+            MotionStatus::Running | MotionStatus::Delayed => fade.value,
+            MotionStatus::Idle | MotionStatus::Finished => self.theme.ui,
+        };
+        // The focused terminal's painting sets it again this frame, if its cursor blinks.
+        self.cursor_blinks = false;
+        if self.keep_dead_starts() {
+            super::persist::say_unstarted(window, cx);
+        }
+        let exited: Vec<(BlockId, Option<String>)> = self
+            .space
+            .terminals()
+            .filter(|(_, pane)| pane.term.exited() && !pane.died_starting())
+            .map(|(id, pane)| (id, pane.term.killed().then(|| pane.term.title())))
+            .collect();
+        // Nothing left to lose: no question.
+        for (id, killed) in exited {
+            // Its block closes: say why it went (docs/specs/shells.md#a-scope-for-each-terminal).
+            if let Some(title) = killed {
+                let message = format!(
+                    "The terminal “{title}” was stopped by the system, most likely for \
+                     using too much memory"
+                );
+                eprintln!("templum: {message}");
+                super::show_notification(
+                    window,
+                    cx,
+                    gpui_kit::component::notification::Notification::warning(message),
+                );
+            }
+            self.remove_block(id, window, cx);
+        }
+        self.hear(window, cx);
+        self.watch_agents(window.is_window_active(), cx.background_executor().now());
+        // A tool call whose block is gone is withdrawn (docs/specs/connections.md).
+        self.drop_orphans(cx);
+
+        let vp = self.viewport(window);
+        self.api.viewport = vp;
+        // Grid mode's tiles fill the area as it is now: the window or the sidebar may have changed.
+        if let Some(grid) = &mut self.space.grid {
+            grid.area = super::tiling::grid_area(vp);
+            self.retile();
+        }
+        let tiled = self.space.grid.is_some();
+        if self.space.pristine
+            && let Some(b) = self.space.canvas.bounds()
+        {
+            let z = self.space.canvas.camera.zoom();
+            self.space.canvas.camera.origin = Point::new(
+                b.x + b.w / 2.0 - vp.w / 2.0 / z,
+                b.y + b.h / 2.0 - vp.h / 2.0 / z,
+            );
+        }
+        // Animations: drop the finished ones, and keep frames coming while any runs.
+        let now = Instant::now();
+        if self.drag_edge(vp, now) {
+            window.request_animation_frame();
+        }
+        self.space
+            .appearing
+            .retain(|_, since| motion::progress(*since, now, motion::OPEN) < 1.0);
+        self.space
+            .ghosts
+            .retain(|g| motion::progress(g.since, now, motion::CLOSE) < 1.0);
+        if let Some(panel) = &self.settings {
+            let t = motion::progress(panel.since, now, motion::SLIDE);
+            if t < 1.0 {
+                window.request_animation_frame();
+            } else if panel.closing {
+                self.settings = None;
+            }
+        }
+        if let Some(welcome) = &self.welcome {
+            let t = motion::progress(welcome.since, now, motion::SLIDE);
+            if t < 1.0 {
+                window.request_animation_frame();
+            } else if welcome.closing {
+                self.welcome = None;
+            }
+        }
+        if !self.space.appearing.is_empty() || !self.space.ghosts.is_empty() {
+            window.request_animation_frame();
+        }
+        // The view glides to the camera. Anything that moved the camera itself (a drag, the
+        // startup centering) ends the flight: the view is then the camera.
+        self.space.view = match self.space.flight {
+            Some((flight, since)) if flight.to == self.space.canvas.camera => {
+                let t = motion::progress(since, now, motion::FLIGHT);
+                if t < 1.0 {
+                    window.request_animation_frame();
+                    flight.at(motion::slide(t))
+                } else {
+                    self.space.flight = None;
+                    self.space.canvas.camera
+                }
+            }
+            _ => {
+                self.space.flight = None;
+                self.space.canvas.camera
+            }
+        };
+        // The level of detail changes only at rest (docs/specs/level-of-detail.md, section 1).
+        if self.space.flight.is_none() {
+            self.space.rest = self.space.view.zoom();
+        }
+        // The remote workspaces' terminals to stream follow what is in view.
+        let now = Instant::now();
+        let held = self.expire_holds(now);
+        if let Some(due) = [self.stream_terminals(now), held]
+            .into_iter()
+            .flatten()
+            .min()
+        {
+            self.stream_at(due, window, cx);
+        }
+        // The Home in the canvas's place: no block of the workspace under it is laid out or drawn.
+        let area = match &self.screen {
+            Some(screen) => crate::home::render(self, screen, window, cx),
+            None => self.canvas_area(vp, now, tiled, window, cx),
+        };
         let picker = self
             .picker
             .as_ref()
             .map(|p| theme_picker::render(self, p, cx));
         let usage = self.usage_open.then(|| crate::usage::popover(self, cx));
-        // Over the canvas's bottom-left corner, beside the sidebar's Git button, at the size the
-        // person dragged it to; a small window gets a smaller popup.
-        self.git_room = Size::new(vp.w - 2.0 * GIT_GAP, vp.h - 2.0 * GIT_GAP);
-        let git = self.space.git().filter(|_| self.git_open).map(|g| {
-            let Size { w, h } = self.git_popup_size();
-            let left = if self.sidebar { sidebar::WIDTH } else { 0.0 } + GIT_GAP;
-            let popup = div()
-                .absolute()
-                .left(px(left))
-                .bottom(px(GIT_GAP))
-                .w(px(w))
-                .h(px(h))
-                // Presses inside the popup don't reach the backdrop.
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(git_block::popup(self, g, w, h, cx))
-                .children(git_block::resize_zones(cx));
-            // A press anywhere outside the popup closes it, and nothing below gets it.
-            div()
-                .id("git-backdrop")
-                .absolute()
-                .inset_0()
-                .occlude()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|ws, _: &MouseDownEvent, window, cx| {
-                        ws.close_git(window, cx);
-                        cx.stop_propagation();
-                    }),
-                )
-                .child(popup)
+        // The popups (crate::popup): over the canvas's bottom-left corner, beside the sidebar, at
+        // the size the person dragged them to; a small window gets a smaller one. Only one is open.
+        self.git_room = Size::new(vp.w - 2.0 * popup::GAP, vp.h - 2.0 * popup::GAP);
+        let Size { w, h } = self.git_popup_size();
+        let git = self
+            .space
+            .git()
+            .filter(|_| self.git_open)
+            .map(|g| git_block::popup(self, g, w, h, cx));
+        self.inbox_keeps_keys(window, cx);
+        let inbox = self
+            .inbox_open
+            .then(|| crate::inbox::popup(self, w, h, window, cx));
+        // The rows are made once a frame: the selection is pinned on them, and the popup draws them.
+        let agents = self.agents_open.then(|| {
+            let all = self.agent_rows();
+            let listed = self.listed_in(&all);
+            self.pin_agent(&all, &listed);
+            crate::agents_view::popup(self, w, h, &all, listed, window, cx)
         });
+        self.prepare_automation_form(window, cx);
+        self.follow_automation_draft(window, cx);
+        let automations = self
+            .automations_open
+            .then(|| crate::automations_view::popup(self, w, h, cx));
+        let popup = git
+            .or(inbox)
+            .or(agents)
+            .or(automations)
+            .map(|p| popup::slot(self, w, h, p, cx));
         // Window chrome over the canvas's bottom center, above the toolbar: the zoom never scales it.
         let open = self.templum_agent.open;
+        // Rows that come while it is closed show at once when it opens.
+        if !open {
+            self.templum_agent.drawn.set(false);
+        }
+        let full = open && self.templum_agent.full;
         let waiting = self.templum_agent.approvals.len();
-        let approval = self.templum_agent.approvals.first().map(|a| {
-            let width = 640.0_f32.min(vp.w - 32.0);
-            crate::chat::approval::render(self, a, (1, waiting), width, window, cx)
-        });
-        let pill = (!tiled || open)
+        // The Templum Agent works on the canvas: not on the Home, where a notification says what
+        // it asks (`tell_approval`).
+        let home = self.home_up();
+        let approval = self
+            .templum_agent
+            .approvals
+            .first()
+            .filter(|_| !home)
+            .map(|a| {
+                let width = if open {
+                    crate::chat::panel::approval_width(vp.w, full)
+                } else {
+                    640.0_f32.min(vp.w - 32.0)
+                };
+                crate::chat::approval::render(self, a, (1, waiting), width, window, cx)
+            });
+        let pill = (!home && (!tiled || open))
             .then(|| crate::chat::pill::render(self, vp.w, open, window, cx))
             .flatten();
         let agent = match (open, pill) {
@@ -739,19 +830,17 @@ impl Render for Workspace {
         }
         .map(|pill| {
             let left = if self.sidebar { sidebar::WIDTH } else { 0.0 };
+            // Full screen fills the canvas to its inset; else the card sits above the toolbar.
+            let bottom = if full { 16.0 } else { toolbar::above(self) };
             div()
                 .absolute()
                 .left(px(left))
                 .right_0()
-                .bottom(px(toolbar::above(self)))
+                .bottom(px(bottom))
                 .flex()
                 .justify_center()
                 .child(pill)
         });
-        let screen = self
-            .screen
-            .as_ref()
-            .map(|s| crate::spaces_screen::render(self, s, now, window, cx));
         let welcome = self
             .welcome
             .as_ref()
@@ -780,18 +869,19 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h(px(0.0))
                     .flex()
-                    .when(self.sidebar, |el| el.child(sidebar::render(self, cx)))
+                    .when(self.sidebar, |el| {
+                        el.child(sidebar::render(self, window, cx))
+                    })
                     .child(area),
             )
-            // The Git popup over the Templum agent.
+            // The popups over the Templum agent.
             .children(agent)
-            .children(git)
-            // Under what the title bar opens: the settings, the theme picker, the screen.
+            .children(popup)
+            // Under what the title bar opens: the settings, the theme picker, the usage popover.
             .children(welcome)
             .children(panel)
             .children(picker)
             .children(usage)
-            .children(screen)
             .children(self.menu.as_ref().map(|m| menu::render(m, window)))
     }
 }

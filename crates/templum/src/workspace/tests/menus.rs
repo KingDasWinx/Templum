@@ -466,3 +466,230 @@ fn send_to_lists_the_terminals_running_an_agent_first(cx: &mut TestAppContext) {
         assert!(ws.terminal_list(Some(nowhere)).is_empty());
     });
 }
+
+// A mirror's menus: what home can do, and the rule's words for what it can't.
+
+use super::remote::{apply, live_terminals, sent, terminals_of_home, viewer};
+use crate::menu::Target;
+use serde_json::json;
+
+#[gpui_kit::test]
+fn a_remote_s_menus_open_with_what_works_there(cx: &mut TestAppContext) {
+    use std::sync::Arc;
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    let mut state = terminals_of_home(&["b1"]);
+    state.blocks.push(Arc::new(templum_api::model::BlockView {
+        id: "k1".into(),
+        workspace: "w1".into(),
+        kind: "kanban".into(),
+        title: "Sprint".into(),
+        z: 1,
+        rect: templum_api::model::Rect {
+            x: 500.0,
+            y: 0.0,
+            w: 400.0,
+            h: 300.0,
+        },
+        ..Default::default()
+    }));
+    apply(handle, &ws, cx, state);
+    let (v1, k1) = (viewer(&ws, cx, "b1"), viewer(&ws, cx, "k1"));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let at = point(px(100.0), px(100.0));
+            ws.open_menu(Target::Canvas(Point::new(0.0, 0.0)), at, window, cx);
+            assert!(ws.menu.is_some(), "the canvas menu");
+            assert!(ws.said.is_empty());
+            ws.menu = None;
+            ws.open_block_menu(v1, at, window, cx);
+            assert!(ws.menu.is_some(), "a terminal's menu");
+            ws.menu = None;
+            ws.open_block_menu(k1, at, window, cx);
+            assert!(ws.menu.is_some(), "a card of home's has a menu");
+            ws.menu = None;
+            ws.open_menu(Target::Ink(0), at, window, cx);
+            assert!(ws.menu.is_none());
+            assert_eq!(
+                ws.said.last().map(String::as_str),
+                Some(crate::workspace::remote::NOT_YET)
+            );
+        })
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_canvas_menu_on_a_remote_adds_at_home_where_clicked(cx: &mut TestAppContext) {
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    let adds = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        sent(ws, cx)
+            .into_iter()
+            .filter(|(tool, _)| tool == "add_block")
+            .map(|(_, args)| args)
+            .collect::<Vec<_>>()
+    };
+    let at = (20.0, 600.0);
+    let world = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let o = ws.read(cx).origin;
+            let at = (f32::from(o.x) + at.0, f32::from(o.y) + at.1);
+            right_click(window, cx, at);
+            window.render_frame(cx);
+            assert!(ws.read(cx).menu.is_some(), "the menu opened");
+            let ws = ws.read(cx);
+            ws.space
+                .canvas
+                .camera
+                .to_world(ws.local(point(px(at.0), px(at.1))))
+        })
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        // AI agent ▸, Add ▸ Terminal, Kanban board, Note, Checklist, Editor.
+        window.within("popup-menu").click(1usize, cx);
+        window.render_frame(cx);
+        window
+            .within("submenu")
+            .within("popup-menu")
+            .click(1usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(
+        adds(&ws, cx),
+        [json!({"workspace": "w1", "kind": "kanban", "x": world.x, "y": world.y})]
+    );
+    // Note is home's too.
+    cx.update_window(handle, |_, window, cx| {
+        right_click(
+            window,
+            cx,
+            (
+                f32::from(ws.read(cx).origin.x) + 20.0,
+                f32::from(ws.read(cx).origin.y) + 600.0,
+            ),
+        );
+        window.render_frame(cx);
+        window.within("popup-menu").click(1usize, cx);
+        window.render_frame(cx);
+        window
+            .within("submenu")
+            .within("popup-menu")
+            .click(2usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(adds(&ws, cx).len(), 2);
+    assert_eq!(adds(&ws, cx)[1]["kind"], "note");
+    // Terminal ▸ lists home's shells: Default is home's default.
+    cx.update_window(handle, |_, window, cx| {
+        right_click(
+            window,
+            cx,
+            (
+                f32::from(ws.read(cx).origin.x) + 20.0,
+                f32::from(ws.read(cx).origin.y) + 600.0,
+            ),
+        );
+        window.render_frame(cx);
+        window.within("popup-menu").click(1usize, cx);
+        window.render_frame(cx);
+        window
+            .within("submenu")
+            .within("popup-menu")
+            .click(0usize, cx);
+        window.render_frame(cx);
+        click_innermost_menu_item(window, cx, 0);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(adds(&ws, cx).len(), 3);
+    assert_eq!(adds(&ws, cx)[2]["kind"], json!("terminal"));
+    assert!(adds(&ws, cx)[2].get("shell").is_none(), "home's default");
+}
+
+#[gpui_kit::test]
+fn hand_a_task_is_in_a_remote_agent_s_menu(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    use templum_api::model::AgentView;
+    let (handle, ws, _dir) = super::remote::offline(cx);
+    super::remote::show_remote(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        super::remote::live(ws, templum_api::store::Scope::Control);
+        ws.space.remote.as_mut().unwrap().entry.home = Some("w1".into());
+    });
+    let agent = AgentView {
+        agent: "Claude Code".into(),
+        state: "idle".into(),
+        ..AgentView::default()
+    };
+    apply(
+        handle,
+        &ws,
+        cx,
+        super::remote::terminal_of_home(Some(agent)),
+    );
+    let v = viewer(&ws, cx, "abcde");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.open_block_menu(v, point(px(100.0), px(100.0)), window, cx)
+        });
+        window.render_frame(cx);
+        // Copy, Paste, Hand a task….
+        window.within("popup-menu").click(2usize, cx);
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx));
+    })
+    .unwrap();
+    // A terminal without an agent has no such item.
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    let v = viewer(&ws, cx, "b1");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.open_block_menu(v, point(px(100.0), px(100.0)), window, cx)
+        });
+        window.render_frame(cx);
+        window.within("popup-menu").click(2usize, cx);
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_shortcut_a_remote_can_t_do_says_why_once(cx: &mut TestAppContext) {
+    use crate::keys::Command;
+    let (handle, ws, _dir) = live_terminals(cx, &["b1"]);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.run(Command::NewNote, window, cx);
+            ws.run(Command::NewNote, window, cx);
+            ws.run(Command::NewEditor, window, cx);
+            ws.run(Command::NewEditor, window, cx);
+            ws.run(Command::NewTerminal, window, cx);
+        })
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            !ws.said.iter().any(|s| s.contains("read-only")),
+            "a note is home's now: nothing is said of it"
+        );
+        let editors = ws
+            .said
+            .iter()
+            .filter(|s| s.as_str() == crate::workspace::remote::NOT_YET)
+            .count();
+        assert_eq!(editors, 1);
+    });
+    let adds: Vec<_> = sent(&ws, cx)
+        .into_iter()
+        .filter(|(tool, args)| tool == "add_block" && args["kind"] == json!("terminal"))
+        .collect();
+    assert_eq!(adds.len(), 1, "a terminal is home's to add");
+    let notes = sent(&ws, cx)
+        .into_iter()
+        .filter(|(tool, args)| tool == "add_block" && args["kind"] == json!("note"))
+        .count();
+    assert_eq!(notes, 2, "so is a note, once for each key");
+}

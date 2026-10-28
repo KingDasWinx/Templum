@@ -25,7 +25,7 @@ pub use ink::{
     Color, Drawing, HIT_PX, MAX_WIDTH, MIN_POINT_DISTANCE, MIN_SHAPE, MIN_WIDTH, STRING_PX,
     ShapeKind, constrain, simplify,
 };
-pub use lod::{CARD_BELOW, GREEK_BELOW, Level, level};
+pub use lod::{CARD_BELOW, GREEK_BELOW, LABEL_FITS, Level, block_level, label_widths, level};
 pub use snap::{Guide, SNAP_PX, Snapped, snap_move, snap_resize};
 pub use tile::{Direction, GAP, Split, Tile, neighbour};
 pub use wire::{Curve, Wire};

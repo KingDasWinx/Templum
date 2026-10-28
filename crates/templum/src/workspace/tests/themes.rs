@@ -584,6 +584,8 @@ fn open_gallery(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAp
 
 #[gpui_kit::test]
 fn the_gallery_previews_restores_and_installs(cx: &mut TestAppContext) {
+    // The gallery slides in by the clock: still, a click finds what the frame drew.
+    no_motion(cx);
     let (config, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     crate::gallery::tests::seed(
         data.path(),
@@ -793,6 +795,8 @@ fn esc_in_the_picker_keeps_a_theme_saved_meanwhile(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn an_install_that_fails_puts_the_theme_back(cx: &mut TestAppContext) {
+    // The gallery slides in by the clock: still, a click finds what the frame drew.
+    no_motion(cx);
     let (config, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     crate::gallery::tests::seed(data.path(), &[("paper.toml", &light_theme("#f2eede"))]);
     // No themes folder can be made.

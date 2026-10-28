@@ -212,11 +212,20 @@ pub(super) fn answer_soon(
     cx: &mut TestAppContext,
     answers: &std::sync::mpsc::Receiver<String>,
 ) -> (bool, String) {
+    result_of(&answer_line_soon(cx, answers))
+}
+
+/// The line that came on `answers`, whatever it is (a result or an error), waiting for it.
+#[cfg(unix)]
+pub(super) fn answer_line_soon(
+    cx: &mut TestAppContext,
+    answers: &std::sync::mpsc::Receiver<String>,
+) -> String {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         cx.run_until_parked();
         if let Ok(line) = answers.try_recv() {
-            return result_of(&line);
+            return line;
         }
         assert!(Instant::now() < deadline, "no answer");
         std::thread::sleep(Duration::from_millis(20));
@@ -244,9 +253,9 @@ pub(super) fn me(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -
     })
 }
 
-/// The terminal's screen once it shows `needle`, its rows joined: a long line wraps at the
-/// terminal's width (macOS's temporary folder is long), and `Snapshot::text` breaks it there. A
-/// failure points at the caller's line, which names the needle.
+/// The terminal's screen once it shows `needle`, its lines joined: a long line wraps at the
+/// terminal's width (macOS's temporary folder is long), and is read as one line, with the space
+/// where it wraps. A failure points at the caller's line, which names the needle.
 #[track_caller]
 pub(super) fn screen_with(
     ws: &Entity<Workspace>,
@@ -271,12 +280,8 @@ pub(super) fn screen_until(
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let shown = ws.read_with(cx, |ws, _| {
-            let mut snap = templum_terminal::Snapshot::default();
-            snap.refresh(
-                ws.space.terminal(id).unwrap().term.shared(),
-                &ws.theme.palette,
-            );
-            snap.text().replace('\n', "")
+            let term = &ws.space.terminal(id).unwrap().term;
+            term.shared().lines(term.grid_size().1.into()).concat()
         });
         if done(&shown) {
             return shown;
@@ -828,16 +833,10 @@ fn without_a_data_folder_there_is_no_bus(cx: &mut TestAppContext) {
     ws.read_with(cx, |ws, _| assert!(ws.bus.is_none()));
 }
 
-/// Hands the workspace an agent's event, as `templum hook` does.
-pub(super) fn event(
-    handle: AnyWindowHandle,
-    ws: &Entity<Workspace>,
-    cx: &mut TestAppContext,
-    terminal: &str,
-    event: Value,
-) {
+/// An agent's event, as `templum hook` hands it to the bus.
+pub(super) fn event_message(terminal: &str, event: Value) -> Message {
     let (reply, _) = std::sync::mpsc::channel();
-    let message = Message {
+    Message {
         hello: Hello {
             terminal: terminal.into(),
             client: "hook".into(),
@@ -849,7 +848,18 @@ pub(super) fn event(
             params: event,
         },
         reply,
-    };
+    }
+}
+
+/// Hands the workspace an agent's event.
+pub(super) fn event(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    terminal: &str,
+    event: Value,
+) {
+    let message = event_message(terminal, event);
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| ws.serve(message, window, cx))
     })

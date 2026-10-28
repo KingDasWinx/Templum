@@ -235,11 +235,8 @@ fn leaving_a_branch_with_commits_not_pushed_offers_to_push_it(cx: &mut TestAppCo
     git_of(&ws, cx, |g| {
         assert_eq!(g.status.branch.as_deref(), Some("feat"), "no question")
     });
-    assert_eq!(
-        notification_count(handle, cx),
-        1,
-        "main has 1 commit not pushed yet"
-    );
+    assert_eq!(notification_count(handle, cx), 1);
+    assert_eq!(told_so_far(), ["main has 1 commit not pushed yet"]);
     cx.update_window(handle, |_, window, cx| window.click("git-push-left", cx))
         .unwrap();
     settle(handle, cx);

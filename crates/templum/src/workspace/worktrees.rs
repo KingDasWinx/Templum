@@ -15,7 +15,7 @@ impl Workspace {
     /// told of (a merge: still what was merged).
     pub(super) fn worktree_still(&self, from: &str, then: &Approved) -> Result<(), Reply> {
         let (repo, name, changed, unmerged, ignored) = match then {
-            Approved::Connect { .. } => return Ok(()),
+            Approved::Connect { .. } | Approved::Remote { .. } => return Ok(()),
             Approved::RemoveWorktree {
                 repo,
                 name,

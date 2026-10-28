@@ -441,15 +441,23 @@ mod tests {
             pid: child.id(),
             ..proc("/srv/app", START)
         };
+        // Until `sh` has the three files open: read before, the two reads below saw it open
+        // different ones.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let (found, ids) = loop {
-            let found = sessions(&[&p], dir.path(), START + 60);
-            let ids = session_ids(&[&p], dir.path(), START + 60);
-            if ids[0].as_deref() == Some("new") || std::time::Instant::now() > deadline {
-                break (found, ids);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+        let open = || {
+            std::fs::read_dir(format!("/proc/{}/fd", child.id()))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|e| std::fs::read_link(e.path()).ok())
+                .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
+                .count()
         };
+        while open() < 3 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let found = sessions(&[&p], dir.path(), START + 60);
+        let ids = session_ids(&[&p], dir.path(), START + 60);
         let _ = child.kill();
         let _ = child.wait();
         assert_eq!(ids[0].as_deref(), Some("new"));

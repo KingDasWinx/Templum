@@ -97,6 +97,172 @@ Alacritty's format dropped into a folder, all switchable from a picker in the ti
 - Scales snap to 0.02 steps: a block is drawn at zoom × scale, so text is rasterized at only a few extra sizes.
 - Nothing else animates (no animated zoom).
 
+### Scrollbars
+
+Every list or body that scrolls draws the same scrollbar, `kanban::scrollbar_over` (or `kanban::scrollbar` inside a
+strip of its own): gpui-kit's, over the list, never in it (in it, it would scroll away). Its track is `kanban::TRACK`
+(16) wide at the right edge; its thumb is 6 wide (8 under the pointer or held), 48 long at the least and 4 in from
+the edge, in the kit theme's scrollbar colors: no color of its own. On the canvas every size is the block's zoom's.
+It shows while the pointer is over its track and while the content scrolls, fading in over 300 ms and out over
+500 ms after the theme's 2 s idle, and only once the content overflows. Shown, its strip takes the presses: the list
+or block under it hears them first in the capture phase, so a press still picks the block and the middle button
+still pans the canvas. A terminal's history has its own rules for when it shows, the same look
+([walking-skeleton.md](walking-skeleton.md#the-scrollbar-and-jump-to-the-bottom)).
+
+### Text areas
+
+*(Kanban card 258; the card dialog's description is the reference.)* A text area for real text (a description, not
+a one-line comment) grows with its text, a line at a time, from a useful height (6 lines) to a cap (16), then
+scrolls in itself: gpui-kit's `auto_grow`. Typing grows the dialog downward only. When the person may want it
+larger, it has a **grip** in its bottom-right corner: gpui-kit's resize-corner icon at 10 in `title_dim`, in a 14
+square 1 in from the corner, over the field (a press there is the grip's, not the text's), with the ns-resize cursor,
+held through the drag. The drag moves the field's bottom by the pointer's way, between a least height (64) and what
+its dialog's body can show at once; the field then keeps that height whatever its text, which scrolls in it. The
+height set is window chrome: kept as dragged, written in the index as the drag ends, drawn clamped to a smaller
+window, not in the Templum API.
+
+### Popups
+
+*(Kanban card 217.)* Every popup over the canvas — Git, Requests, Agents and Automations today, and any new modal of
+their kind — follows this one standard, built from the helpers of `crates/templum/src/popup.rs`: a new popup calls
+them and never redraws its own frame. A dialog in the middle of the window wears the same frame, header and foot
+(*A dialog*, below).
+
+- **Place and layering** (`popup::slot`): over the canvas's bottom-left corner, `popup::GAP` (8 px) from the sidebar
+  and from the window's bottom edge; window chrome, so the canvas's zoom never scales it. Only one is open at a time:
+  opening one closes the others.
+- **Size:** they share one, `Workspace::git_popup_size`: `git_block::SIZE` (760 × 540) until the person drags it, at
+  least `git_block::MIN` (600 × 420), at most the room the window leaves (`git_room`), which wins when it is smaller
+  than the minimum. What is drawn is clamped, the size set is kept: a window that grows back gives it back. The size
+  set is window chrome, saved in the index as `git_size`; it is not in the Templum API.
+- **Resize:** the free edges, the right and the top, and the square at the corner between them resize it like a
+  window's border (`popup-resize-right`, `popup-resize-top`, `popup-resize-top-right`; 6 px outside the box, 2 px
+  inside); the left edge rests against the sidebar and the bottom one against the window, so they have none. A drag
+  writes the size in the index as it ends. No edges at full screen.
+- **Frame** (`popup::frame`): `ui.surface`, a 1 px `ui.hairline` border, 12 px corners, the shadow (offset y 12, blur
+  32, `ui.shadow`), a column: the header, then the body. It occludes the canvas, and the wheel stops in it.
+- **Header** (`popup::header`), across the full width, `popup::HEADER` (55 px) high with a hairline under it, 12 px at
+  its sides and 10 px between its parts: the icon's tile (`popup::tile`: 34 px, 9 px corners, the icon at 17 px in
+  its color on 14% of it: the accent, the palette's yellow for Requests); the title (14 px, semibold) over a dim line
+  of what it holds (`popup::subtitle`, 12 px `ui.title_dim`: "3 automations", "8 running · 1 needs you"; Git's is its
+  branch line); the popup's own actions (one tinted primary, as Git's Sync or Automations' New, then 24 px icon
+  buttons); **Full screen** (`Maximize2`, "Full screen"; `Minimize2`, "Exit full screen" while on); **Close**
+  (`Close`, "Close (Esc)"). Ids: `{name}-header`, `{name}-close`, `popup-full`.
+- **Body:** a list column at the left with a hairline at its right, and the selected item at the right (or one
+  panel). The content of a detail or a form grows to `popup::CONTENT_MAX` (680 px) and stays centered past it
+  (`popup::content`), so full screen never stretches a field across the window; a list keeps its width.
+- **A list row** (card 219) lays its parts out side by side and truncates its words; nothing is ever drawn over them,
+  no buttons that show on hover. The selected item's actions live on its card in the detail (Automations' Run now,
+  Duplicate and Delete on the summary card).
+- **Foot** (`popup::foot`): what stays under a scrolling body, a hairline over it and 10 px above and under its
+  content, which has the body's side padding and width. Its buttons sit at the right, the secondary (ghost) before
+  the primary (solid); a problem shows above them in the palette's red.
+- **Full screen:** the header's toggle makes the popups of this place fill the room (the canvas beside the sidebar,
+  less `GAP` on every side) until it is toggled back; it holds for every popup of the place, Git's included, for this
+  session (`Workspace::popup_full`): window chrome, never saved, not in the API. The size set stays and comes back.
+- **Closing:** a press anywhere outside the popup closes it, and nothing under it gets the press (`popup-backdrop`).
+  The sidebar stays out of the backdrop: its buttons switch from one popup to another, and the open one's button
+  closes it. Esc closes it, and so does Close (`Workspace::close_popup` closes whichever is open). Closing gives the
+  keyboard back to the canvas when the popup had it.
+- **A form** (`popup::section`, `popup::row`, `popup::line`): its fields grouped in sections, each one's name in
+  small dim capitals (`inbox::section`, 11.5 px) over its rows; 18 px between sections, 8 px between rows. A row is
+  its label in a column of its own (`popup::LABEL_W`, 92 px, 11.5 px `ui.title_dim`, on the middle of a 24 px small
+  field) and the field beside it, 12 px apart. Related controls share a line (`popup::line`, 8 px apart: When and its
+  time, Where with Stop after and Cooldown); a narrow column wraps them under the field, never under the label. A
+  short choice's dropdown is as wide as its words; a text field, a block's dropdown and a text area take the line.
+  What sums the form up without being a field (a sentence, the next run, the last one; where a request comes from)
+  is a card above it: `ui.card`, 8 px corners, 12 px padding. The item's actions are 24 px icon buttons at the card's
+  top right, 2 px apart, each named by its tooltip; the card's words sit beside them, never under them.
+- **A detail** (card 222; Requests, Agents): what is read there, not typed, is laid out as a form is. A summary card
+  first, its words in rows beside their labels (Requests' From and Where, Agents' Agent, State, Terminal and Where);
+  then sections of labelled rows (Agents' Work and Cost). A name, a title or a folder is cut to one line; a text the
+  person reads (a task, what an agent asks) wraps under its field. An action with words on the item shown (Go to
+  terminal) is a button of the foot, the one Enter does solid. Its content and its foot share their sides: 16 px, as
+  the Automations editor's (Requests keeps its request balloon's 18).
+- **Filter chips** (Agents): over a list, 12 px from its sides as its rows' words; a chip is its name and its count, 6
+  px at its sides, 2 px from the next; the chosen one on `ui.pressed`. They wrap when the list is narrow.
+- **A dialog** (card 280; the Connect dialog, `connect_dialog.rs`, is the reference): a short form or decision opened
+  over everything, built from `popup::dialog`, `dialog_frame`, `dialog_header`, then the form's helpers and `foot`.
+  - *Place:* the middle of the window across, a tenth of it down: gpui-kit's `Dialog` (`window.open_dialog`) holds
+    it and keeps its behavior (the dimmed backdrop, the keyboard kept in it and given back after, Esc, Enter for its
+    `on_ok`) and draws nothing of its own but its shadow. It shows at once, no slide.
+  - *Frame:* the popups' (`ui.surface`, hairline border, 12 px corners, the shadow), `popup::DIALOG_W` (520 px) wide
+    and as high as what it holds. No resize edges and no Full screen: a short form needs no more room.
+  - *Header:* the popups' (`dialog_header`): the tile, the title (a name, no ellipsis), a dim line of what the dialog
+    is for, and Close ("Close (Esc)"), which does what Esc does.
+  - *Body:* a form (sections of labelled rows), 16 px at its sides, above and below; a field's help is one dim line
+    (11.5 px, `title_dim`) under it, 4 px below, and what is wrong with what was typed takes its place in red.
+  - *A folded section:* its name in the sections' small dim capitals after a 12 px chevron (`ChevronRight`,
+    `ChevronDown` open), and while folded a dim word of what it holds; a press on them unfolds it.
+  - *Foot:* `popup::foot`, its content 16 px at its sides. Cancel (ghost) and the solid primary, the one Enter does,
+    at its right, the primary dimmed to 40% while it can't act; while the dialog waits, a 12 px spinner and dim words
+    at its left ("Connecting to …"); what went wrong above the buttons in red; a question the dialog asks above them
+    in yellow, its answers as ghost buttons in place of Cancel and the primary (Enter answers none). Cancel, Close,
+    Esc and a press outside all close it the same way.
+  - The card's dialog and the other kit dialogs can move here (docs/minors.md, Kanban and Templum to Templum).
+- **Colors:** the theme's tokens only (`ui.surface`, `hairline`, `hover`, `card`, `accent`, `title_dim`, `shadow`) and
+  the palette's yellow and red for what waits or failed: a popup adds no color.
+
+### Screens
+
+*(Kanban cards 256 and 265.)* A full-window screen — the [Home](home.md) today — is a place, a peer of the
+workspaces, not a popup over the canvas. It follows the Popups standard's type, radii and colors, at a page's scale
+(`crates/templum/src/home.rs`):
+
+- **Place and layering:** in the canvas's place, below the title bar and beside the sidebar (the whole width when the
+  sidebar is hidden). While it is shown no canvas is drawn: the workspace shown last is held loaded and running, as a
+  hidden one, none of its blocks laid out; the canvas's chrome (the toolbar, the zoom level, the Templum Agent's pill,
+  a mirror's banner) goes with it. The sidebar marks it as it marks the workspace shown, and the title bar names it.
+  Popups that belong to no workspace (Agents, Automations), Settings, what the title bar opens (the theme picker, the
+  usage popover) and the menus are drawn over it; a workspace's own (Git, Requests) show that workspace first.
+- **Switching:** a screen and a workspace swap as two workspaces do, plainly, without motion. It is left by choosing
+  a workspace (its card, its tile, Ctrl+1–9, Ctrl+Tab); Esc doesn't leave it (on the Home it empties the search), and
+  the item or command that shows it does nothing more there.
+- **Ground:** `ui.canvas`, opaque, without the dots.
+- **Column:** centered, `home::CONTENT_MAX` (1040 px) at most, 32 px at its sides (16 px when the room is under
+  640 px), 40 px above and 48 px below. It scrolls whole, with the standard scrollbar over the screen's right edge.
+- **Header:** the title, 22 px semibold in the foreground, over a dim line (13 px, `ui.title_dim`), never narrower than
+  220 px (the actions wrap under it rather than cut its words); the actions at its right, 8 px apart and 28 px high: one tinted primary (the accent at 16%, 24% under the pointer, its words in the
+  accent, medium, 12 px at its sides, 8 px corners), ghost buttons (the `hover` fill under the pointer), then 28 px icon
+  buttons named by their tooltips. No search under it: a search goes with what it finds (below).
+- **Sections:** 28 px apart; each one's name in the popups' small dim capitals (`inbox::section`, 11.5 px), 12 px over
+  its content. A section's search (the Home's Workspaces) sits on its name's line, at the column's right edge, 280 px
+  wide at most and narrower as the column is: a [search field](#search-fields).
+- **Cards:** `ui.surface` on the ground, a 1 px `ui.hairline` border, 12 px corners (the popup frame's), 16 px padding
+  (14 for a count's tile), the blocks' unfocused shadow (offset y 4, blur 12, `ui.shadow`), 16 px apart. Under the
+  pointer the border is `hover_border`; the keyboard's highlight adds the `hover` fill; none is marked current (a
+  screen shows no workspace). What is stopped or not live is drawn at 45%, as its sidebar tile.
+  A grid has as many 220 px columns as fit, at most four.
+- **Type:** a card's title 14 px semibold; its words 12 px `ui.title_dim`; small words 11.5 px; a count 20 px semibold.
+  A name is cut to one line at its end, a path at its start (its last folder shows).
+- **Colors:** tokens only (`ui.canvas`, `surface`, `card`, `hairline`, `hover`, `hover_border`, `accent`,
+  `title`, `title_dim`, `shadow`); the palette's yellow for what waits, red for what went wrong, green for the dot of an
+  agent at work (the sidebar's), the accent for what is done. A count at zero has no color: its tile is dim and takes no
+  press.
+- **Motion:** none: shown and left at once, as a workspace is.
+- **Empty:** a list with nothing to show is one dim line ("No workspace matches “api”"); an optional section with
+  nothing is left out.
+
+### Search fields
+
+*(Kanban card 279.)* A field that filters a list — the Home's workspaces, the Agents popup's agents — is
+`popup::search`, never a bare kit `Input`, whose focus ring (the full accent, 1 px, around a field that has the
+keyboard as soon as its place opens) would be the loudest thing there:
+
+- **Place:** beside or over what it filters, never across a page above unrelated sections: on a screen, on the line
+  of its section's name, at the right; in a popup's list, over the list (Agents: 12 px from the list's sides).
+- **Size:** 28 px high (the Screens header's actions), 8 px corners; on a screen 280 px wide at most, in a list its
+  width.
+- **Rest:** `ui.surface` with a 1 px `ui.hairline` border: the cards' quiet look, no shadow.
+- **Keyboard:** while it has the keyboard its border is `ui.ring` (the accent at 40%) and the caret blinks: no kit
+  focus ring, no glow. It has no hover state: the text cursor is the pointer's cue.
+- **Inside:** the search icon (14 px, `ui.title_dim`) 10 px from its left edge and 6 px before the words (13 px), both
+  on the field's middle; a placeholder that names what it finds by, not what the place already says ("Find by name
+  or folder" under Workspaces, "Find an agent"); the kit's clear button at its right only while it holds text.
+- **Keys:** Esc empties it (empty, a popup's Esc closes the popup); Up, Down and Enter move through and open what it
+  found.
+  No shortcut hint: where it lives, typing already reaches it.
+
 ## Themes
 
 ### Theme files

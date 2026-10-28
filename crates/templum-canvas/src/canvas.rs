@@ -89,6 +89,26 @@ impl Canvas {
             .collect()
     }
 
+    /// The box drawn around the blocks `ids`: their union, `margin` outside. None with fewer than
+    /// two of them on the canvas (one block is its own box).
+    pub fn selection_box(&self, ids: &[BlockId], margin: f32) -> Option<Rect> {
+        let rects: Vec<Rect> = self
+            .blocks
+            .iter()
+            .filter(|b| ids.contains(&b.id))
+            .map(|b| b.rect)
+            .collect();
+        let union = rects.iter().copied().reduce(|a, b| a.union(&b))?;
+        (rects.len() > 1).then(|| {
+            Rect::new(
+                union.x - margin,
+                union.y - margin,
+                union.w + 2.0 * margin,
+                union.h + 2.0 * margin,
+            )
+        })
+    }
+
     pub fn bounds(&self) -> Option<Rect> {
         self.blocks
             .iter()
@@ -274,6 +294,30 @@ mod tests {
         assert_eq!(c.blocks().len(), 2);
         let e = c.add(rect(0.0, 0.0));
         assert!(e != a && e != b && e != d, "ids are never reused");
+    }
+
+    #[test]
+    fn the_selection_box_wraps_two_or_more_blocks_with_a_margin() {
+        let mut c = Canvas::default();
+        let a = c.add(Rect::new(0.0, 0.0, 100.0, 50.0));
+        let b = c.add(Rect::new(200.0, 100.0, 100.0, 50.0));
+        let other = c.add(Rect::new(900.0, 900.0, 10.0, 10.0));
+        assert_eq!(
+            c.selection_box(&[a, b], 8.0),
+            Some(Rect::new(-8.0, -8.0, 316.0, 166.0))
+        );
+        assert_eq!(
+            c.selection_box(&[b, a, BlockId(99)], 0.0),
+            c.selection_box(&[a, b], 0.0)
+        );
+        assert_eq!(c.selection_box(&[a], 8.0), None, "one block is its own box");
+        assert_eq!(c.selection_box(&[a, BlockId(99)], 8.0), None);
+        assert_eq!(c.selection_box(&[], 8.0), None);
+        assert!(
+            c.selection_box(&[a, other], 0.0)
+                .unwrap()
+                .contains(Point::new(500.0, 500.0))
+        );
     }
 
     #[test]

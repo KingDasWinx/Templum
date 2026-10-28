@@ -17,6 +17,7 @@ use super::{Check, FONT, Git, LISTS_W, List, ROW_H, row_id, words};
 use crate::grid::hsla;
 use crate::menu::Target;
 use crate::workspace::Workspace;
+use crate::workspace::remote::Deed;
 
 /// The Changes tab: the lists on the left, the selected row's diff on the right.
 pub(super) fn changes(
@@ -117,6 +118,8 @@ fn header(
         .filter(|e| e.unstaged.is_some())
         .map(|e| e.path.clone())
         .collect();
+    // On a mirror, a Control share can't discard: the button is dimmed with the rule's words.
+    let discard_why = ws.why_not(Deed::Git("discard"));
     div()
         .w_full()
         .flex()
@@ -158,8 +161,13 @@ fn header(
         .when(
             !disabled && which == List::Files && !unstaged.is_empty(),
             |el| {
-                el.child(
-                    icon_button("git-discard-all", IconName::Undo2, ui, z)
+                let button = icon_button("git-discard-all", IconName::Undo2, ui, z);
+                el.child(match discard_why {
+                    Some(why) => button
+                        .opacity(0.5)
+                        .tooltip(move |window, cx| Tooltip::new(why.clone()).build(window, cx))
+                        .test_support(),
+                    None => button
                         .tooltip(|window, cx| {
                             Tooltip::new(format!("Discard all… {}", words::tip("Discard")))
                                 .build(window, cx)
@@ -168,7 +176,7 @@ fn header(
                             ws.discard(unstaged.clone(), window, cx)
                         }))
                         .test_support(),
-                )
+                })
             },
         )
         .into_any_element()
@@ -253,26 +261,35 @@ fn row(
             List::Files => {
                 if e.unstaged.is_some() {
                     let discard = path.clone();
-                    buttons.push(
-                        hover_button("discard", IconName::Undo2, words::named("Discard").into())
-                            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                                ws.discard(vec![discard.clone()], window, cx)
-                            }))
+                    buttons.push(match ws.why_not(Deed::Git("discard")) {
+                        Some(why) => hover_button("discard", IconName::Undo2, why.into())
+                            .opacity(0.5)
                             .test_support()
                             .into_any_element(),
-                    );
+                        None => {
+                            hover_button("discard", IconName::Undo2, words::named("Discard").into())
+                                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                                    ws.discard(vec![discard.clone()], window, cx)
+                                }))
+                                .test_support()
+                                .into_any_element()
+                        }
+                    });
                 }
             }
         }
+        // Open in an editor here stays on home for now.
         let open = path.clone();
-        buttons.push(
-            hover_button("open", IconName::FileCode, "Open".into())
-                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.open_from_git(&open, window, cx)
-                }))
-                .test_support()
-                .into_any_element(),
-        );
+        if !ws.on_remote() {
+            buttons.push(
+                hover_button("open", IconName::FileCode, "Open".into())
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        ws.open_from_git(&open, window, cx)
+                    }))
+                    .test_support()
+                    .into_any_element(),
+            );
+        }
     }
     let click = path.clone();
     let check = (which == List::Files).then(|| {

@@ -31,6 +31,11 @@ fn first_run(
         Some(config.path().to_path_buf()),
         Some(data.path().to_path_buf()),
     );
+    // The card and each page slide in in real time: a click mid-slide can miss its row.
+    no_motion(cx);
+    ws.update(cx, |ws, _| {
+        ws.welcome.as_mut().unwrap().since -= crate::motion::SLIDE;
+    });
     frame(handle, cx);
     (handle, ws, config, data)
 }

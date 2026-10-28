@@ -22,6 +22,12 @@ sysinfo = { version = "0.31", default-features = false, features = ["system"] }
 # into). Not rustix's `tcgetpgrp`, which panics on the 0 macOS answers once the shell has ended.
 libc = "0.2"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Already in the tree (ashpd's, with the same features): asks systemd for each terminal's scope.
+zbus = { version = "5", default-features = false, features = ["async-io"] }
+# Already in the tree (zbus's): waits for that call on the scope's own thread.
+async-io = "2"
+
 [target.'cfg(windows)'.dependencies]
 # Already in the tree (GPUI's): PATH as an installer left it in the registry.
 windows-registry = "0.6"

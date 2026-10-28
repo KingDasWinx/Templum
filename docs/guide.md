@@ -16,10 +16,12 @@ knowing. **Welcome** in the settings panel's footer shows it again.
 | Drag empty canvas, or scroll over it | Pan |
 | Hold Alt (Option on macOS), then drag or scroll anywhere | A drag pans and the wheel zooms, even over blocks: they don't react while Alt is held |
 | Drag with the middle button, anywhere | Pan |
-| Scroll over a terminal | Scroll its history |
-| Click, drag or scroll in a program that uses the mouse (htop, vim, Claude Code full screen) | The program gets it; hold Shift to select text instead |
-| Ctrl+scroll, or pinch | Zoom |
-| Drag in a terminal (double-click: word, triple-click: line) | Select text |
+| Scroll over a terminal | Scroll its history; a scrollbar shows at its right while you scroll or point there |
+| Drag a terminal's scrollbar, or click its track | Go to that place in its history |
+| Click *120 lines below* in a scrolled-back terminal | Back to its live screen (typing goes back too) |
+| Click, drag or scroll in a program that uses the mouse (htop, vim, Claude Code full screen) | The program gets it, its last columns too (no scrollbar over them); hold Shift to select text, or to scroll the history, instead |
+| Ctrl+scroll, or pinch | Zoom, from 1% to 300%: far out, blocks show their titles, then only their shapes and a terminal's status dot |
+| Drag in a terminal (double-click: word, triple-click: line) | Select text, copied to the clipboard as you let go (Settings ▸ Terminal turns that off) |
 | Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal, Kanban board, Note, Checklist or Editor, where you clicked |
 | Right-click a block, card, column, board or workspace tile | Its menu (copy, paste, move to another workspace, edit, stop, delete, close…) |
 | With a drawing tool on, drag the canvas | Draw; Shift keeps lines at 45° and makes squares and circles |
@@ -49,7 +51,7 @@ knowing. **Welcome** in the settings panel's footer shows it again.
 | Ctrl+Tab / Ctrl+Shift+Tab | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous workspace |
 | Ctrl+1 … Ctrl+9 | Cmd+1 … Cmd+9 | Workspace 1 to 9 |
 | Ctrl+Shift+N | Cmd+Shift+N | New workspace |
-| Ctrl+Shift+O | Cmd+Shift+O | The workspaces screen |
+| Ctrl+Shift+O | Cmd+Shift+O | Home |
 | Ctrl+Shift+Q, twice | Cmd+Q, twice | Quit (the first press only asks for the second) |
 
 In a terminal taken over by a program (full screen, an AI agent, or one that asked for the mouse or the kitty
@@ -63,13 +65,23 @@ one to switch, drag one to reorder, **+** to add one. The button at the left of 
 sidebar. Terminals in the workspaces you aren't looking at keep running, so an agent keeps working while you look
 elsewhere; a green dot on a tile means Claude Code or Codex is running in it.
 
-- **The workspaces screen** (the grid button atop the sidebar, the workspace's name in the title bar, or
-  Ctrl+Shift+O) shows a card per workspace with what it holds ("3 terminals · 1 Claude Code running"). Type to find
-  one, Up/Down and Enter to open it, drag cards to reorder.
+- **Home** is where Templum starts: a screen of its own, in place of a workspace's canvas (the workspaces keep
+  running unseen). Choose a workspace to go to it: its card, its tile, Ctrl+1–9 or Ctrl+Tab. It shows
+  what waits for you across every workspace (agents that need you or finished, requests, automations that went
+  wrong: press one to open it where it is), a card per workspace with what it holds ("3 terminals · 1 note", "2
+  Claude Code running", "Opened 3 h ago"), and recent folders to start a workspace from. Type to find a workspace by
+  name or folder (Esc empties the search), Up/Down and Enter to open it, drag cards to reorder. The house atop the
+  sidebar, the workspace's name in the title bar and Ctrl+Shift+O show it again. Agents, Automations and Settings
+  open over it; Requests and Git take you to a workspace.
 - **Edit…** (right-click a tile or a card) names a workspace and gives it a color, a Lucide icon or an image, and a
-  folder: new terminals start there.
+  folder: new terminals start there. Its **Share…** lets another computer's Templum mirror the workspace live and work in it.
+- **Connect to a Templum…** (the plug under **+**) pastes a share's code and opens another computer's workspace here:
+  its blocks and terminals live, where you can type, move blocks and answer its agents. See
+  [api.md](api.md#templum-to-templum).
 - **Stop** ends every program of a workspace (shells, agents, servers) and keeps its layout; opening it starts its
-  terminals again, agents resumed. A stopped workspace stays stopped across restarts and costs nothing at launch.
+  terminals again, agents resumed. Stopping the one you're in takes you to the nearest running workspace above it,
+  else below; when none runs (the only one too), to the Home. A stopped workspace stays stopped across restarts and
+  costs nothing at launch.
 - **Move to workspace ▸** (right-click a block or a selection) sends blocks to another workspace while they run: an
   agent keeps working there.
 
@@ -112,7 +124,7 @@ dark = "Catppuccin Mocha"
 
 Press **Ctrl+,** (**Cmd+,** on macOS), or the ⚙ in the title bar, to open the settings panel on the right. It has
 Appearance (light/dark mode and themes), Font (with a preview), Terminal (cursor and
-scrollback, system notifications), Shell (for new terminals: pick one of the shells found on your computer, shell
+scrollback, system notifications, copying a selection as you make it), Shell (for new terminals: pick one of the shells found on your computer, shell
 integration), Tools (the `git` program), Agents, Usage (notifications about agents' plan limits) and Shortcuts. The terminals stay usable next to it, so you see each change
 as you make it.
 
@@ -142,9 +154,10 @@ and hides the pill. The conversation is kept across restarts; **New chat** start
 The toolbar's board button (or Ctrl+Shift+K) puts a kanban block on the canvas, Trello-style. Create a board
 in it (it starts with To do, Doing and Done), or open one. Drag cards between columns and columns by their titles,
 click a card to edit its title, description and colored labels, and right-click a column or the block to rename or
-delete it. The button at the left of the block's header opens the Boards dialog: find a board, open it in the block,
-or delete it with its trash. Boards aren't tied to a canvas: any block, in any workspace, can show any board, and
-blocks showing the same board stay in sync. Boards are kept in `boards.json`, next to
+delete it. The description grows with what you write; drag the grip at its bottom-right corner to give it the height
+you like, which every card's dialog keeps. The button at the left of the block's header opens the Boards dialog: find
+a board, open it in the block, or delete it with its trash. Boards aren't tied to a canvas: any block, in any
+workspace, can show any board, and blocks showing the same board stay in sync. Boards are kept in `boards.json`, next to
 the `workspaces` folder.
 
 ## Notes
@@ -266,15 +279,47 @@ The Claude Code and Codex you open from **AI agent ▸** get Templum's MCP serve
 settings files stay as they are. Wire blocks together with the Wire tool (the cable in the toolbar) or a block's
 **Connect to ▸**: an agent reads and types into the terminals wired to it. They can ask which block they are, list
 the workspace's blocks, read and type into their own terminal, and send you a notification. An agent can ask you a
-question, or to be wired to another block, in a balloon on its block; hand a task to an agent wired to it and get its
-answer back (a dot travels along the wire meanwhile); and open another agent beside itself, in a new Git worktree if
+question, or to be wired to another block, in the requests inbox (the button above Git in the sidebar). The Agents
+button above it (Ctrl+Shift+L) lists every agent of every workspace with its state, marks the ones that finished
+while you weren't looking, and takes you to any of them. An agent can hand a task to an agent wired to it and get its
+answer back (a dot travels along the wire meanwhile), and open another agent beside itself, in a new Git worktree if
 it likes. An agent wired to a kanban reads its cards and creates, moves, comments on and claims them; it reads a
-wired note and adds to it, and opens a file at a line in an editor. The dot before a
-Claude Code terminal's title shows it working (accent) or waiting for you (yellow,
-"Waiting for you: …"). In any Templum terminal, `templum blocks`, `templum whoami`, `templum read <block> -n 50`,
-`templum notify <text>`, `templum ask`, `templum delegate`, `templum spawn`, `templum kanban`, `templum note`
-and `templum open` do the same from the command line.
+wired note and adds to it, and opens a file at a line in an editor. The dot before a Claude Code terminal's title
+shows it working (accent) or waiting for you (yellow, "Waiting for you: …"). In any Templum terminal,
+`templum blocks`, `templum whoami`, `templum read <block> -n 50`, `templum notify <text>`, `templum ask`,
+`templum delegate`, `templum spawn`, `templum kanban`, `templum note` and `templum open` do the same from the
+command line.
 Every block has a short id (`b7k2m`) that lasts through restarts. Turn it off with `[connections] enabled = false`. See [specs/connections.md](specs/connections.md).
+
+## The API
+
+Settings ▸ **API** opens a door to your Templum for a phone, a dashboard or another computer: off until you turn it on,
+and then it answers only to the **tokens** you make there (read, control or full; an expiry; optionally only some
+workspaces). It serves every tool the Templum Agent has, the things a dashboard lists and a live stream of what changes.
+Templum runs no server of its own: point a tunnel (cloudflared), a VPN or a proxy at its port, 7411. Off this computer
+it needs HTTPS (Templum's certificate, with a fingerprint to pin, or yours). A title-bar pill shows while it is on, and
+Settings lists who is connected. A terminal can be watched live (its screen, as it changes) and typed into through the API, and the canvas's camera follows too. See [api.md](api.md).
+
+## Automations
+
+The clock button in the sidebar's foot, above Git (Ctrl+Shift+J), opens **Automations**: rules that run at a time and
+do one thing. **New** writes one: when it runs (once at a date and time, every N minutes or hours, every day at a time,
+on chosen weekdays or days of the month, or a cron expression) and what it does (type a prompt into an agent, run a
+command in a terminal or a new one, start an agent, or notify you). Each row tells when it runs next and how its last
+run went. A prompt waits while its agent works, asks you something or while you type in it, and is never typed into a
+shell; a time that passes while Templum is closed is marked Missed, not run. What agents asked for with `schedule` is
+listed under **Asked by agents**, where you can cancel it.
+
+A rule can also wait for an **event** instead of a time: **When an agent finishes its turn**, **When an agent needs
+you**, or **When a command ends** (in a terminal you choose, all exits or failures only). **Who** is one agent, several
+(**Any of them**, or for a turn's end **All of them**: the last to finish fires it once the others are idle) or **any
+agent of a kind**, like every Claude Code. The rule's **Cooldown** (5 minutes unless you change it, 0 to 1440) is
+counted for each agent that fires it, so an agent that finishes again soon doesn't run it twice. A prompt can go to
+**The agent that fired it**: two Claudes that finish together each get their own, and one that is busy or has your
+half-written message waits without holding up the other. New terminals and agents open beside the agent that fired
+the rule, and a click on its notification shows that agent. The editor warns when a rule can loop (a prompt that ends
+a turn of the agent it hears, an agent it starts that it hears again, a command that ends where it runs). Nothing runs
+for what happened before the rule was turned on or Templum started.
 
 ## Shell integration
 
@@ -323,6 +368,7 @@ blink = false
 [terminal]
 scrollback = 10000
 notifications = true   # system notifications while Templum is in the background
+copy_on_select = true   # text selected with the mouse goes to the clipboard as you let go
 
 [canvas]
 focus_follows_pointer = true   # the block under the pointer takes the keyboard, no click needed
@@ -358,6 +404,26 @@ Nushell, Command Prompt). The full list is in [specs/config.md](specs/config.md)
 Templum looks for a new release at start and once a day, downloads the file made for your system and for the way
 you installed it (an AppImage replaces the AppImage, the installer runs again, and so on), checks it against the
 SHA-256 GitHub lists, and asks before restarting into it: **Restart to update** in the title bar. Templum installed
-with a `.deb` or the pacman package gets the install command typed in a terminal, for your password. Run from the
-disk image on macOS, it is only told a version is out; a build from source checks only on demand. **Settings ▸
-Updates** checks on demand and turns the automatic check off ([specs/updates.md](specs/updates.md)).
+with a `.deb` or the release's `PKGBUILD` gets the install command typed in a terminal, for your password. Installed
+from the AUR ([`templum-bin`](https://aur.archlinux.org/packages/templum-bin)), it is only told a version is out:
+your AUR helper (`yay`, `paru`) updates it. Run from the disk image on macOS, it is only told too; a build from source
+checks only on demand. **Settings ▸ Updates** checks on demand and turns the automatic check off
+([specs/updates.md](specs/updates.md)).
+
+## Sleep and NVIDIA
+
+On Linux, an NVIDIA graphics driver can wake from a sleep without finishing the frame Templum had asked it to draw.
+Templum's window then stops answering: it keeps the same picture, keys and Close do nothing, and agents wait. After
+30 seconds Templum restarts by itself: the canvas comes back from its last save (at most 5 seconds before it
+stopped), its agents resume as when you reopen Templum, and a notice says what happened. Commands that were running
+in its terminals end, as on any restart. If the new Templum stops answering too, it quits instead of restarting
+again: reopen it once the computer is awake, or restart the computer if nothing that uses the graphics card draws.
+
+The driver should keep the graphics card's memory through a sleep. Check with
+`grep -E 'PreserveVideoMemoryAllocations|UseKernelSuspendNotifiers' /proc/driver/nvidia/params`:
+
+- With NVIDIA's open kernel modules (`nvidia-open`), `UseKernelSuspendNotifiers: 1` keeps it, with nothing else to
+  do. Arch's `nvidia-utils` sets it; the `nvidia-suspend`, `nvidia-hibernate` and `nvidia-resume` services then do
+  nothing, enabled or not.
+- With the proprietary modules, or `UseKernelSuspendNotifiers: 0`, `PreserveVideoMemoryAllocations: 1` needs those
+  services: `sudo systemctl enable nvidia-suspend.service nvidia-hibernate.service nvidia-resume.service`.

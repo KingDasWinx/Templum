@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant, SystemTime};
 
-use chrono::{Local, TimeZone as _};
+use chrono::Local;
 use gpui_kit::Context;
 use templum_mcp::{Reply, tools};
 
@@ -13,7 +13,9 @@ use templum_agent::NoticeLevel;
 
 use super::Workspace;
 use super::bus::{Outcome, target};
+use super::delegate::NoticeKind;
 use super::waits::{EVENT_LOOK, PRINTED_LINES};
+use crate::automations::clock;
 
 /// How often the schedules are looked at, while there are any.
 pub(crate) const SCHEDULE_LOOK: Duration = Duration::from_secs(15);
@@ -42,11 +44,7 @@ fn next_at(hour: u8, minute: u8) -> SystemTime {
         .flat_map(|days| {
             let day = now.date_naive() + chrono::Days::new(days);
             let at = day.and_hms_opt(hour.into(), minute.into(), 0)?;
-            Local.from_local_datetime(&at).earliest().or_else(|| {
-                Local
-                    .from_local_datetime(&(at + chrono::Duration::hours(1)))
-                    .earliest()
-            })
+            clock::resolve(&Local, at)
         })
         .find(|at| *at > now)
         .map_or_else(SystemTime::now, SystemTime::from)
@@ -261,14 +259,19 @@ impl Workspace {
             let (by, to) = (self.schedules[at].by.clone(), self.schedules[at].to.clone());
             if self.schedules[at].every.is_some() && self.schedules[at].until <= now {
                 self.schedules.remove(at);
-                self.queue_notice(by, format!("[schedule s{id} ended: 7 days]"), cx);
+                self.queue_notice(
+                    by,
+                    format!("[schedule s{id} ended: 7 days]"),
+                    NoticeKind::Other,
+                    cx,
+                );
                 continue;
             }
             let ends = match self.deliver(id, cx) {
                 Ok(()) => false,
                 Err((why, closed)) => {
                     let notice = format!("[schedule s{id} to {to} didn't go: {why}]");
-                    self.queue_notice(by, notice, cx);
+                    self.queue_notice(by, notice, NoticeKind::Other, cx);
                     closed
                 }
             };
@@ -300,7 +303,7 @@ impl Workspace {
         let to = target(space, me, &uid).map_err(|r| (r.text, !self.uid_taken(&uid)))?;
         if to == me {
             let notice = format!("[scheduled s{id}] Its text is in the pasted text.\n{text}");
-            self.queue_notice(by, notice, cx);
+            self.queue_notice(by, notice, NoticeKind::Other, cx);
             return Ok(());
         }
         let pane = space
@@ -358,7 +361,10 @@ impl Workspace {
         let mut kept = Vec::new();
         for w in std::mem::take(&mut self.watches) {
             let pane = self.pane(&w.of);
-            let told = if w.by != templum_agent::ASKER && self.pane(&w.by).is_none() {
+            let told = if w.by != templum_agent::ASKER
+                && w.by != templum_api::ASKER
+                && self.pane(&w.by).is_none()
+            {
                 None
             } else if let Some(pane) = pane {
                 match pane.term.hit(w.watch) {
@@ -395,7 +401,7 @@ impl Workspace {
                 pane.term.unwatch(w.watch);
             }
             if let Some((told, level)) = told {
-                self.notice_to(w.by, told, &w.of, level, cx);
+                self.notice_to(w.by, told, &w.of, level, None, cx);
             }
         }
         self.watches = kept;

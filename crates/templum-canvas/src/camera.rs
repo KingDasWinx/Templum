@@ -2,11 +2,14 @@
 
 use crate::{Point, Rect, Size};
 
-/// Fixed zoom steps keep the glyph cache bounded: text is rasterized once per step.
-pub const ZOOM_STEPS: [f32; 14] = [
-    0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0,
+/// Fixed zoom steps keep the glyph cache bounded: text is rasterized once per step. Under 25%
+/// each is 1.5 or 1.33 times the one below (every second one doubles), down to 1%, where every
+/// block of default text is a card or a shape (`lod.rs`): no text but the fixed-size labels.
+pub const ZOOM_STEPS: [f32; 23] = [
+    0.01, 0.015, 0.02, 0.03, 0.04, 0.06, 0.08, 0.12, 0.16, 0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1.0,
+    1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0,
 ];
-const ZOOM_1: usize = 6;
+const ZOOM_1: usize = 15;
 /// Screen margin kept around the blocks by [`Camera::fit`].
 pub const FIT_MARGIN: f32 = 32.0;
 
@@ -190,7 +193,7 @@ mod tests {
         assert_eq!(cam.zoom(), 1.5);
         assert!(close(cam.to_world(anchor), before));
         cam.zoom_step(-100, anchor);
-        assert_eq!(cam.zoom(), ZOOM_STEPS[0]);
+        assert_eq!(cam.zoom(), 0.01, "1% is the smallest");
         cam.zoom_step(100, anchor);
         assert_eq!(cam.zoom(), ZOOM_STEPS[ZOOM_STEPS.len() - 1]);
         cam.zoom_reset(anchor);
@@ -205,7 +208,13 @@ mod tests {
         assert_eq!(Camera::at(origin, 1.04).zoom(), 1.0);
         assert_eq!(Camera::at(origin, 1.2).zoom(), 1.25);
         assert_eq!(Camera::at(origin, 10.0).zoom(), 3.0);
-        assert_eq!(Camera::at(origin, 0.0).zoom(), 0.25);
+        assert_eq!(Camera::at(origin, 0.0).zoom(), 0.01);
+        assert_eq!(
+            Camera::at(origin, 0.06).zoom(),
+            0.06,
+            "a zoom under 25% is kept"
+        );
+        assert_eq!(Camera::at(origin, 0.013).zoom(), 0.015);
         assert_eq!(Camera::at(origin, f32::NAN).zoom(), 1.0);
         assert_eq!(Camera::at(origin, f32::INFINITY).zoom(), 1.0);
         assert_eq!(Camera::at(origin, 1.5).origin, origin);
@@ -215,7 +224,7 @@ mod tests {
     fn unsnapped_keeps_its_zoom_and_a_step_from_there_lands_on_a_step() {
         let mut cam = Camera::unsnapped(Point::new(7.0, 8.0), 1.18);
         assert_eq!(cam.zoom(), 1.18);
-        assert_eq!(cam.zoom_index(), 8, "1.25 is the nearest step");
+        assert_eq!(ZOOM_STEPS[cam.zoom_index()], 1.25, "the nearest step");
         cam.zoom_step(1, Point::new(0.0, 0.0));
         assert_eq!(cam.zoom(), 1.5);
     }
@@ -272,6 +281,29 @@ mod tests {
         assert!(to.zoom() < 0.75);
         let shown = to.rect_to_screen(big);
         assert!(shown.x >= 0.0 && shown.x + shown.w <= viewport.w);
+    }
+
+    #[test]
+    fn steps_go_down_to_1_percent_a_third_or_a_half_apart() {
+        assert_eq!(ZOOM_STEPS[0], 0.01);
+        assert_eq!(ZOOM_STEPS[ZOOM_1], 1.0);
+        assert!(ZOOM_STEPS.is_sorted());
+        // Under 25% as far apart as 25%, 33% and 50% are (16% to 25% is 1.56 times).
+        for pair in ZOOM_STEPS.windows(2).filter(|p| p[1] <= 0.25) {
+            let k = pair[1] / pair[0];
+            assert!((1.33..=1.57).contains(&k), "{pair:?}: {k}");
+        }
+    }
+
+    #[test]
+    fn fit_frames_a_wide_canvas_under_25_percent() {
+        let mut cam = Camera::default();
+        // 1216 px across: 0.06 shows 20,000 units in 1,200.
+        cam.fit(
+            Rect::new(0.0, 0.0, 20_000.0, 500.0),
+            Size::new(1280.0, 800.0),
+        );
+        assert_eq!(cam.zoom(), 0.06);
     }
 
     #[test]

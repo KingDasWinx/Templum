@@ -1,7 +1,6 @@
 //! Agents' session usage and plan limits, as Templum shows them: the title bar's meter, its
 //! popover, a terminal's chip (docs/specs/usage.md).
 
-use chrono::{DateTime, TimeZone};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{Icon, TITLE_BAR_HEIGHT};
 use gpui_kit::prelude::*;
@@ -38,23 +37,35 @@ pub(crate) fn meter_agents(ws: &Workspace, now: u64) -> Vec<(&str, Vec<&Window>)
         .collect()
 }
 
-/// The title bar's meter: one agent's limits at a time ("Claude 5h 27% 7d 18%"), the next every
-/// few seconds, with a dot per agent. None when none is known.
+/// The longest name the meter shows, in characters.
+const NAME_MAX: usize = 12;
+
+/// An agent's name in the title bar's meter, which is narrow: "Claude Code" is "Claude" and
+/// "Claude Code 2" is "Claude 2"; any other name is its own, cut when long.
+fn meter_name(title: &str) -> String {
+    let title = match title.strip_prefix("Claude Code") {
+        Some(rest) => format!("Claude{rest}"),
+        None => title.to_string(),
+    };
+    if title.chars().count() <= NAME_MAX {
+        return title;
+    }
+    title.chars().take(NAME_MAX - 1).chain(['…']).collect()
+}
+
+/// The title bar's meter: one agent's limits at a time, each with when it resets ("Claude 5h 27%
+/// 4h 20m 7d 18% 3d 4h"), the next every few seconds, with a dot per agent. None when none is
+/// known.
 pub(crate) fn meter(ws: &Workspace, cx: &mut Context<Workspace>) -> Option<AnyElement> {
-    let agents = meter_agents(ws, notes::now());
+    let now = notes::now();
+    let agents = meter_agents(ws, now);
     if agents.is_empty() {
         return None;
     }
     let turn = ws.meter_turn % agents.len();
     let (agent, windows) = &agents[turn];
     let ui = ws.ui;
-    let title = ws.agent_title(agent);
-    // "Claude Code" is "Claude" here: the title bar is narrow.
-    let name = title
-        .split_whitespace()
-        .next()
-        .unwrap_or(&title)
-        .to_string();
+    let name = meter_name(&ws.agent_title(agent));
     let content = div()
         .id(SharedString::from(format!("usage-meter-{agent}")))
         .flex()
@@ -77,6 +88,11 @@ pub(crate) fn meter(ws: &Workspace, cx: &mut Context<Workspace>) -> Option<AnyEl
                     level(ws, w.used_percent),
                     ui.hairline,
                 ))
+                .child(
+                    div()
+                        .text_color(ui.title_dim)
+                        .child(resets(w.resets_at, now, true)),
+                )
         }))
         .test_support()
         // The next agent fades in.
@@ -174,7 +190,7 @@ pub(crate) fn popover(ws: &Workspace, cx: &mut Context<Workspace>) -> AnyElement
                     .child(
                         div()
                             .text_color(ui.title_dim)
-                            .child(format!("resets {}", resets_local(w.resets_at, now))),
+                            .child(format!("resets {}", resets(w.resets_at, now, false))),
                     ),
             );
         }
@@ -278,12 +294,24 @@ pub(crate) fn popover(ws: &Workspace, cx: &mut Context<Workspace>) -> AnyElement
         .into_any_element()
 }
 
+/// The chip's context part: "42%", or "84k ctx" when the window's size is unknown.
+pub(crate) fn context_text(s: &Session) -> Option<String> {
+    s.context_percent
+        .map(|p| format!("{p:.0}%"))
+        .or_else(|| s.context_tokens.map(|t| format!("{} ctx", tokens(t))))
+}
+
+/// A chip's tooltip with the effort of the agent after it ("Effort: high"), when its model has one.
+pub(crate) fn with_effort(tip: String, effort: Option<&str>) -> String {
+    match effort {
+        Some(effort) => format!("{tip}\nEffort: {effort}"),
+        None => tip,
+    }
+}
+
 /// A terminal's chip: its text ("42% · $3.10") and its tooltip. None when nothing is known.
 pub(crate) fn chip(s: &Session) -> Option<(String, String)> {
-    let context = s
-        .context_percent
-        .map(|p| format!("{p:.0}%"))
-        .or_else(|| s.context_tokens.map(|t| format!("{} ctx", tokens(t))));
+    let context = context_text(s);
     let spent = s
         .cost_usd
         .map(|c| format!("${c:.2}"))
@@ -334,7 +362,7 @@ fn level(ws: &Workspace, used: f32) -> Hsla {
 }
 
 /// A thin bar `width` wide, filled to `percent`.
-fn bar(percent: f32, width: f32, color: Hsla, track: Hsla) -> Div {
+pub(crate) fn bar(percent: f32, width: f32, color: Hsla, track: Hsla) -> Div {
     div()
         .flex_shrink_0()
         .w(px(width))
@@ -385,41 +413,32 @@ pub(crate) fn window_label(minutes: u32) -> String {
     }
 }
 
-/// When a limit resets (`at`, seconds since the epoch), at `now`, in `tz`: "in 25 min" within
-/// the hour, "at 15:40" today, "Mon 09:00" within the week, "Nov 13" later.
-pub(crate) fn resets<Tz: TimeZone>(at: u64, now: u64, tz: &Tz) -> String
-where
-    Tz::Offset: std::fmt::Display,
-{
-    let left = at.saturating_sub(now);
-    if left < 3600 {
-        return format!("in {} min", left.div_ceil(60).max(1));
-    }
-    let local = |secs: u64| {
-        DateTime::from_timestamp(i64::try_from(secs).unwrap_or(i64::MAX), 0)
-            .map(|t| t.with_timezone(tz))
+/// How long until a limit resets (`at`, seconds since the epoch), at `now`, in at most two
+/// units, the largest first: "in 3 days 4 hours", "in 4 hours 20 min", "in 25 min"; `short`:
+/// "3d 4h", "4h 20m", "25m".
+pub(crate) fn resets(at: u64, now: u64, short: bool) -> String {
+    let left = at.saturating_sub(now).div_ceil(60).max(1);
+    let (big, small) = match left {
+        1440.. => ((left / 1440, "day"), (left % 1440 / 60, "hour")),
+        60.. => ((left / 60, "hour"), (left % 60, "min")),
+        _ => ((left, "min"), (0, "min")),
     };
-    let (Some(at), Some(now)) = (local(at), local(now)) else {
-        return String::new();
+    let part = |(n, name): (u64, &str)| match (short, n) {
+        (true, _) => format!("{n}{}", &name[..1]),
+        (false, 1) => format!("{n} {name}"),
+        (false, _) if name == "min" => format!("{n} min"),
+        _ => format!("{n} {name}s"),
     };
-    if at.date_naive() == now.date_naive() {
-        at.format("at %H:%M").to_string()
-    } else if left < 6 * 24 * 3600 {
-        at.format("%a %H:%M").to_string()
-    } else {
-        at.format("%b %-d").to_string()
+    let mut text = part(big);
+    if small.0 > 0 {
+        text = format!("{text} {}", part(small));
     }
-}
-
-/// [`resets`] in the system's time zone.
-pub(crate) fn resets_local(at: u64, now: u64) -> String {
-    resets(at, now, &chrono::Local)
+    if short { text } else { format!("in {text}") }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::FixedOffset;
 
     #[test]
     fn windows_are_named_by_their_length() {
@@ -428,6 +447,15 @@ mod tests {
         assert_eq!(window_name(43200), "30-day");
         assert_eq!(window_label(300), "5h");
         assert_eq!(window_label(10080), "7d");
+    }
+
+    #[test]
+    fn the_meter_tells_accounts_apart_by_name() {
+        assert_eq!(meter_name("Claude Code"), "Claude");
+        assert_eq!(meter_name("Claude Code 2"), "Claude 2");
+        assert_eq!(meter_name("Work"), "Work");
+        assert_eq!(meter_name("Codex"), "Codex");
+        assert_eq!(meter_name("My personal account"), "My personal…");
     }
 
     #[test]
@@ -458,17 +486,28 @@ mod tests {
     }
 
     #[test]
-    fn a_reset_reads_by_how_far_it_is() {
-        // 2026-10-14 12:00 at UTC-3 (São Paulo): a Wednesday.
-        let tz = FixedOffset::west_opt(3 * 3600).unwrap();
+    fn a_reset_counts_down_in_two_units() {
         let now = 1_791_990_000;
-        assert_eq!(resets(now + 25 * 60, now, &tz), "in 25 min");
-        assert_eq!(resets(now + 10, now, &tz), "in 1 min");
-        assert_eq!(resets(now + 3 * 3600 + 40 * 60, now, &tz), "at 15:40");
-        assert_eq!(
-            resets(now + 5 * 24 * 3600 - 3 * 3600, now, &tz),
-            "Mon 09:00"
-        );
-        assert_eq!(resets(now + 30 * 24 * 3600, now, &tz), "Nov 13");
+        let long = |left: u64| resets(now + left, now, false);
+        let short = |left: u64| resets(now + left, now, true);
+        assert_eq!(long(25 * 60), "in 25 min");
+        assert_eq!(long(10), "in 1 min");
+        assert_eq!(long(3600), "in 1 hour");
+        assert_eq!(long(4 * 3600), "in 4 hours");
+        assert_eq!(long(4 * 3600 + 20 * 60), "in 4 hours 20 min");
+        assert_eq!(long(86_400 - 30), "in 1 day");
+        assert_eq!(long(2 * 86_400), "in 2 days");
+        assert_eq!(long(3 * 86_400 + 4 * 3600 + 59 * 60), "in 3 days 4 hours");
+        assert_eq!(short(25 * 60), "25m");
+        assert_eq!(short(4 * 3600), "4h");
+        assert_eq!(short(4 * 3600 + 20 * 60), "4h 20m");
+        assert_eq!(short(3 * 86_400 + 4 * 3600), "3d 4h");
+        assert_eq!(short(86_400), "1d");
+    }
+
+    #[test]
+    fn the_effort_ends_the_tooltip() {
+        assert_eq!(with_effort("a".into(), Some("high")), "a\nEffort: high");
+        assert_eq!(with_effort("a".into(), None), "a");
     }
 }

@@ -520,15 +520,22 @@ pub(crate) fn name_problem(
 }
 
 /// Where a program is on this computer, as agents are looked for. Tests never read the person's
-/// PATH: there it finds nothing.
+/// PATH: there it finds nothing, and counts the looks in `LOOKS`.
 pub(crate) fn locate(program: &str) -> Option<PathBuf> {
     #[cfg(test)]
     return {
         let _ = program;
+        LOOKS.set(LOOKS.get() + 1);
         None
     };
     #[cfg(not(test))]
     templum_terminal::locate(program)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times this test's thread looked for a program: each look scans many folders.
+    pub(crate) static LOOKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Makes the command of the account `entry` among `agents` in the commands folder, when its id

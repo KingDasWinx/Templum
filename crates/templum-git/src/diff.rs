@@ -1,13 +1,15 @@
 //! `git diff` output, parsed: files, their hunks, their lines. Pure: tested on recorded output.
 //! See docs/specs/git.md, section 2.
 
+use serde::{Deserialize, Serialize};
+
 use crate::parse::Change;
 
 /// Past this many changed lines a file is folded by default (with Show diff).
 pub const LARGE: u32 = 2000;
 
 /// One file of a diff, as `git diff` prints it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileDiff {
     /// The path before (a rename's old one); None for a new file.
     pub old_path: Option<String>,
@@ -27,6 +29,9 @@ pub struct FileDiff {
     /// An untracked file past what one read takes (`Repo::working_diff`): listed, not read,
     /// until asked for.
     pub unread: bool,
+    /// Its hunks were dropped to fit an answer of the API's `git` tool (`ops::fit`).
+    #[serde(default)]
+    pub cut: bool,
 }
 
 impl FileDiff {
@@ -42,6 +47,7 @@ impl FileDiff {
             bytes: None,
             lines: None,
             unread: false,
+            cut: false,
         }
     }
 
@@ -115,7 +121,7 @@ impl FileDiff {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hunk {
     pub old_start: u32,
     pub old_len: u32,
@@ -172,7 +178,8 @@ impl Hunk {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Kind {
     Context,
     Added,
@@ -190,7 +197,7 @@ impl Kind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Line {
     pub kind: Kind,
     pub old_no: Option<u32>,

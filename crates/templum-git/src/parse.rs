@@ -2,8 +2,11 @@
 //! `status --porcelain=v2 -z`, `log --format` with `-z`, `for-each-ref --format`,
 //! `stash list --format`, `diff-tree --name-status -z`.
 
+use serde::{Deserialize, Serialize};
+
 /// What happened to a file, as the status badges name it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Change {
     Modified,
     Added,
@@ -55,7 +58,7 @@ impl Change {
 }
 
 /// One path in the status: what is staged for it and what isn't.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     /// Relative to the root, with '/' on every OS, as git prints it.
     pub path: String,
@@ -84,7 +87,7 @@ impl Entry {
 }
 
 /// `git status --porcelain=v2 --branch -z -uall`, parsed.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Status {
     /// None: detached.
     pub branch: Option<String>,
@@ -212,7 +215,7 @@ pub fn parse_status(out: &[u8]) -> Status {
 pub const LOG_FORMAT: &str = "%H%x1f%h%x1f%an%x1f%ae%x1f%at%x1f%ad%x1f%P%x1f%D%x1f%s%x1f%b";
 pub const LOG_DATE: &str = "format:%Y-%m-%d %H:%M";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Commit {
     pub hash: String,
     pub short: String,
@@ -312,9 +315,9 @@ pub fn parse_file_log(out: &[u8], path: &str) -> Vec<(Commit, CommitFile)> {
 
 /// `git for-each-ref --format=BRANCH_FORMAT refs/heads refs/remotes`: one line per ref, fields
 /// split by NUL.
-pub const BRANCH_FORMAT: &str = "%(refname)%00%(refname:short)%00%(objectname:short)%00%(upstream:short)%00%(upstream:track,nobracket)%00%(subject)%00%(HEAD)%00%(committerdate:unix)";
+pub const BRANCH_FORMAT: &str = "%(refname)%00%(refname:lstrip=2)%00%(objectname:short)%00%(upstream:lstrip=2)%00%(upstream:track,nobracket)%00%(subject)%00%(HEAD)%00%(committerdate:unix)";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Branch {
     /// "main", or "origin/main" for a remote one.
     pub name: String,
@@ -368,7 +371,7 @@ pub fn parse_branches(out: &[u8]) -> Vec<Branch> {
 /// `git stash list -z --format=STASH_FORMAT`.
 pub const STASH_FORMAT: &str = "%gd%x1f%H%x1f%at%x1f%gs";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Stash {
     /// N in `stash@{N}`: it shifts when a stash is pushed or dropped.
     pub index: usize,
@@ -402,7 +405,7 @@ pub fn parse_stashes(out: &[u8]) -> Vec<Stash> {
 }
 
 /// One file of a commit, from `git diff-tree --root --no-commit-id -r -z -M --name-status`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitFile {
     pub change: Change,
     pub path: String,
@@ -441,7 +444,8 @@ pub fn parse_name_status(out: &[u8]) -> Vec<CommitFile> {
 }
 
 /// A merge, rebase, cherry-pick or revert in progress.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Operation {
     Merge,
     Rebase,
