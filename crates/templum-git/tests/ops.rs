@@ -1554,7 +1554,9 @@ fn a_forced_restore_says_keep_for_its_copy_failing_and_io_for_its_writes_failing
     commit(&repo, dir.path(), "a.txt", "one\n", "One");
     commit(&repo, dir.path(), "sub/x.txt", "one\n", "Two");
     let (_keep, trash) = trash();
-    // The copy fails (a folder can't be copied): not StorageFull, still "keep".
+    // The copy fails (a folder can't be copied): not StorageFull, still "keep". The folder comes
+    // after the seal: a folder's size, all its stamp holds, doesn't change with what it holds on
+    // every file system (ext4, Windows).
     write(dir.path(), "a.txt", "mine\n");
     let discard = trash
         .put(
@@ -1564,10 +1566,9 @@ fn a_forced_restore_says_keep_for_its_copy_failing_and_io_for_its_writes_failing
             std::time::SystemTime::now(),
         )
         .unwrap();
+    trash.seal(&discard).unwrap();
     std::fs::remove_file(dir.path().join("a.txt")).unwrap();
     std::fs::create_dir(dir.path().join("a.txt")).unwrap();
-    trash.seal(&discard).unwrap();
-    std::fs::write(dir.path().join("a.txt").join("f"), "x").unwrap();
     let result = restore_through(&repo, &trash, &discard.id);
     assert!(matches!(result, Err(Failure::Keep(_))), "{result:?}");
     // The copy is made, a write after it fails (the folder is a file): not "keep".
