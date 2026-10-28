@@ -184,13 +184,6 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## Tests
 
-- [ ] **`a_restored_shell_that_ends_at_once_leaves_the_saved_canvas_alone` once never saw its shell end on macOS CI.**
-  (`crates/templum/src/workspace/tests/persistence.rs:351`, run 40728962653: "waited for the shell to end", 10 s; it
-  passed on the ~16 macOS runs before.) Its `sh -c "exit 1"` ends at once, and `Terminal::exited` is set only by
-  alacritty's `Event::Exit`, which its event loop sends after the SIGCHLD; it breaks out without it on a PTY read error
-  other than EIO on Linux. Whether that, a lost SIGCHLD or a slow runner did it is unknown. Fix: make the wait's
-  message say whether `ChildExit` came and whether the PTY's foreground is 0 (macOS: the shell is gone), and if the
-  loop can end without `Exit`, set `exited` when its thread ends.
 - [ ] **A few tests still look at a glide mid-flight on the real clock.** `navigation.rs` (the tests around
   `restart_glide` at lines 231 and 312, and the two-notch zoom at line 770) and `editor.rs:437` set the glide's start
   and draw a frame in the same update, so the frame lands mid-glide only if it comes within about 110 ms of

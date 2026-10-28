@@ -46,7 +46,7 @@ pub(crate) struct Shared {
     title: Mutex<Option<String>>,
     /// When the terminal was made, and when its shell ended: how long the shell lived.
     born: Instant,
-    exited: OnceLock<Instant>,
+    pub(crate) exited: OnceLock<Instant>,
     /// How its shell ended, as the OS reported it.
     ended: OnceLock<std::process::ExitStatus>,
     /// Reported to CSI 14 t (text area size) queries.
@@ -150,6 +150,14 @@ impl Shared {
         (self.notify)();
     }
 
+    /// The shell ended, or the event loop did (it then reads and writes nothing more): the first
+    /// time is when.
+    pub(crate) fn end(&self) {
+        if self.exited.set(Instant::now()).is_ok() {
+            self.wake_now();
+        }
+    }
+
     /// The terminal asks for attention: a bell (no message) or a notification.
     pub(crate) fn attention(&self, message: Option<String>) {
         let mut status = self.status.lock().unwrap();
@@ -203,10 +211,7 @@ impl EventListener for Listener {
             }
             // Exit comes after the child's last output has been read (ChildExit comes before).
             // Uncoalesced: a block off screen is never re-armed, and must still close.
-            Event::Exit => {
-                let _ = s.exited.set(Instant::now());
-                s.wake_now();
-            }
+            Event::Exit => s.end(),
             Event::Wakeup => s.wake(),
             Event::Bell => s.attention(None),
             // Later: OSC 52 clipboard (needs a security review), cursor blinking.
