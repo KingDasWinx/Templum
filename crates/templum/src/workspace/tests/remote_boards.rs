@@ -231,7 +231,7 @@ fn no_local_tool_sees_a_remote_board(cx: &mut TestAppContext) {
     // Ctrl+Z with the remote kanban focused undoes none of this computer's boards.
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, _| ws.space.focused = Some(k1));
-        window.press("ctrl-z", cx);
+        window.press(UNDO, cx);
     })
     .unwrap();
     ws.read_with(cx, |ws, _| {
@@ -688,7 +688,7 @@ fn on_a_mirror_ctrl_z_after_a_card_act_stops_at_the_mark(cx: &mut TestAppContext
     });
     drop_on(handle, cx, el("card", n, 40), el("card", n, 42));
     ws.update(cx, |ws, _| ws.space.focused = Some(n));
-    cx.update_window(handle, |_, window, cx| window.press("ctrl-z", cx))
+    cx.update_window(handle, |_, window, cx| window.press(UNDO, cx))
         .unwrap();
     ws.read_with(cx, |ws, _| {
         assert_eq!(
@@ -702,7 +702,7 @@ fn on_a_mirror_ctrl_z_after_a_card_act_stops_at_the_mark(cx: &mut TestAppContext
             "{said}"
         );
     });
-    cx.update_window(handle, |_, window, cx| window.press("ctrl-z", cx))
+    cx.update_window(handle, |_, window, cx| window.press(UNDO, cx))
         .unwrap();
     ws.read_with(cx, |ws, _| {
         assert_eq!(
@@ -777,7 +777,7 @@ fn relive(ws: &Entity<Workspace>, cx: &mut TestAppContext) {
 /// Replaces the card's title with `text`.
 fn retitle(handle: AnyWindowHandle, cx: &mut TestAppContext, text: &str) {
     click_on(handle, cx, "card-title");
-    press_key(handle, cx, "ctrl-a");
+    press_key(handle, cx, "secondary-a");
     cx.simulate_input(handle, text);
 }
 

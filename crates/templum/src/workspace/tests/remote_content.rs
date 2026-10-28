@@ -520,7 +520,7 @@ fn no_local_tool_sees_a_remote_note_or_checklist(cx: &mut TestAppContext) {
     // Ctrl+Z with the remote checklist focused is the canvas's, not the local checklist's.
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, _| ws.space.focused = Some(c1));
-        window.press("ctrl-z", cx);
+        window.press(UNDO, cx);
     })
     .unwrap();
     ws.read_with(cx, |ws, _| {
@@ -1376,7 +1376,7 @@ fn on_a_mirror_ctrl_z_after_an_item_act_stops_at_the_mark(cx: &mut TestAppContex
     });
     click_on(handle, cx, el("checklist-box", c1, 13));
     ws.update(cx, |ws, _| ws.space.focused = Some(c1));
-    cx.update_window(handle, |_, window, cx| window.press("ctrl-z", cx))
+    cx.update_window(handle, |_, window, cx| window.press(UNDO, cx))
         .unwrap();
     ws.read_with(cx, |ws, _| {
         assert_eq!(
@@ -1390,7 +1390,7 @@ fn on_a_mirror_ctrl_z_after_an_item_act_stops_at_the_mark(cx: &mut TestAppContex
             "{said}"
         );
     });
-    cx.update_window(handle, |_, window, cx| window.press("ctrl-z", cx))
+    cx.update_window(handle, |_, window, cx| window.press(UNDO, cx))
         .unwrap();
     ws.read_with(cx, |ws, _| {
         assert_eq!(
