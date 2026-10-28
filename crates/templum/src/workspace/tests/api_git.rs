@@ -174,7 +174,7 @@ fn a_worktree_whose_main_tree_is_outside_is_refused(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let main = committed_repo();
     let folder = tempfile::tempdir().unwrap();
-    let real = folder.path().canonicalize().unwrap();
+    let real = dunce::canonicalize(folder.path()).unwrap();
     git_run(
         main.path(),
         &[
