@@ -199,6 +199,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   it isn't the slide-in clock that made the checklist and gallery tests flaky (fixed with `no_motion`). A person sees
   nothing; a contributor may see CI fail once. Fix: loop the test with busy loops beside, keep the panic, then make
   the test wait on the state it checks (`cx.run_until_parked()` after the autostart write), not on the clock.
+- [ ] **`a_boards_dialog_of_this_computer_does_nothing_once_a_mirror_is_shown` failed once in a full run.**
+  (`crates/templum/src/workspace/tests/remote_boards.rs:545`, 2026-10-29, during kanban card 303's run; passes alone
+  three of three.) The last notification was `None` instead of "Another workspace is shown now: nothing was done.": the
+  second click on the trash landed before the mirror was shown, or its notification came after the read. A person
+  sees nothing; a contributor may see CI fail once. Fix: wait for the mirror to be the shown workspace (and for the
+  notification) with `cx.run_until_parked()` before the clicks and the read, not on the clock.
 
 ## Release and benches
 
