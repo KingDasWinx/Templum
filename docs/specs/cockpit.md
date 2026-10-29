@@ -361,8 +361,7 @@ The sidebar's **Home** button (`house`) at its top, above the tiles; the workspa
 - **Drag a card onto another:** the dragged one takes that card's place (the kanban columns' drag and drop). The
   sidebar follows at once, and `index.json` is written. Sidebar tiles drag and drop the same way.
 - **New workspace** opens the **New workspace** dialog, as the sidebar's **+** and Ctrl+Shift+N do: the edit dialog
-  below titled "New workspace", its name "Workspace *n*" selected, no color, icon, image or folder, and no Sharing (a
-  workspace not yet made has none). **Create** (Enter) makes the workspace with what was chosen and shows it;
+  below titled "New workspace", its name "Workspace *n*" selected, no color, icon, image or folder. **Create** (Enter) makes the workspace with what was chosen and shows it;
   Cancel and Esc make nothing, and nothing is written. An empty name is refused, as is a folder that isn't one
   anymore, the dialog staying open saying why. Open folder… and a recent folder still make their workspace at once:
   the folder is the choice. The API's `create_workspace` makes one directly, too: an agent has no dialog.
@@ -382,14 +381,11 @@ Replaces the sidebar's **Rename…**, which becomes **Edit…** everywhere. A di
 - **Image:** **Choose an image…** opens the system's file picker (PNG, JPG, JPEG, WebP, SVG); the file is copied
   to `<data folder>/workspaces/icons/<id>.<ext>` (replacing an older one) and shown instead of the icon, cropped to
   the tile's rounded square. **Remove image** goes back to the icon. A file over 4 MB is refused with a message.
-- **Sharing,** below Folder: what it does applies at once, not on Save. With no share, "Let another Templum mirror
-  this workspace: watch it live, move its blocks, answer its agents, type into its terminals." and **Share…**; else a
-  row per share (its name; dim under it, "Full · expires in 29 days" and "mirrored now from 203.0.113.7" with the
-  accent dot, "last used 3 h ago from 203.0.113.7" or "never used") with **Revoke**, and **Share…** for one more.
-  Share… opens a second dialog (name, what it can do, expiry, how the other computer reaches this one) that makes the
-  connection code and shows it once ([templum-to-templum.md](templum-to-templum.md#on-home-sharing-a-workspace)).
+- **Sharing** is not in Edit… (card 305): **Share…**, after Edit… in the workspace's menu, opens its own Share dialog
+  (its shares with Revoke, New share, the connection code shown once;
+  [templum-to-templum.md](templum-to-templum.md#on-home-sharing-a-workspace)).
 - **A remote workspace's Edit…** ([templum-to-templum.md](templum-to-templum.md#the-remote-workspace)) has no Name
-  field (home's, dim: "named on winx-desktop"), Image, Folder or Sharing; it keeps Color and Icon (the local look, none:
+  field (home's, dim: "named on winx-desktop"), Image or Folder, and its menu no Share…; it keeps Color and Icon (the local look, none:
   home's) and gains **Connection**: the address, the way in, whether it trusts an authority this computer added, the
   Access Client ID and the proxy when set, what the share can do, when it ends and the round trip, and **Paste a new
   code…** (the Connect dialog for this remote).

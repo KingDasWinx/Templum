@@ -668,7 +668,7 @@ phone case work).
 
 ## Templum to Templum
 
-Part 2 of card 171 has its own design: [templum-to-templum.md](templum-to-templum.md). A workspace's Edit… dialog
+Part 2 of card 171 has its own design: [templum-to-templum.md](templum-to-templum.md). A workspace's Share dialog
 shares it as a token limited to it and one connection code; the other Templum pastes the code and mirrors the workspace
 in a remote workspace of its sidebar, live, through this API (home is the truth). It builds on what batches 1 and 2
 give: workspace-limited tokens, the state and its deltas, `move_block`, Templum's certificate and its fingerprint,

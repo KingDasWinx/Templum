@@ -33,7 +33,7 @@ person exposes it (a domain, a VPN, a cloudflared tunnel, their own case). There
 Part 1 built everything a second Templum needs on home's side: workspace-limited tokens, a state complete enough to
 draw, its live deltas, terminal frames and typed input. Part 2 is the two ends that use it:
 
-- **Share**, on home: a workspace's Edit… dialog makes a token limited to that workspace and shows one **connection
+- **Share**, on home: a workspace's Share dialog makes a token limited to that workspace and shows one **connection
   code** to paste on the other computer.
 - **Connect**, on the other computer: the code becomes a **remote workspace** in the sidebar. It mirrors home's
   workspace: its blocks where they are, its terminals live, its agents' states, its requests. Typing, moving a block and
@@ -44,7 +44,7 @@ draw, its live deltas, terminal frames and typed input. Part 2 is the two ends t
 
 1. **The person's case works in batch 1:** from the work computer, through a cloudflared tunnel, open home's workspace,
    see it live, type into its terminals with a real keyboard, move and resize its blocks, answer its agents' requests.
-2. **Two clicks on each side.** Home: Edit… ▸ Share… ▸ Make code ▸ Copy. Mirror: Connect to a Templum… ▸ paste ▸
+2. **Two clicks on each side.** Home: Share… ▸ New share ▸ Make code ▸ Copy. Mirror: Connect to a Templum… ▸ paste ▸
    Connect.
 3. **Encrypted, and checked.** Always TLS off loopback. A direct connection pins Templum's certificate; a tunnel's is
    checked against the web's authorities, and a network that reads HTTPS (a company proxy) is told plainly.
@@ -104,25 +104,33 @@ draw, its live deltas, terminal frames and typed input. Part 2 is the two ends t
 
 ### On home: sharing a workspace
 
-**The Edit… dialog** gains a **Sharing** part below Folder (*the orchestrator's call*: share lives in the workspace's
-Edit… dialog). Unlike the rest of the dialog, what it does applies at once, not on Save (*the designer's call*: a
-revoke must not wait for Save).
+**The Share dialog** (card 305: sharing has its own screen, no longer a part of the Edit… dialog) opens from
+**Share…** in the workspace's menu, right after Edit… (the sidebar's tile, the Home's card and its ⋯). A mirrored
+workspace's menu has none: a mirror doesn't share again. It is a dialog of the popups' kind
+([design-system.md](design-system.md#popups), *A dialog*; `share_dialog.rs`): the `Cast` tile in the accent, the title
+"Share *Main*", and under it "Not shared yet", "Shared with 1 computer" or "Shared with 2 computers · 1 mirroring now".
+What it does applies at once: there is no Save. It has three steps:
 
-- With no share: "Let another Templum mirror this workspace: watch it live, move its blocks, answer its agents, type
-  into its terminals." and **Share…**.
-- One row per share: its name; under it, dim, "Full" or "Control", "expires in 29 days" / "never expires" / "expired
-  2 days ago" (yellow), and "mirrored now from 203.0.113.7" (with the accent dot) / "last used 3 h ago from
-  203.0.113.7" / "never used"; **Revoke** on the right, at once, no question (a share is cheap to make again). Revoking
-  ends its streams, so the mirror goes dark at once.
+- **Shares**, where it opens. With no share, a card: "Let another Templum mirror this workspace: watch it live and work
+  with its blocks, cards, checklists, Git, automations and agents from there." Else one row per share, on a card: its
+  name; under it, dim, "Full" or "Control", "expires in 29 days" / "never expires" / "expired 2 days ago" (yellow), and
+  "mirrored now from 203.0.113.7" (with the accent dot) / "last used 3 h ago from 203.0.113.7" / "never used";
+  **Revoke** on the right, at once, no question (a share is cheap to make again). Revoking ends its streams, so the
+  mirror goes dark at once. The foot: **Close** and **New share** (Enter).
+- **New share**: the share's fields, below; the foot: **Back** and **Make code** (Enter), dimmed while the API doesn't
+  fit the way in or the name is empty, and why it was refused, in red, above them.
+- **Code**: the code just made (below); the foot: **Copy** and **Done** (Enter), which goes back to the shares, the new
+  one listed.
 
-**Share…** opens a dialog (*the designer's call* for its fields):
+**New share**'s fields (*the designer's call*), a form of two sections, **New share** (Name, Can, Expires) and
+**Connection** (Way in, Address):
 
 | Field | Control |
 |---|---|
-| Name | One line, required, at most 60 characters, default "Another computer" |
+| Name | One line, required, at most 60 characters, default "Another computer" (again after each share made) |
 | Can | **Full** (default): "Also type and click into terminals, discard Git changes, delete branches, stashes and automations. Anyone with the code can run commands on this computer." **Control:** "Watch and work with blocks, cards, checklists, Git and automations, open agents and hand them tasks, answer requests. No typing into terminals; agents it opens can run commands." (Words since batch 2a.) |
 | Expires | In 1 day, 7 days, **30 days** (default), 90 days, 1 year, Never |
-| The other computer reaches this one | **Through a tunnel or proxy** (cloudflared, Caddy, nginx, your own certificate), with **Address**: `https://templum.example.com` (an optional path prefix is kept), remembered for the next share. **Directly** (same network, VPN, Tailscale), with **Address**: host and port, prefilled with this computer's address on its main network and the API's port, `192.168.1.5:7411` (a Tailscale name may replace it) |
+| Way in (how the other computer reaches this one) | **Through a tunnel or proxy** (cloudflared, Caddy, nginx, your own certificate), with **Address**: `https://templum.example.com` (an optional path prefix is kept), remembered for the next share. **Directly** (same network, VPN, Tailscale), with **Address**: host and port, prefilled with this computer's address on its main network and the API's port, `192.168.1.5:7411` (a Tailscale name may replace it) |
 
 - The default way in follows Settings ▸ API: Templum's certificate on a network other than loopback picks Directly;
   anything else picks Through a tunnel.
@@ -134,9 +142,11 @@ revoke must not wait for Save).
     every network with Templum's certificate. **Apply**".
   - Through a tunnel with an address that isn't `https://` (or `http://` to `127.0.0.1`, `::1` or `localhost`, for an
     `ssh -L` forward): "The address must start with https://."
-- **Make code** makes the token and shows the code once, whole, in the terminal's font, with **Copy**, and: "Paste it in
-  the other Templum: sidebar ▸ Connect to a Templum… Templum keeps only a fingerprint of its key: this code can't be
-  shown again." **Done** closes it; the text is gone from memory.
+  The sentence and its button sit under Address; Make code stays dimmed until it is gone.
+- **Make code** makes the token and shows the code once, whole, in the terminal's font on a card under **Connection
+  code**, with: "Paste it in the other Templum: sidebar ▸ Connect to a Templum… Templum keeps only a fingerprint of its
+  key: this code can't be shown again." The text leaves memory on **Done** (back to the shares), **Close**, Esc and a
+  press outside.
 
 **The tile** of a workspace that is mirrored now (a share's event stream is open) gets a small cast mark at its
 bottom-right; tooltip "Mirrored now on Another computer (203.0.113.7)". The Home's card shows the same
@@ -167,7 +177,7 @@ of another computer as if it were here" (for **Paste a new code…**: **Paste a 
 winx-desktop"); its body is a form of labelled rows; its foot says how it goes, over **Cancel** and **Connect**.
 
 - **Code:** a field, focused, in the terminal's font, its format as its placeholder (`tplc1_…`). The line under it
-  says where to make one while it is empty ("Make one on the other computer: a workspace's Edit… ▸ Share…"); as soon
+  says where to make one while it is empty ("Make one on the other computer: a workspace's Share… ▸ New share"); as soon
   as it holds a code, what it is, after a check: "templum.example.com · checks its public certificate" or
   "192.168.1.5:7411 · pins Templum's certificate AB:CD:…:9F", or in red what is wrong: "This isn't a connection code:
   one starts with tplc1_.", "The code is cut short: copy it again whole.", "This code is from a newer Templum: update
@@ -1396,7 +1406,8 @@ Plan: [2026-10-25-t2t-batch-1a-home.md](../plans/2026-10-25-t2t-batch-1a-home.md
 - **The audit log** groups `terminal_input` and `GET /v1/me` as the noise is grouped (key: address, call, token, status), into
   `audit.log`; the test that expected two `terminal_input` lines now expects one. A mirror's grouped line that the full noise half gives up is counted in the `lost` line, like any call.
 - **The Edit… dialog** keeps **Share…** below the rows too, so one more computer can be shared with. The Share…
-  dialog makes its own footer: Make code is disabled while the API doesn't fit or the name is empty.
+  dialog makes its own footer: Make code is disabled while the API doesn't fit or the name is empty. (Card 305 moved
+  the rows and Share… to their own Share dialog: *On home: sharing a workspace*, above.)
 - **`Server::mirrored`** says the address of a token's oldest connection with an event stream; the stream's opening
   and its end tell the UI thread (`CLIENTS`), which draws the sidebar's mark from the server.
 

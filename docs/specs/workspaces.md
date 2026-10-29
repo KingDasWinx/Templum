@@ -49,7 +49,7 @@ Terminals in the workspaces you aren't looking at keep running, so an agent keep
   bottom-right and, while it isn't live, is dimmed. Its tooltip is "API, on winx-desktop · 84 ms". It is dragged,
   Ctrl+Tab'd and Ctrl+1–9'd like any tile; its right-click menu is Open, Edit…, Disconnect (or Connect) and Forget….
   **Edit…** keeps home's name ("named on winx-desktop") and the person's own icon and color (none: home's), and shows
-  the connection with **Paste a new code…**; it has no Folder, Image or Sharing. It has no canvas file: only its index
+  the connection with **Paste a new code…**; it has no Folder or Image, and its menu no Share…. It has no canvas file: only its index
   entry.
 - **+** at the bottom creates a workspace and switches to it. Under it, a plug button, **Connect to a Templum…**,
   opens the dialog that turns a connection code into a remote workspace.

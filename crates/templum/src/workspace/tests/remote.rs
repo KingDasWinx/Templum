@@ -1203,7 +1203,8 @@ fn the_tile_menu_forgets_and_revokes_the_share_at_home(cx: &mut TestAppContext) 
             )
         });
         window.render_frame(cx);
-        // Open, Edit…, Disconnect, a separator, Forget….
+        // Open, Edit…, Disconnect, a separator, Forget…: no Share…, a mirror can't share.
+        assert!(window.within("popup-menu").try_find(5usize).is_none());
         window.within("popup-menu").click(4usize, cx);
         window.render_frame(cx);
         assert!(window.has_active_dialog(cx));
@@ -3636,7 +3637,6 @@ fn edit_keeps_the_look_and_a_new_code_has_its_own_dialog(cx: &mut TestAppContext
         assert!(window.try_find("space-named-at-home").is_some());
         assert!(window.try_find("space-connection").is_some());
         assert!(window.try_find("space-paste-code").is_some());
-        assert!(window.try_find("space-share").is_none(), "no Sharing");
         assert!(window.try_find("space-folder").is_none(), "no Folder");
     })
     .unwrap();

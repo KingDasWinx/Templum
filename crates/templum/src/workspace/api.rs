@@ -1000,7 +1000,7 @@ impl Workspace {
         })
     }
 
-    /// The shares of the workspace `space`, oldest first: the Edit… dialog's rows.
+    /// The shares of the workspace `space`, oldest first: the Share dialog's rows.
     pub(crate) fn share_rows(&self, space: &str) -> Vec<templum_api::model::ShareView> {
         let tokens = self.api.store.iter().flat_map(|s| s.tokens.iter());
         let ours: Vec<String> = tokens
@@ -1046,7 +1046,7 @@ impl Workspace {
             .map(|(_, addr)| addr)
     }
 
-    /// The Share… dialog's one button: the API on, and for a direct share on every network with
+    /// The Share dialog's one button: the API on, and for a direct share on every network with
     /// Templum's certificate.
     pub(crate) fn fit_api(&mut self, way: Way, cx: &mut Context<Self>) {
         self.api_edit(

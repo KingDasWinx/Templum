@@ -4177,8 +4177,30 @@ fn the_dialogs_button_makes_the_api_fit(cx: &mut TestAppContext) {
     assert_eq!(share_problem(&s, Way::Pinned, "192.168.1.5:7411"), None);
 }
 
+/// Share… in workspace `space`'s menu (Open, Edit…, Share…), as the sidebar and the Home open it.
+fn share_from_the_menu(
+    ws: &Entity<Workspace>,
+    space: &str,
+    window: &mut Window,
+    cx: &mut gpui_kit::App,
+) {
+    ws.update(cx, |ws, cx| {
+        ws.open_menu(
+            crate::workspace::menu::Target::Space(space.into()),
+            point(px(100.0), px(100.0)),
+            window,
+            cx,
+        )
+    });
+    window.render_frame(cx);
+    window.within("popup-menu").click(2usize, cx);
+    window.render_frame(cx);
+}
+
 #[gpui_kit::test]
-fn the_share_dialog_makes_a_code_shows_it_once_and_drops_it(cx: &mut TestAppContext) {
+fn the_share_dialog_makes_a_code_shows_it_once_and_goes_back_to_the_shares(
+    cx: &mut TestAppContext,
+) {
     use gpui_kit::component::WindowExt as _;
     use gpui_kit::test::TestWindowExt as _;
     use templum_api::code;
@@ -4200,12 +4222,18 @@ fn the_share_dialog_makes_a_code_shows_it_once_and_drops_it(cx: &mut TestAppCont
             })
             .expect("a data folder");
         window.render_frame(cx);
-        // The API is off: the dialog says so, and Make code is not pressable.
+        // It opens at the shares: none yet.
+        assert!(window.try_find("share-invite").is_some());
+        assert!(window.try_find("share-make").is_none());
+        window.click("share-new", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("share-invite").is_none());
+        // The API is off: the dialog says so, and Make code makes nothing.
         assert!(window.try_find("share-problem").is_some());
         window.click("share-make", cx);
         window.render_frame(cx);
         assert_eq!(ws.read(cx).share_views().len(), 0);
-        assert!(flow.read(cx).code().is_none());
+        assert!(window.try_find("share-code").is_none());
         // Turn it on: nothing is wrong now.
         window.click("share-fix", cx);
         window.render_frame(cx);
@@ -4216,21 +4244,88 @@ fn the_share_dialog_makes_a_code_shows_it_once_and_drops_it(cx: &mut TestAppCont
         assert!(window.try_find("share-code").is_some(), "the code is shown");
         assert!(window.try_find("share-paste-it").is_some());
         let text = flow.read(cx).code().expect("made").to_string();
-        let decoded = code::decode(&text).unwrap();
-        assert_eq!(decoded.url, "https://t.example.com");
+        assert_eq!(code::decode(&text).unwrap().url, "https://t.example.com");
         assert_eq!(ws.read(cx).share_rows(&first).len(), 1);
-        // Done: the dialog closes and the text is gone from it.
+        // Done: back at the shares, the new one listed, and the text gone from the dialog.
         window.click("share-done", cx);
         window.render_frame(cx);
-        assert!(!window.has_active_dialog(cx));
+        assert!(window.has_active_dialog(cx), "Done keeps the dialog");
+        assert!(window.try_find("share-code").is_none());
         assert!(
             flow.read(cx).code().is_none(),
             "nothing holds the code after Done"
         );
+        let share = ws.read(cx).share_rows(&first)[0].id.clone();
+        assert!(window.try_find(format!("share-row-{share}")).is_some());
+        assert!(window.try_find("share-invite").is_none());
         assert!(ws.read(cx).api.shown.is_none());
+        // A second code, then Close: the code leaves memory with the dialog.
+        window.click("share-new", cx);
+        window.render_frame(cx);
+        window.click("share-make", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("share-code").is_some());
+        window.click("share-close", cx);
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx));
+        assert!(flow.read(cx).code().is_none(), "nor after Close");
     })
     .unwrap();
-    assert_eq!(shares(&ws, cx), 1);
+    assert_eq!(shares(&ws, cx), 2);
+}
+
+#[gpui_kit::test]
+fn the_share_dialog_drops_the_code_on_esc_and_enter_walks_its_steps(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    use gpui_kit::test::TestWindowExt as _;
+    no_motion(cx);
+    let (handle, ws, _dir) = with_data(cx);
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    turn_on(&ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.api.store.as_mut().unwrap().tunnel = Some("https://t.example.com".into());
+    });
+    cx.update_window(handle, |_, window, cx| {
+        let flow = ws
+            .update(cx, |ws, cx| {
+                crate::share_dialog::open(ws, &first, window, cx)
+            })
+            .expect("a data folder");
+        window.render_frame(cx);
+        // Enter: New share, then Make code, then Done.
+        window.press("enter", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("share-make").is_some(), "New share");
+        window.press("enter", cx);
+        window.render_frame(cx);
+        assert!(flow.read(cx).code().is_some(), "Make code");
+        window.press("enter", cx);
+        window.render_frame(cx);
+        assert!(flow.read(cx).code().is_none(), "Done");
+        assert!(window.try_find("share-new").is_some(), "at the shares");
+        assert!(window.has_active_dialog(cx));
+        // Back leaves the fields without making a share.
+        window.click("share-new", cx);
+        window.render_frame(cx);
+        window.click("share-back", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("share-new").is_some());
+        assert_eq!(ws.read(cx).share_rows(&first).len(), 1);
+        // A code shown, then Esc: the dialog closes and nothing holds the code.
+        window.press("enter", cx);
+        window.render_frame(cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+        assert!(flow.read(cx).code().is_some());
+        window.press("escape", cx);
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx));
+        assert!(
+            flow.read(cx).code().is_none(),
+            "nothing holds the code after Esc"
+        );
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]
@@ -4252,6 +4347,8 @@ fn the_share_dialog_keeps_blocking_when_the_api_failed_to_start(cx: &mut TestApp
         })
         .expect("a data folder");
         window.render_frame(cx);
+        window.click("share-new", cx);
+        window.render_frame(cx);
         window.click("share-fix", cx);
         window.render_frame(cx);
         assert!(ws.read(cx).api.server.is_none());
@@ -4268,7 +4365,7 @@ fn the_share_dialog_keeps_blocking_when_the_api_failed_to_start(cx: &mut TestApp
 }
 
 #[gpui_kit::test]
-fn the_edit_dialog_lists_shares_and_revokes_at_once(cx: &mut TestAppContext) {
+fn the_share_dialog_lists_shares_and_revokes_at_once(cx: &mut TestAppContext) {
     use gpui_kit::component::WindowExt as _;
     use gpui_kit::test::TestWindowExt as _;
     no_motion(cx);
@@ -4276,21 +4373,26 @@ fn the_edit_dialog_lists_shares_and_revokes_at_once(cx: &mut TestAppContext) {
     let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
     let (token, share) = make_share(&ws, cx, &first, Scope::Full);
     cx.update_window(handle, |_, window, cx| {
+        // The Edit… dialog has no sharing of its own any more.
         ws.update(cx, |ws, cx| {
             crate::space_dialog::open(ws, &first, window, cx)
         });
         window.render_frame(cx);
-        assert!(window.try_find("space-share-invite").is_none());
-        assert!(window.try_find(format!("space-share-{share}")).is_some());
-        assert!(
-            window.try_find("space-share").is_some(),
-            "Share… for one more"
-        );
-        // Revoke needs no question and no Save.
-        window.click(format!("space-revoke-{share}"), cx);
-        window.render_frame(cx);
+        assert!(window.try_find("space-dialog").is_some());
+        // (Its Sharing section's row, before card 305.)
         assert!(window.try_find(format!("space-share-{share}")).is_none());
-        assert!(window.try_find("space-share-invite").is_some());
+        assert!(window.try_find(format!("share-row-{share}")).is_none());
+        window.click("cancel", cx);
+        window.render_frame(cx);
+        share_from_the_menu(&ws, &first, window, cx);
+        assert!(window.try_find("share-invite").is_none());
+        assert!(window.try_find(format!("share-row-{share}")).is_some());
+        assert!(window.try_find(format!("share-first-{share}")).is_some());
+        // Revoke needs no question.
+        window.click(format!("share-revoke-{share}"), cx);
+        window.render_frame(cx);
+        assert!(window.try_find(format!("share-row-{share}")).is_none());
+        assert!(window.try_find("share-invite").is_some());
         assert!(
             ws.read(cx)
                 .api
@@ -4301,17 +4403,7 @@ fn the_edit_dialog_lists_shares_and_revokes_at_once(cx: &mut TestAppContext) {
                 .iter()
                 .all(|t| t.id != token.id)
         );
-        // Share… opens a second dialog over this one.
-        window.click("space-share", cx);
-        window.render_frame(cx);
-        assert!(window.try_find("share-make").is_some());
-        window.click("share-cancel", cx);
-        window.render_frame(cx);
-        assert!(
-            window.try_find("space-share").is_some(),
-            "the Edit… dialog is still there"
-        );
-        window.click("cancel", cx);
+        window.click("share-dismiss", cx);
         window.render_frame(cx);
         assert!(!window.has_active_dialog(cx));
     })

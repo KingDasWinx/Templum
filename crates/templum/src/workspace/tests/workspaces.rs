@@ -352,7 +352,6 @@ fn every_new_workspace_button_opens_its_dialog_and_cancel_and_esc_make_nothing(
                     assert!(window.has_active_dialog(cx), "{way} opens it");
                     let ok = window.within("dialog").find("ok");
                     assert_eq!(ok.label(), Some("Create"), "{way}");
-                    assert!(window.try_find("space-share").is_none(), "nothing to share");
                     assert_eq!(names(&ws, cx), ["Main"], "{way} makes nothing yet");
                     if close == "cancel" {
                         window.within("dialog").click("cancel", cx);

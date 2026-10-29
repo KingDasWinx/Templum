@@ -205,6 +205,15 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   second click on the trash landed before the mirror was shown, or its notification came after the read. A person
   sees nothing; a contributor may see CI fail once. Fix: wait for the mirror to be the shown workspace (and for the
   notification) with `cx.run_until_parked()` before the clicks and the read, not on the clock.
+- [ ] **`all_boards_lists_the_share_s_boards_and_shows_one_at_home` failed once in a full run.**
+  (`crates/templum/src/workspace/tests/remote_boards.rs:461`, 2026-10-29, during kanban card 305's reduced-PATH run;
+  passes alone two of two.) What the mirror sent after New board was read before home's answer came back. A person
+  sees nothing; a contributor may see CI fail once. Fix: pump until the call is sent (`pump_until`), not one frame.
+- [ ] **`stop_agent_ends_what_the_caller_opened_and_what_it_left_running` failed once in a full run.**
+  (`crates/templum/src/workspace/tests/spawn.rs:1190`, 2026-10-29, during kanban card 305's reduced-PATH run; passes
+  alone two of two.) It sleeps 2.5 s and then asserts the stopped shell's background job wrote no file: on a loaded
+  machine the kill can land after the job's write. A person sees nothing; a contributor may see CI fail once. Fix:
+  wait for the shell's process group to be gone before the sleep, or give the job a longer delay than the wait.
 
 ## Release and benches
 
@@ -2343,9 +2352,10 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   under it (the spec's known limit). Fix: names carry the unshifted key too.
 - [ ] **The cast mark and the news dot share a corner of a sidebar tile.** (`sidebar.rs`, `tile`.) A mirrored workspace
   with news shows the 7 px dot over the 12 px mark. Fix: the dot moves to the top-left when both show.
-- [ ] **The Share… dialog was checked headlessly only.** (`share_dialog.rs`.) Its layout (field spacing, the code's
-  wrapping by characters in a 520 px dialog, a long Directly address) was not looked at on a display. Fix: look at it
-  with `--dev` once.
+- [ ] **Part of the Share dialog was checked headlessly only.** (`share_dialog.rs`.) Card 305 looked at it with
+  `--dev` in the light theme (no share, two rows, New share with the API on and off, the code wrapped by characters),
+  not at a row mirrored now (its accent dot), an expired one (yellow), a long Directly address, a refusal of several
+  lines, the dark theme nor the pointer's hovers. Fix: look at those once.
 - [ ] **A pinned share's address is not tried against the machine.** (`workspace/api.rs`, `share_workspace`.) A typo in
   the host or port makes a code that never connects. Fix: the dialog connects to it once before it shows the code.
 - [ ] **The system's proxy settings and PAC files aren't read, nor NTLM or Kerberos.**
@@ -2386,11 +2396,6 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   name and chevron are a press target, not a Tab stop, as the popups' hand-made buttons aren't; a person on the
   keyboard can't reach the Access token or the proxy (the old More… couldn't either: Tab stayed in the code's field).
   Fix: give the toggle a focus handle with `tab_stop(true)` and Enter/Space, with a test.
-- [ ] **The Share… dialog isn't a dialog of the popups' kind, and Enter closes it.** (`share_dialog.rs`, `open`.) It
-  is gpui-kit's alert dialog as the Connect dialog was before card 280: the kit's frame and title, labels over
-  stacked fields, the kit's buttons, no Close, no press outside to close it; Enter in a field closes it without
-  making the code. Fix: build it as the Connect dialog (`popup::dialog`, `dialog_frame`, `dialog_header`, rows,
-  `foot` with Cancel and a solid Make code that Enter does), keeping its ids, with a test for Enter.
 - [ ] **In a window too short for it, a dialog scrolls whole.** (`popup.rs`, `dialog`.) gpui-kit's dialog caps its
   height at the window's and scrolls what it holds, so the header and the foot scroll away with the body, under the
   kit's scrollbar. Fix: cap `dialog_frame` at the room the kit leaves and let the body scroll between the header

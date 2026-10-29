@@ -295,8 +295,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   250 ms while a stream is open; `api_state.rs` builds that state as `overview` walks the workspaces; `settings/api.rs`
   is Settings ▸ API, and the title bar draws the pill (`title_bar.rs`). Shares (a token limited to one workspace,
   [specs/templum-to-templum.md](specs/templum-to-templum.md)) are made by `Workspace::share_workspace` (the API's
-  `share_workspace` tool and the Share… dialog, `share_dialog.rs`, call it) and shown in the Edit… dialog
-  (`space_dialog.rs`), the sidebar's cast mark and Settings ▸ API.
+  `share_workspace` tool and the Share dialog, `share_dialog.rs`, call it) and shown in that dialog (the workspace's
+  menu ▸ Share…), the sidebar's cast mark and Settings ▸ API.
 - `balloon.rs`: the request itself as the inbox draws it: a question's dialog, a plan to approve, a yes/no request
   ([specs/connections.md](specs/connections.md#requests-from-agents)).
 - `update.rs`: where an update stands (`Update`), its title-bar pill and its lines in Settings ▸ Updates;

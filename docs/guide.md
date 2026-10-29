@@ -74,7 +74,8 @@ elsewhere; a green dot on a tile means Claude Code or Codex is running in it.
   sidebar, the workspace's name in the title bar and Ctrl+Shift+O show it again. Agents, Automations and Settings
   open over it; Requests and Git take you to a workspace.
 - **Edit…** (right-click a tile or a card) names a workspace and gives it a color, a Lucide icon or an image, and a
-  folder: new terminals start there. Its **Share…** lets another computer's Templum mirror the workspace live and work in it.
+  folder: new terminals start there. **Share…**, beside it, lets another computer's Templum mirror the workspace live and
+  work in it: its own dialog lists the workspace's shares (each with Revoke) and makes a new one's code.
 - **Connect to a Templum…** (the plug under **+**) pastes a share's code and opens another computer's workspace here:
   its blocks and terminals live, where you can type, move blocks and answer its agents. See
   [api.md](api.md#templum-to-templum).

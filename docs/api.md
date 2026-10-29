@@ -537,7 +537,7 @@ the kitty keyboard protocol with the symbol as its key, not the one under it.
 ### Shares (Templum to Templum)
 
 A **share** lets another Templum mirror one workspace. It is an API token limited to that workspace, Control or Full,
-made by *Edit… ▸ Share…* (or `share_workspace`), kept with the share's details in `api.json`; its id is `s<token id>`,
+made by the workspace's *Share…* (or `share_workspace`), kept with the share's details in `api.json`; its id is `s<token id>`,
 and revoking the token revokes the share. The answer of `share_workspace` holds the **connection code** once, in
 `code`: `tplc1_` and the base64url of `{"url":…,"token":"tpl_…","pin":…}` (`pin`, the SHA-256 of Templum's
 certificate, only for a share made *Directly*). Templum keeps only the token's fingerprint, so the code cannot be
@@ -627,13 +627,14 @@ API above says and sends your keys, moves and answers back through it. Design:
 [specs/templum-to-templum.md](specs/templum-to-templum.md).
 
 *How this was checked:* the tests run both ends in one process over loopback (a Templum that mirrors itself), including
-typing into a shell, moving a block and answering a question; the screens (the Share… and Connect dialogs, the banner,
+typing into a shell, moving a block and answering a question; the screens (the Share and Connect dialogs, the banner,
 Edit…) were checked headlessly, and **not** with two `--dev` instances on a display. Try the steps below with two
 `--dev` builds before you rely on them.
 
 ### 1. Share a workspace (home)
 
-On the computer that has the workspace: right-click its tile ▸ **Edit…** ▸ **Share…** (or the tool `share_workspace`).
+On the computer that has the workspace: right-click its tile (or its card on the Home) ▸ **Share…** ▸ **New share** (or
+the tool `share_workspace`). The Share dialog opens at the workspace's shares; New share asks for:
 
 - **Name:** what the share is called on this computer ("Another computer").
 - **Can:** **Control** watches and works with blocks, cards, checklists, Git and automations, opens agents and hands
@@ -641,13 +642,13 @@ On the computer that has the workspace: right-click its tile ▸ **Edit…** ▸
   types and clicks into terminals, discards Git changes, and deletes branches, stashes and automations (anyone holding
   the code can run commands on this computer).
 - **Expires:** 30 days by default; shorter is safer. Three days before, the mirror's banner says so.
-- **The other computer reaches this one:** *Through a tunnel or proxy* (a public `https://` address, for
+- **Way in** (how the other computer reaches this one): *Through a tunnel or proxy* (a public `https://` address, for
   [cloudflared](#2-cloudflared) and the like; the API stays on this computer only) or *Directly* (`host:port` of this
   computer, which pins Templum's certificate; the API must listen on every network with Templum's certificate,
   Settings ▸ API ▸ HTTPS). Make code says what to fix when the API doesn't fit.
-- **Make code** shows the connection code once (Copy). Templum keeps only a fingerprint, so a lost code means a new
+- **Make code** shows the connection code once (Copy); **Done** goes back to the shares, the new one listed. Templum keeps only a fingerprint, so a lost code means a new
   share. The sidebar tile of a shared workspace gets a small cast mark while another computer mirrors it.
-- **Revoke** is in the same Edit… dialog (and in Settings ▸ API); the mirror is cut at once.
+- **Revoke** is on each share's row in the same Share dialog (and in Settings ▸ API); the mirror is cut at once.
   `share_workspace` and `revoke_share` do the same for scripts, see [Shares](#shares-templum-to-templum).
 
 Only one computer can use a code at a time: a second one that connects with it stops the first ("Another computer

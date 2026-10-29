@@ -947,6 +947,7 @@ enum Items {
         /// Delete card on a mirror.
         gates: Gates,
     },
+    /// A workspace's tile: Open, Edit…, Share…, Stop, Delete….
     Space {
         id: String,
         name: String,

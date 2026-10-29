@@ -20,7 +20,6 @@ use gpui_kit::{
 use crate::board::Label;
 use crate::grid::hsla;
 use crate::session;
-use crate::share_dialog;
 use crate::sidebar;
 use crate::theme::{Theme, Ui};
 use crate::workspace::{Space, Workspace, show_notification};
@@ -123,9 +122,9 @@ fn find_icons(query: &str) -> Vec<IconName> {
 pub(crate) struct SpaceDialog {
     /// The workspace edited; empty for the one Create makes.
     id: String,
-    /// The New workspace dialog: Create makes the workspace, which has no sharing yet.
+    /// The New workspace dialog: Create makes the workspace.
     creating: bool,
-    /// Where Sharing reads who mirrors, and what it revokes.
+    /// Where a remote's Connection is read.
     workspace: Entity<Workspace>,
     name: Entity<InputState>,
     search: Entity<InputState>,
@@ -136,7 +135,7 @@ pub(crate) struct SpaceDialog {
     /// The icons found, and the search they are for.
     found: (String, Vec<IconName>),
     /// A mirror of another computer's workspace: its name is home's, and it has a connection
-    /// instead of a folder and sharing.
+    /// instead of a folder.
     remote: bool,
     theme: Rc<Theme>,
     ui: Ui,
@@ -308,126 +307,6 @@ impl SpaceDialog {
                 ),
             )
             .test_support()
-    }
-
-    /// Sharing: applied at once, not on Save. With no share, what sharing does and Share…; else a
-    /// row per share with Revoke, and Share… for one more.
-    fn sharing(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (ui, theme) = (self.ui, self.theme.clone());
-        let at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        let ws = self.workspace.read(cx);
-        let rows: Vec<_> = ws
-            .share_rows(&self.id)
-            .into_iter()
-            .map(|row| {
-                let from = ws.mirrored_from(&row.id).unwrap_or_default();
-                (row, from)
-            })
-            .collect();
-        let space = self.id.clone();
-        let share = {
-            let workspace = self.workspace.clone();
-            move |window: &mut Window, cx: &mut App| {
-                let space = space.clone();
-                workspace.update(cx, |ws, cx| {
-                    share_dialog::open(ws, &space, window, cx);
-                })
-            }
-        };
-        let yellow = hsla(theme.palette.ansi[3], 1.0);
-        let none = rows.is_empty();
-        let list = rows.into_iter().map(|(row, from)| {
-            let (first, second) = share_dialog::sharing_words(&row, &from, at);
-            let expired = row.expires.is_some_and(|end| end <= at);
-            let token = row.id[1..].parse::<u64>().unwrap_or(0);
-            let workspace = self.workspace.clone();
-            div()
-                .id(ElementId::Name(format!("space-share-{}", row.id).into()))
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .w_full()
-                                .overflow_hidden()
-                                .truncate()
-                                .text_size(px(12.0))
-                                .text_color(ui.title)
-                                .child(row.name.clone()),
-                        )
-                        .child(
-                            div()
-                                .id(ElementId::Name(
-                                    format!("space-share-{}-first", row.id).into(),
-                                ))
-                                .w_full()
-                                .overflow_hidden()
-                                .truncate()
-                                .text_size(px(11.0))
-                                .text_color(if expired { yellow } else { ui.title_dim })
-                                .child(first)
-                                .test_support(),
-                        )
-                        .child(
-                            div()
-                                .id(ElementId::Name(
-                                    format!("space-share-{}-last", row.id).into(),
-                                ))
-                                .w_full()
-                                .flex()
-                                .items_center()
-                                .gap(px(5.0))
-                                .overflow_hidden()
-                                .text_size(px(11.0))
-                                .text_color(ui.title_dim)
-                                .when(row.mirrored, |el| {
-                                    el.child(div().size(px(6.0)).rounded_full().bg(ui.accent))
-                                })
-                                .child(div().truncate().child(second))
-                                .test_support(),
-                        ),
-                )
-                .child(
-                    Button::new(ElementId::Name(format!("space-revoke-{}", row.id).into()))
-                        .label("Revoke")
-                        .small()
-                        .on_click(move |_: &ClickEvent, _, cx| {
-                            workspace.update(cx, |ws, cx| ws.revoke_token(token, cx))
-                        }),
-                )
-                .test_support()
-        });
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(6.0))
-            .when(none, |el| {
-                el.child(
-                    div()
-                        .id("space-share-invite")
-                        .text_size(px(12.0))
-                        .text_color(ui.title_dim)
-                        .child(share_dialog::INVITE)
-                        .test_support(),
-                )
-            })
-            .children(list)
-            .child(
-                div().flex().child(
-                    Button::new("space-share")
-                        .label("Share…")
-                        .small()
-                        .on_click(move |_: &ClickEvent, window, cx| share(window, cx)),
-                ),
-            )
     }
 
     fn swatches(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -654,9 +533,6 @@ impl Render for SpaceDialog {
                     .child(self.label("Folder"))
                     .child(folder)
             })
-            .when(!remote && !self.creating, |el| {
-                el.child(self.label("Sharing")).child(self.sharing(cx))
-            })
             .when(remote, |el| {
                 el.child(self.label("Connection"))
                     .child(self.connection(cx))
@@ -710,7 +586,7 @@ fn show(ws: &Workspace, space: Option<&Space>, window: &mut Window, cx: &mut Con
     let search = cx.new(|cx| InputState::new(window, cx).placeholder("Find an icon"));
     let workspace = cx.entity();
     let view = cx.new(|cx| {
-        // Who mirrors, and the API's state, change under the dialog: it draws what is now.
+        // A remote's connection changes under the dialog: it draws what is now.
         cx.observe(&workspace, |_, _, cx| cx.notify()).detach();
         SpaceDialog {
             id,

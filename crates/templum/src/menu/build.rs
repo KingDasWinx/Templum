@@ -1698,6 +1698,7 @@ impl Items {
                     why = format!("{why} {b}");
                 }
                 let open_id = id.clone();
+                let share_id = id.clone();
                 menu.item(
                     item(ws, "Open", None, move |ws, window, cx| {
                         if let Some(at) = ws.order().iter().position(|s| s.id == open_id) {
@@ -1708,6 +1709,9 @@ impl Items {
                 )
                 .item(item(ws, "Edit…", None, move |ws, window, cx| {
                     crate::space_dialog::open(ws, &id, window, cx)
+                }))
+                .item(item(ws, "Share…", None, move |ws, window, cx| {
+                    crate::share_dialog::open(ws, &share_id, window, cx);
                 }))
                 .separator()
                 .item(

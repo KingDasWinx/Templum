@@ -41,7 +41,7 @@ fn keyring_words() -> &'static str {
 
 /// What Templum to Templum is, under the title.
 const WHAT: &str = "Work in a workspace of another computer as if it were here";
-const CODE_HELP: &str = "Make one on the other computer: a workspace's Edit… ▸ Share…";
+const CODE_HELP: &str = "Make one on the other computer: a workspace's Share… ▸ New share";
 const NO_KEYRING: &str =
     "This computer has no keyring Templum can use: the connection lasts until Templum quits.";
 const FILE_SWITCH: &str = "Keep the key in a file only you can read";

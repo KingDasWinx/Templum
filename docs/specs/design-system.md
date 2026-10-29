@@ -199,6 +199,16 @@ them and never redraws its own frame. A dialog in the middle of the window wears
     at its left ("Connecting to …"); what went wrong above the buttons in red; a question the dialog asks above them
     in yellow, its answers as ghost buttons in place of Cancel and the primary (Enter answers none). Cancel, Close,
     Esc and a press outside all close it the same way.
+  - *Steps* (card 305; the Share dialog, `share_dialog.rs`): a dialog that walks a few screens keeps its frame and
+    header and changes its body and its foot: each step has its ghost (Close, Back, Copy) and its solid primary, the
+    one Enter does (New share, Make code, Done). A step without a field keeps the keyboard in the dialog, so Enter
+    and Esc still reach it. What a step shows once (a code) leaves memory when the step is left and when the dialog
+    closes.
+  - *A list of rows with an action* (card 305; the Share dialog's shares): one `ui.card` (8 px corners) holding the
+    rows, a hairline between two rows; a row is 10 px above and under its words, 12 px at its left and 8 px at its
+    right, its name (medium) over one or two dim small lines (11.5 px), cut to one line each; its action a small
+    ghost (24 px high, 10 px at its sides, the foot's ghost's words) on its middle at the right, always shown, never on
+    hover. An empty list is one dim sentence on the same card: what the list would hold.
   - The card's dialog and the other kit dialogs can move here (docs/minors.md, Kanban and Templum to Templum).
 - **Colors:** the theme's tokens only (`ui.surface`, `hairline`, `hover`, `card`, `accent`, `title_dim`, `shadow`) and
   the palette's yellow and red for what waits or failed: a popup adds no color.

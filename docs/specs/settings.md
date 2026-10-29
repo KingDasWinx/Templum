@@ -179,7 +179,7 @@ certificate…* and *New certificate*), *Allowed web pages*, the tokens (*New to
 certificate belong to one computer. A title-bar pill ("API", "API · 2", yellow "API off") shows while it is on.
 A workspace shared with another Templum ([templum-to-templum.md](templum-to-templum.md)) is a token among the others,
 its line saying "share of API" (or "share of a deleted workspace" once that workspace is gone); *Revoke* there is the
-Edit… dialog's. *New certificate*'s question also counts the shares made *Directly*: "Clients that pinned the old one
+Share dialog's. *New certificate*'s question also counts the shares made *Directly*: "Clients that pinned the old one
 stop connecting, 2 mirrors connected directly among them: share again for them."
 
 ## Start at login
