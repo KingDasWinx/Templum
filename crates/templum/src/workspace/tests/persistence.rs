@@ -786,6 +786,39 @@ fn a_deleted_accounts_block_comes_back_plain(cx: &mut TestAppContext) {
     });
 }
 
+/// The canvas put back as Templum starts, not only a block pasted: an account's agent resumes on
+/// its account, not on its agent's own folder.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_started_workspace_resumes_an_accounts_block_on_its_account(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_as(
+        cx,
+        Some(telling_its_folder()),
+        None,
+        Some(data.path().to_path_buf()),
+    );
+    super::agents::with_agents(&ws, cx, super::agents::CLAUDE2);
+    let item = saved_terminal(folder.path(), Some("claude2"), Some("b"), Some("claude2"));
+    let saved: crate::session::Saved = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "camera": { "x": 0.0, "y": 0.0, "zoom": 1.0 },
+        "items": [item],
+    }))
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.restore(saved, window, cx))
+    })
+    .unwrap();
+    let id = ws.read_with(cx, |ws, _| {
+        let found = ws.space.terminals().find(|(_, p)| p.account.is_some());
+        found.unwrap().0
+    });
+    let account_folder = data.path().join("accounts").join("claude2");
+    super::bus::screen_with(&ws, cx, id, &format!("dir={};", account_folder.display()));
+}
+
 /// A block opened as a role types the role's words again on restore, with its model and effort;
 /// not once the role is gone from the config (docs/specs/agent-tools.md, Roles).
 #[cfg(unix)]

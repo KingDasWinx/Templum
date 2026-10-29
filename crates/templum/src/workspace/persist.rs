@@ -67,7 +67,8 @@ impl Workspace {
             // An agent resumes the folder's latest conversation: anywhere else, it's another one.
             let in_its_folder = folder.is_some();
             let shell = t.shell.as_deref().and_then(|l| self.found_shell(l));
-            let id = self.spawn_block_with(rect, folder, Vec::new(), shell, window, cx);
+            let vars = self.saved_vars(t, in_its_folder, shell.as_ref(), window, cx);
+            let id = self.spawn_block_with(rect, folder, vars, shell, window, cx);
             failed |= id.is_none();
             if let Some(id) = id {
                 self.restore_terminal(id, t, in_its_folder, cx);
@@ -238,6 +239,40 @@ impl Workspace {
         }
     }
 
+    /// What the shell of the saved terminal `t`, running `shell`, starts with: the variables of
+    /// the agent it resumes (`in_its_folder`), as the one it opened had, and its account's, with
+    /// or without its agent, even out of its folder, the account's choices applied first.
+    fn saved_vars(
+        &self,
+        t: &session::TerminalItem,
+        in_its_folder: bool,
+        shell: Option<&templum_terminal::ShellOption>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<(String, String)> {
+        let agent = t
+            .agent
+            .as_deref()
+            .and_then(|a| self.agents.iter().find(|known| known.id == a))
+            .filter(|_| in_its_folder);
+        let account = t.account.as_deref().and_then(|a| {
+            self.agents
+                .iter()
+                .find(|e| e.id == a && e.account.is_some())
+        });
+        if let Some(account) = account {
+            self.prepare_account(account, window, cx);
+        }
+        let program = shell.map(|s| s.program.as_str());
+        let mut vars = self.agent_vars(agent, program, &super::usage::in_env);
+        if let Some((name, folder)) = account.and_then(AgentEntry::var)
+            && !vars.iter().any(|(k, _)| k == name)
+        {
+            vars.insert(0, (name.to_string(), folder.to_string_lossy().into_owned()));
+        }
+        vars
+    }
+
     /// The shell of that label among the shells found here. A saved terminal names its shell by
     /// its label, never by a program: a file edited or from another computer can only pick a
     /// shell this computer lists, and one that isn't here opens the default (the block forgets
@@ -265,35 +300,9 @@ impl Workspace {
                 let folder = t.folder.as_ref().map(PathBuf::from).filter(|f| f.is_dir());
                 // An agent resumes the folder's latest conversation: anywhere else, it's another one.
                 let in_its_folder = folder.is_some();
-                // The agent it resumes gets its variable, as the one it opened did.
-                let agent = t
-                    .agent
-                    .as_deref()
-                    .and_then(|a| self.agents.iter().find(|known| known.id == a))
-                    .filter(|_| in_its_folder)
-                    .cloned();
-                // Its account's variable, with or without its agent, even out of its folder.
-                let account = t
-                    .account
-                    .as_deref()
-                    .and_then(|a| {
-                        self.agents
-                            .iter()
-                            .find(|e| e.id == a && e.account.is_some())
-                    })
-                    .cloned();
-                if let Some(account) = &account {
-                    self.prepare_account(account, window, cx);
-                }
                 // The block's own shell, as it was saved: not the agent's setting now.
                 let shell = t.shell.as_deref().and_then(|l| self.found_shell(l));
-                let program = shell.as_ref().map(|s| s.program.as_str());
-                let mut vars = self.agent_vars(agent.as_ref(), program, &super::usage::in_env);
-                if let Some((name, folder)) = account.as_ref().and_then(AgentEntry::var)
-                    && !vars.iter().any(|(k, _)| k == name)
-                {
-                    vars.insert(0, (name.to_string(), folder.to_string_lossy().into_owned()));
-                }
+                let vars = self.saved_vars(t, in_its_folder, shell.as_ref(), window, cx);
                 let id = self.spawn_block_with(rect, folder, vars, shell, window, cx)?;
                 self.restore_terminal(id, t, in_its_folder, cx);
                 Some(id)
