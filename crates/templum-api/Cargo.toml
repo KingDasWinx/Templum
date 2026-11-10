@@ -38,7 +38,7 @@ base64 = "0.22"
 # Already in the tree: the query strings.
 form_urlencoded = "1"
 # Already in the tree (templum-terminal's): the computer's name `GET /v1/me` gives.
-sysinfo = { version = "0.31", default-features = false, features = ["system"] }
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 # New: writes Templum's certificate; no crate in the tree writes X.509.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 
