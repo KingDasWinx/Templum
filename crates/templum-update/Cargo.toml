@@ -17,7 +17,7 @@ semver = "1"
 # The HTTP client (blocking, rustls with ring): GitHub's API and the release's files.
 ureq = "3"
 # Already in the tree (GPUI's on Linux): checks a download against the SHA-256 GitHub lists.
-sha2 = "0.10"
+sha2 = "0.11"
 # The portable Linux build is a .tar.gz; flate2 is already in the tree (GPUI's images).
 tar = { version = "0.4", default-features = false }
 flate2 = "1"
